@@ -34,6 +34,7 @@ final class UserDefaultsSettingsStoreTests: XCTestCase {
         let defaults = makeDefaults()
         let store = try UserDefaultsSettingsStore(defaults: defaults, legacy: SettingsFakeLegacy(values: [:]), legacyMap: .bundled)
         let profileID = UUID()
+        let remoteProfileID = UUID()
         let modeID = UUID()
         let settings = UserSettings(
             launchAtLogin: true,
@@ -42,7 +43,10 @@ final class UserDefaultsSettingsStoreTests: XCTestCase {
             speechModelID: "large-v3",
             outputModes: [.raw, OutputMode(id: modeID, title: "Clean", skipsPolishing: false, instructions: "clean")],
             selectedOutputModeID: modeID,
-            providerProfiles: [ProviderProfile(id: profileID, title: "Local", baseURL: URL(string: "http://127.0.0.1:11434/v1")!, modelID: "model", policy: .loopbackHTTP)],
+            providerProfiles: [
+                ProviderProfile(id: profileID, title: "Local", baseURL: URL(string: "http://127.0.0.1:11434/v1")!, modelID: "model", policy: .loopbackHTTP),
+                ProviderProfile(id: remoteProfileID, title: "Remote", baseURL: URL(string: "https://api.example.com/v1")!, modelID: "remote-model", policy: .remoteHTTPS)
+            ],
             selectedProviderProfileID: profileID,
             shortcutMode: .holdToTalk,
             historyEnabled: false,
@@ -207,6 +211,105 @@ final class UserDefaultsSettingsStoreTests: XCTestCase {
         }
     }
 
+    func testExistingSettingsKeyWithWrongPlistTypeThrowsWithoutOverwriting() async throws {
+        let wrongValues: [Any] = [
+            "wrong-type-canary",
+            ["nested": "wrong-type-canary"],
+            true
+        ]
+        for wrongValue in wrongValues {
+            let defaults = makeDefaults()
+            defaults.set(wrongValue, forKey: "utterink.user-settings.v1")
+            let original = defaults.object(forKey: "utterink.user-settings.v1") as AnyObject?
+            let store = try UserDefaultsSettingsStore(
+                defaults: defaults,
+                legacy: SettingsFakeLegacy(values: [:]),
+                legacyMap: .bundled
+            )
+
+            do {
+                _ = try await store.current()
+                XCTFail("expected corrupt settings error")
+            } catch {
+                let after = defaults.object(forKey: "utterink.user-settings.v1") as AnyObject?
+                XCTAssertTrue(original?.isEqual(after) == true)
+                XCTAssertFalse(String(describing: error).contains("wrong-type-canary"))
+            }
+        }
+    }
+
+    func testSaveRejectsProviderURLSecretsAndPolicyMismatchBeforeWriting() async throws {
+        let canary = "URL-SECRET-CANARY"
+        let credentialURL = ["https://", "user:", canary, "@example.com/v1"].joined()
+        let invalid: [(String, EndpointPolicy)] = [
+            (credentialURL, .remoteHTTPS),
+            ("https://example.com/v1?token=\(canary)", .remoteHTTPS),
+            ("https://example.com/v1#\(canary)", .remoteHTTPS),
+            ("http://example.com/v1", .remoteHTTPS),
+            ("http://192.168.1.2:11434/v1", .loopbackHTTP),
+            ("http://127.0.0.1:11434/v1", .remoteHTTPS),
+            ("https://localhost:11434/v1", .loopbackHTTP),
+            ("http://2130706433:11434/v1", .loopbackHTTP)
+        ]
+
+        for (urlString, policy) in invalid {
+            let defaults = makeDefaults()
+            let store = try UserDefaultsSettingsStore(
+                defaults: defaults,
+                legacy: SettingsFakeLegacy(values: [:]),
+                legacyMap: .bundled
+            )
+            var settings = UserSettings.p0Default
+            settings.providerProfiles = [
+                ProviderProfile(
+                    id: UUID(),
+                    title: "Invalid",
+                    baseURL: try XCTUnwrap(URL(string: urlString)),
+                    modelID: "model",
+                    policy: policy
+                )
+            ]
+
+            do {
+                try await store.save(settings)
+                XCTFail("expected provider URL rejection for \(urlString)")
+            } catch {
+                XCTAssertNil(defaults.object(forKey: "utterink.user-settings.v1"))
+                XCTAssertFalse(String(describing: defaults.dictionaryRepresentation()).contains(canary))
+                XCTAssertFalse(String(describing: error).contains(canary))
+            }
+        }
+    }
+
+    func testSaveAcceptsEveryCanonicalLoopbackForm() async throws {
+        for urlString in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:11434/v1",
+            "http://[::1]:11434/v1"
+        ] {
+            let defaults = makeDefaults()
+            let store = try UserDefaultsSettingsStore(
+                defaults: defaults,
+                legacy: SettingsFakeLegacy(values: [:]),
+                legacyMap: .bundled
+            )
+            var settings = UserSettings.p0Default
+            settings.providerProfiles = [
+                ProviderProfile(
+                    id: UUID(),
+                    title: "Loopback",
+                    baseURL: try XCTUnwrap(URL(string: urlString)),
+                    modelID: "model",
+                    policy: .loopbackHTTP
+                )
+            ]
+
+            try await store.save(settings)
+            let current = try await store.current()
+            XCTAssertEqual(current, settings)
+        }
+    }
+
     private func makeDefaults() -> UserDefaults {
         let name = "dev.utterink.tests.\(UUID().uuidString)"
         suites.append(name)
@@ -239,11 +342,12 @@ private final class SettingsFakeLegacy: LegacyDefaultsAccess, @unchecked Sendabl
         lock.withLock { values }
     }
 
-    func removeAtomically(keys: Set<String>) throws {
+    func removeAtomically(expectedFingerprints: [String: String]) throws {
         lock.withLock {
-            for key in keys { values.removeValue(forKey: key) }
+            for key in expectedFingerprints.keys { values.removeValue(forKey: key) }
         }
     }
+
 }
 
 private extension Array {

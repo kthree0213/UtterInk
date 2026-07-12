@@ -132,7 +132,8 @@ public actor KeychainCredentialStore: CredentialStore {
             securityKey(kSecClass): securityKey(kSecClassGenericPassword),
             securityKey(kSecAttrService): service,
             securityKey(kSecAttrAccount): profileID.uuidString,
-            securityKey(kSecAttrAccessible): securityKey(kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
+            securityKey(kSecAttrAccessible): securityKey(kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly),
+            securityKey(kSecUseDataProtectionKeychain): true
         ]
         if let accessGroup {
             query[securityKey(kSecAttrAccessGroup)] = accessGroup

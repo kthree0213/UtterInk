@@ -43,7 +43,10 @@ public actor UserDefaultsSettingsStore: SettingsStore {
     }
 
     public func current() async throws -> UserSettings {
-        if let stored = defaults.data(forKey: Self.storageKey) {
+        if let object = defaults.object(forKey: Self.storageKey) {
+            guard let stored = object as? Data else {
+                throw UserDefaultsSettingsStoreError.corruptStoredSettings
+            }
             return try decodeStored(stored)
         }
 
@@ -189,12 +192,16 @@ public actor UserDefaultsSettingsStore: SettingsStore {
               components.query == nil,
               components.fragment == nil,
               let scheme = components.scheme?.lowercased(),
-              let host = components.host?.lowercased(),
-              !host.isEmpty,
+              let rawHost = components.host,
+              !rawHost.isEmpty,
               let url = components.url
         else { return nil }
         if scheme == "https" { return (url, .remoteHTTPS) }
-        if scheme == "http", Self.isLoopback(host) { return (url, .loopbackHTTP) }
+        if scheme == "http",
+           let host = Self.canonicalLoopbackHost(rawHost),
+           Self.isLoopback(host) {
+            return (url, .loopbackHTTP)
+        }
         return nil
     }
 
@@ -334,7 +341,8 @@ public actor UserDefaultsSettingsStore: SettingsStore {
               settings.outputModes.filter({ $0.id == OutputMode.rawID }) == [.raw],
               Set(settings.outputModes.map(\.id)).count == settings.outputModes.count,
               settings.outputModes.contains(where: { $0.id == settings.selectedOutputModeID }),
-              Set(settings.providerProfiles.map(\.id)).count == settings.providerProfiles.count
+              Set(settings.providerProfiles.map(\.id)).count == settings.providerProfiles.count,
+              settings.providerProfiles.allSatisfy(isValidProviderEndpoint)
         else { return false }
         if let selected = settings.selectedProviderProfileID,
            !settings.providerProfiles.contains(where: { $0.id == selected }) {
@@ -344,6 +352,32 @@ public actor UserDefaultsSettingsStore: SettingsStore {
             !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
             !$0.modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
+    }
+
+    private static func isValidProviderEndpoint(_ profile: ProviderProfile) -> Bool {
+        guard let components = URLComponents(url: profile.baseURL, resolvingAgainstBaseURL: false),
+              components.user == nil,
+              components.password == nil,
+              components.query == nil,
+              components.fragment == nil,
+              let scheme = components.scheme?.lowercased(),
+              let rawHost = components.host,
+              !rawHost.isEmpty
+        else { return false }
+
+        switch profile.policy {
+        case .remoteHTTPS:
+            return scheme == "https"
+        case .loopbackHTTP:
+            guard scheme == "http", let host = canonicalLoopbackHost(rawHost) else { return false }
+            return isLoopback(host)
+        }
+    }
+
+    private static func canonicalLoopbackHost(_ rawHost: String) -> String? {
+        if rawHost == "[::1]" { return "::1" }
+        let lowered = rawHost.lowercased()
+        return rawHost == lowered ? lowered : nil
     }
 
     private static let fixedEndpoints: [String: String] = [

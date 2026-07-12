@@ -67,7 +67,7 @@ public actor LegacyCredentialMigrator: CredentialMigrationService {
                 guard try secretsEqual(secure, legacySecret) else {
                     return .conflict
                 }
-                try legacy.removeAtomically(keys: resolution.keys)
+                try legacy.removeAtomically(expectedFingerprints: resolution.expectedFingerprints)
                 return .alreadySecure
             }
 
@@ -79,7 +79,7 @@ public actor LegacyCredentialMigrator: CredentialMigrationService {
             guard try secretsEqual(readback, legacySecret) else {
                 return .inaccessible
             }
-            try legacy.removeAtomically(keys: resolution.keys)
+            try legacy.removeAtomically(expectedFingerprints: resolution.expectedFingerprints)
             return .migrated
         } catch {
             return .inaccessible
@@ -100,7 +100,7 @@ public actor LegacyCredentialMigrator: CredentialMigrationService {
         switch choice {
         case .keepSecure:
             resolution.secret?.clear()
-            guard resolution.state != .none, !resolution.keys.isEmpty else {
+            guard resolution.state != .none, !resolution.expectedFingerprints.isEmpty else {
                 return .noLegacyValue
             }
             guard resolution.state != .conflict else {
@@ -111,7 +111,7 @@ public actor LegacyCredentialMigrator: CredentialMigrationService {
                     return .inaccessible
                 }
                 secure.clear()
-                try legacy.removeAtomically(keys: resolution.keys)
+                try legacy.removeAtomically(expectedFingerprints: resolution.expectedFingerprints)
                 return .alreadySecure
             } catch {
                 return .inaccessible
@@ -132,7 +132,7 @@ public actor LegacyCredentialMigrator: CredentialMigrationService {
                 guard try secretsEqual(readback, legacySecret) else {
                     return .inaccessible
                 }
-                try legacy.removeAtomically(keys: resolution.keys)
+                try legacy.removeAtomically(expectedFingerprints: resolution.expectedFingerprints)
                 return .migrated
             } catch {
                 return .inaccessible
@@ -145,10 +145,10 @@ public actor LegacyCredentialMigrator: CredentialMigrationService {
         allowKnownValueConflict: Bool = false
     ) throws -> LegacyResolution {
         guard let domain = try legacy.persistentDomain() else {
-            return LegacyResolution(state: .none, keys: [], secret: nil)
+            return LegacyResolution(state: .none, expectedFingerprints: [:], secret: nil)
         }
 
-        var candidates: [(key: String, secret: SessionSecret)] = []
+        var candidates: [(key: String, secret: SessionSecret, fingerprint: String)] = []
         var structuralConflict = false
 
         let directKey = directPattern.replacingOccurrences(of: "<UUID>", with: profileID.uuidString)
@@ -157,15 +157,16 @@ public actor LegacyCredentialMigrator: CredentialMigrationService {
         let profilesResult = decodeProfiles(from: domain["llmProviderProfilesV1"])
         for (key, provider) in globalMappings.sorted(by: { $0.key < $1.key }) {
             guard let raw = domain[key] else { continue }
+            guard case .success(let profiles) = profilesResult,
+                  profiles.contains(where: { $0.id == profileID && $0.template == provider })
+            else {
+                continue
+            }
             guard let string = raw as? String else {
                 structuralConflict = true
                 continue
             }
             guard !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                continue
-            }
-            guard case .success(let profiles) = profilesResult else {
-                structuralConflict = true
                 continue
             }
             let matching = profiles.filter { $0.template == provider }
@@ -174,16 +175,18 @@ public actor LegacyCredentialMigrator: CredentialMigrationService {
                 continue
             }
             guard matching[0].id == profileID else { continue }
-            candidates.append((key, SessionSecret(utf8: string)))
+            candidates.append((key, SessionSecret(utf8: string), legacyUTF8Fingerprint(string)))
         }
 
-        let keys = Set(candidates.map(\.key))
+        let expectedFingerprints = Dictionary(
+            uniqueKeysWithValues: candidates.map { ($0.key, $0.fingerprint) }
+        )
         guard !structuralConflict else {
             candidates.forEach { $0.secret.clear() }
-            return LegacyResolution(state: .conflict, keys: keys, secret: nil)
+            return LegacyResolution(state: .conflict, expectedFingerprints: expectedFingerprints, secret: nil)
         }
         guard let first = candidates.first else {
-            return LegacyResolution(state: .none, keys: [], secret: nil)
+            return LegacyResolution(state: .none, expectedFingerprints: [:], secret: nil)
         }
 
         var valuesEqual = true
@@ -195,19 +198,23 @@ public actor LegacyCredentialMigrator: CredentialMigrationService {
         }
         guard valuesEqual || allowKnownValueConflict else {
             first.secret.clear()
-            return LegacyResolution(state: .conflict, keys: keys, secret: nil)
+            return LegacyResolution(state: .conflict, expectedFingerprints: expectedFingerprints, secret: nil)
         }
         if !valuesEqual {
             first.secret.clear()
-            return LegacyResolution(state: .resolved, keys: keys, secret: nil)
+            return LegacyResolution(state: .resolved, expectedFingerprints: expectedFingerprints, secret: nil)
         }
-        return LegacyResolution(state: .resolved, keys: keys, secret: first.secret)
+        return LegacyResolution(
+            state: .resolved,
+            expectedFingerprints: expectedFingerprints,
+            secret: first.secret
+        )
     }
 
     private func collectCandidate(
         key: String,
         from domain: [String: Any],
-        into candidates: inout [(key: String, secret: SessionSecret)],
+        into candidates: inout [(key: String, secret: SessionSecret, fingerprint: String)],
         structuralConflict: inout Bool
     ) {
         guard let raw = domain[key] else { return }
@@ -218,7 +225,7 @@ public actor LegacyCredentialMigrator: CredentialMigrationService {
         guard !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return
         }
-        candidates.append((key, SessionSecret(utf8: string)))
+        candidates.append((key, SessionSecret(utf8: string), legacyUTF8Fingerprint(string)))
     }
 
     private func decodeProfiles(from value: Any?) -> Result<[LegacyProviderProfile], Error> {
@@ -301,6 +308,6 @@ private enum LegacyProfileError: Error { case missing, invalid }
 private struct LegacyResolution {
     enum State { case none, resolved, conflict }
     let state: State
-    let keys: Set<String>
+    let expectedFingerprints: [String: String]
     let secret: SessionSecret?
 }

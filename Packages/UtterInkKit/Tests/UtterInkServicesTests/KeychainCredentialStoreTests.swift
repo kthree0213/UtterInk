@@ -213,7 +213,8 @@ final class KeychainCredentialStoreTests: XCTestCase {
             key(kSecClass),
             key(kSecAttrService),
             key(kSecAttrAccount),
-            key(kSecAttrAccessible)
+            key(kSecAttrAccessible),
+            key(kSecUseDataProtectionKeychain)
         ]
     }
 
@@ -238,6 +239,7 @@ final class KeychainCredentialStoreTests: XCTestCase {
             file: file,
             line: line
         )
+        XCTAssertEqual(query[key(kSecUseDataProtectionKeychain)] as? Bool, true, file: file, line: line)
         XCTAssertEqual(query[key(kSecAttrAccessGroup)] as? String, accessGroup, file: file, line: line)
     }
 
