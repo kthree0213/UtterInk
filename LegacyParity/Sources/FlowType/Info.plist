@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>FlowType 需要访问麦克风，用于把语音转成文字并粘贴到当前应用。</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>FlowType 会按您填写的大模型服务地址发起连接；若服务在本机或局域网（例如 Ollama），需要访问本地网络。</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
