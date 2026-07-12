@@ -28,6 +28,10 @@ enum HistoryWritePhase: String, Sendable {
     case primaryReplace
     case primarySync
     case commitRecordPublish
+    case commitRecordPreSync
+    case rollbackAnchorCreate
+    case rollbackAnchorWrite
+    case rollbackAnchorSync
     case rollbackRestore
     case rollbackSync
     case rollbackCleanupSync
@@ -415,6 +419,12 @@ private enum TransactionFailure: Error {
     case invalidCandidate
 }
 
+private enum TransactionResolution {
+    case stable
+    case committed
+    case rolledBack
+}
+
 private enum HistoryPersistence {
     private static let primaryName = "history-v1.json"
     private static let lockName = "history-v1.lock"
@@ -470,7 +480,7 @@ private enum HistoryPersistence {
         let candidateSHA256: String
     }
 
-    private struct CommitRecord: Codable {
+    private struct CommitRecord: Codable, Equatable {
         let formatVersion: Int
         let transactionID: String
         let candidateSHA256: String
@@ -534,7 +544,7 @@ private enum HistoryPersistence {
             hooks: hooks
         )
 
-        try resolveTransactionArtifacts(
+        _ = try resolveTransactionArtifacts(
             directoryDescriptor: directoryDescriptor,
             hooks: hooks,
             startup: true
@@ -810,6 +820,13 @@ private enum HistoryPersistence {
         defer { close(descriptor) }
         try verifyFileDescriptor(descriptor, hooks: hooks)
 
+        return try readVerifiedArtifact(descriptor)
+    }
+
+    private static func readVerifiedArtifact(_ descriptor: Int32) throws -> Data {
+        guard lseek(descriptor, 0, SEEK_SET) == 0 else {
+            throw HistoryStoreError.corrupt
+        }
         var metadata = stat()
         guard fstat(descriptor, &metadata) == 0,
               metadata.st_size >= 0,
@@ -977,9 +994,9 @@ private enum HistoryPersistence {
         directoryDescriptor: Int32,
         hooks: HistoryStoreHooks,
         startup: Bool
-    ) throws {
+    ) throws -> TransactionResolution {
         do {
-            try resolveTransactionArtifactsUnchecked(
+            return try resolveTransactionArtifactsUnchecked(
                 directoryDescriptor: directoryDescriptor,
                 hooks: hooks
             )
@@ -996,7 +1013,7 @@ private enum HistoryPersistence {
     private static func resolveTransactionArtifactsUnchecked(
         directoryDescriptor: Int32,
         hooks: HistoryStoreHooks
-    ) throws {
+    ) throws -> TransactionResolution {
         let hasJournal = try artifactExists(
             journalName,
             directoryDescriptor: directoryDescriptor
@@ -1018,7 +1035,7 @@ private enum HistoryPersistence {
             guard !hasBackup, !hasTemp else {
                 throw HistoryStoreError.corrupt
             }
-            return
+            return .stable
         }
 
         let commitBytes = hasCommit
@@ -1068,11 +1085,16 @@ private enum HistoryPersistence {
                     throw HistoryStoreError.corrupt
                 }
             }
-            try cleanupCommittedArtifacts(
+            try synchronizeAndVerifyCommitArtifact(
+                expectedBytes: commitBytes,
                 directoryDescriptor: directoryDescriptor,
                 hooks: hooks
             )
-            return
+            try? cleanupCommittedArtifacts(
+                directoryDescriptor: directoryDescriptor,
+                hooks: hooks
+            )
+            return .committed
         }
 
         guard hasJournal else {
@@ -1090,6 +1112,7 @@ private enum HistoryPersistence {
             directoryDescriptor: directoryDescriptor,
             hooks: hooks
         )
+        return .rolledBack
     }
 
     private static func resolveArmedTransaction(
@@ -1107,7 +1130,7 @@ private enum HistoryPersistence {
             directoryDescriptor: directoryDescriptor,
             hooks: hooks
         )
-        let temp = try readArtifactIfPresent(
+        var temp = try readArtifactIfPresent(
             tempName,
             directoryDescriptor: directoryDescriptor,
             hooks: hooks
@@ -1126,15 +1149,28 @@ private enum HistoryPersistence {
                 }
             }
         }
-        if let temp, sha256(temp) != manifest.candidateSHA256 {
-            throw HistoryStoreError.corrupt
-        }
 
+        let primaryHash = primary.map(sha256)
+        let primaryIsCandidate = primaryHash == manifest.candidateSHA256
         let priorAlreadyRestored: Bool
         if manifest.priorExists {
-            priorAlreadyRestored = primary.map(sha256) == manifest.priorSHA256
+            priorAlreadyRestored = primaryHash == manifest.priorSHA256
         } else {
             priorAlreadyRestored = primary == nil
+        }
+        var tempIsCandidate = temp.map(sha256) == manifest.candidateSHA256
+
+        if temp != nil, !tempIsCandidate {
+            guard primaryIsCandidate || priorAlreadyRestored else {
+                throw HistoryStoreError.corrupt
+            }
+            try removeArtifactIfPresent(
+                tempName,
+                directoryDescriptor: directoryDescriptor
+            )
+            try synchronizeFile(directoryDescriptor)
+            temp = nil
+            tempIsCandidate = false
         }
 
         if !priorAlreadyRestored {
@@ -1143,8 +1179,6 @@ private enum HistoryPersistence {
                   manifest.priorExists || backup.isEmpty else {
                 throw HistoryStoreError.corrupt
             }
-            let primaryIsCandidate = primary.map(sha256) == manifest.candidateSHA256
-            let tempIsCandidate = temp.map(sha256) == manifest.candidateSHA256
             guard primaryIsCandidate || tempIsCandidate else {
                 throw HistoryStoreError.corrupt
             }
@@ -1177,7 +1211,26 @@ private enum HistoryPersistence {
     ) throws {
         try inject(.rollbackReplace, hooks: hooks)
 
-        if !candidateTempExists {
+        if candidateTempExists {
+            let descriptor = openat(
+                directoryDescriptor,
+                tempName,
+                O_RDWR | O_NOFOLLOW | O_CLOEXEC
+            )
+            guard descriptor >= 0 else { throw TransactionFailure.unrecoverable }
+            do {
+                defer { close(descriptor) }
+                try verifyFileDescriptor(descriptor, hooks: hooks)
+                guard try readVerifiedArtifact(descriptor) == candidate else {
+                    throw TransactionFailure.unrecoverable
+                }
+                try inject(.rollbackAnchorSync, hooks: hooks)
+                try synchronizeFile(descriptor)
+                try synchronizeFile(directoryDescriptor)
+            } catch {
+                throw TransactionFailure.unrecoverable
+            }
+        } else {
             let descriptor = openat(
                 directoryDescriptor,
                 tempName,
@@ -1188,7 +1241,12 @@ private enum HistoryPersistence {
             do {
                 defer { close(descriptor) }
                 try verifyFileDescriptor(descriptor, hooks: hooks)
-                try writeAll(candidate, descriptor: descriptor)
+                try inject(.rollbackAnchorCreate, hooks: hooks)
+                let splitIndex = max(1, candidate.count / 2)
+                try writeAll(Data(candidate.prefix(splitIndex)), descriptor: descriptor)
+                try inject(.rollbackAnchorWrite, hooks: hooks)
+                try writeAll(Data(candidate.dropFirst(splitIndex)), descriptor: descriptor)
+                try inject(.rollbackAnchorSync, hooks: hooks)
                 try synchronizeFile(descriptor)
                 try synchronizeFile(directoryDescriptor)
             } catch {
@@ -1276,7 +1334,7 @@ private enum HistoryPersistence {
         hooks: HistoryStoreHooks
     ) throws {
         do {
-            try resolveTransactionArtifacts(
+            _ = try resolveTransactionArtifacts(
                 directoryDescriptor: directoryDescriptor,
                 hooks: hooks,
                 startup: false
@@ -1455,7 +1513,8 @@ private enum HistoryPersistence {
             try inject(.commitRecordPublish, hooks: hooks)
             try publishCommitRecord(
                 validCommitBytes,
-                descriptor: commitDescriptor
+                descriptor: commitDescriptor,
+                hooks: hooks
             )
 
             try? cleanupCommittedArtifacts(
@@ -1482,12 +1541,17 @@ private enum HistoryPersistence {
 
             if armedArtifactsPrepared {
                 do {
-                    try resolveTransactionArtifacts(
+                    let resolution = try resolveTransactionArtifacts(
                         directoryDescriptor: directoryDescriptor,
                         hooks: hooks,
                         startup: false
                     )
-                    throw TransactionFailure.ordinary
+                    switch resolution {
+                    case .committed:
+                        return
+                    case .stable, .rolledBack:
+                        throw TransactionFailure.ordinary
+                    }
                 } catch TransactionFailure.ordinary {
                     throw TransactionFailure.ordinary
                 } catch {
@@ -1658,15 +1722,47 @@ private enum HistoryPersistence {
         }
     }
 
+    private static func synchronizeAndVerifyCommitArtifact(
+        expectedBytes: Data,
+        directoryDescriptor: Int32,
+        hooks: HistoryStoreHooks
+    ) throws {
+        let expectedRecord = try decodeCommitRecord(expectedBytes)
+        let descriptor = openat(
+            directoryDescriptor,
+            commitName,
+            O_RDWR | O_NOFOLLOW | O_CLOEXEC
+        )
+        guard descriptor >= 0 else {
+            throw HistoryStoreError.unsafeStorage
+        }
+        defer { close(descriptor) }
+        try verifyFileDescriptor(descriptor, hooks: hooks)
+
+        let beforeSync = try readVerifiedArtifact(descriptor)
+        guard beforeSync == expectedBytes,
+              try decodeCommitRecord(beforeSync) == expectedRecord else {
+            throw HistoryStoreError.corrupt
+        }
+        try synchronizeFile(descriptor)
+        let afterSync = try readVerifiedArtifact(descriptor)
+        guard afterSync == expectedBytes,
+              try decodeCommitRecord(afterSync) == expectedRecord else {
+            throw HistoryStoreError.corrupt
+        }
+    }
+
     private static func publishCommitRecord(
         _ bytes: Data,
-        descriptor: Int32
+        descriptor: Int32,
+        hooks: HistoryStoreHooks
     ) throws {
         guard lseek(descriptor, 0, SEEK_SET) == 0,
               ftruncate(descriptor, 0) == 0 else {
             throw TransactionFailure.ordinary
         }
         try writeAll(bytes, descriptor: descriptor)
+        try inject(.commitRecordPreSync, hooks: hooks)
         try synchronizeFile(descriptor)
     }
 

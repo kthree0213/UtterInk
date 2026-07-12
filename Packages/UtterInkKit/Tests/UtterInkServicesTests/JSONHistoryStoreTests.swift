@@ -325,6 +325,80 @@ final class JSONHistoryStoreTests: XCTestCase {
         }
     }
 
+    func testCompleteCommitBytesBeforeFirstSyncResolveCommittedAndPublishCandidate() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let hooks = HistoryStoreHooks()
+        var store: JSONHistoryStore? = try JSONHistoryStore(
+            directory: directory,
+            enabled: true,
+            clock: TestHistoryClock(),
+            hooks: hooks
+        )
+        let prior = makeRecord(index: 301)
+        let candidate = makeRecord(index: 302)
+        try await store!.appendRaw(prior, expectedGeneration: 0)
+
+        hooks.failNext(.commitRecordPreSync)
+        hooks.failNext(.cleanupJournal)
+        try await store!.appendRaw(candidate, expectedGeneration: 0)
+        try await XCTAssertEqualAsync(store!.load(), sortedHistory([prior, candidate]))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: historyArtifact("history-v1.backup", in: directory).path
+        ))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: historyArtifact("history-v1.txn", in: directory).path
+        ))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: historyArtifact("history-v1.commit", in: directory).path
+        ))
+
+        store = nil
+        let reopened = try JSONHistoryStore(
+            directory: directory,
+            enabled: false,
+            clock: TestHistoryClock()
+        )
+        try await XCTAssertEqualAsync(reopened.load(), sortedHistory([prior, candidate]))
+        for name in ["history-v1.tmp", "history-v1.backup", "history-v1.txn", "history-v1.commit"] {
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: historyArtifact(name, in: directory).path
+            ))
+        }
+    }
+
+    func testPrewriteCommitPublicationFailureStillRollsBackAndReopensPrior() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let hooks = HistoryStoreHooks()
+        var store: JSONHistoryStore? = try JSONHistoryStore(
+            directory: directory,
+            enabled: true,
+            clock: TestHistoryClock(),
+            hooks: hooks
+        )
+        let prior = makeRecord(index: 311)
+        try await store!.appendRaw(prior, expectedGeneration: 0)
+        let primary = historyArtifact("history-v1.json", in: directory)
+        let priorBytes = try Data(contentsOf: primary)
+
+        hooks.failNext(.commitRecordPublish)
+        await XCTAssertHistoryError(.writeFailed) {
+            try await store!.appendRaw(self.makeRecord(index: 312), expectedGeneration: 0)
+        }
+        XCTAssertEqual(try Data(contentsOf: primary), priorBytes)
+        try await XCTAssertEqualAsync(store!.load(), [prior])
+
+        store = nil
+        let reopened = try JSONHistoryStore(
+            directory: directory,
+            enabled: false,
+            clock: TestHistoryClock()
+        )
+        XCTAssertEqual(try Data(contentsOf: primary), priorBytes)
+        try await XCTAssertEqualAsync(reopened.load(), [prior])
+    }
+
     func testFailedPostReplaceRollbackPoisonsActorAndStartupRecoveryRestoresPriorPrimary() async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -571,6 +645,165 @@ final class JSONHistoryStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: historyArtifact("history-v1.txn", in: directory).path
         ))
+    }
+
+    func testInterruptedRollbackAnchorIsRebuiltWhenPrimaryStillProvesCandidate() async throws {
+        let phases: [HistoryWritePhase] = [
+            .rollbackAnchorCreate,
+            .rollbackAnchorWrite,
+            .rollbackAnchorSync
+        ]
+        for (offset, phase) in phases.enumerated() {
+            let directory = temporaryDirectory()
+            let hooks = HistoryStoreHooks()
+            var store: JSONHistoryStore? = try JSONHistoryStore(
+                directory: directory,
+                enabled: true,
+                clock: TestHistoryClock(),
+                hooks: hooks
+            )
+            let prior = makeRecord(index: 321 + offset)
+            try await store!.appendRaw(prior, expectedGeneration: 0)
+            let primary = historyArtifact("history-v1.json", in: directory)
+            let priorBytes = try Data(contentsOf: primary)
+
+            hooks.failNext(.primarySync)
+            hooks.failNext(phase)
+            await XCTAssertHistoryError(.writeFailed) {
+                try await store!.appendRaw(
+                    self.makeRecord(index: 331 + offset),
+                    expectedGeneration: 0
+                )
+            }
+            await XCTAssertHistoryError(.poisoned) {
+                try await store!.appendRaw(
+                    self.makeRecord(index: 341 + offset),
+                    expectedGeneration: 0
+                )
+            }
+
+            let candidateBytes = try Data(contentsOf: primary)
+            let anchor = historyArtifact("history-v1.tmp", in: directory)
+            let anchorBytes = try Data(contentsOf: anchor)
+            switch phase {
+            case .rollbackAnchorCreate:
+                XCTAssertTrue(anchorBytes.isEmpty)
+            case .rollbackAnchorWrite:
+                XCTAssertFalse(anchorBytes.isEmpty)
+                XCTAssertLessThan(anchorBytes.count, candidateBytes.count)
+            case .rollbackAnchorSync:
+                XCTAssertEqual(anchorBytes, candidateBytes)
+            default:
+                XCTFail("Unexpected anchor phase")
+            }
+
+            store = nil
+            var reopened: JSONHistoryStore? = try JSONHistoryStore(
+                directory: directory,
+                enabled: false,
+                clock: TestHistoryClock()
+            )
+            XCTAssertEqual(try Data(contentsOf: primary), priorBytes)
+            try await XCTAssertEqualAsync(reopened!.load(), [prior])
+            reopened = nil
+            try FileManager.default.removeItem(at: directory)
+        }
+    }
+
+    func testPartialTempIsDiscardedWhenPriorIsAlreadyRestoredOrAbsent() async throws {
+        for priorExists in [true, false] {
+            let directory = temporaryDirectory()
+            let hooks = HistoryStoreHooks()
+            var store: JSONHistoryStore? = try JSONHistoryStore(
+                directory: directory,
+                enabled: true,
+                clock: TestHistoryClock(),
+                hooks: hooks
+            )
+            let prior = makeRecord(index: priorExists ? 351 : 352)
+            let primary = historyArtifact("history-v1.json", in: directory)
+            let expectedRecords: [HistoryRecord]
+            let priorBytes: Data?
+            if priorExists {
+                try await store!.appendRaw(prior, expectedGeneration: 0)
+                priorBytes = try Data(contentsOf: primary)
+                expectedRecords = [prior]
+            } else {
+                priorBytes = nil
+                expectedRecords = []
+            }
+
+            hooks.failNext(.primarySync)
+            hooks.failNext(.rollbackSync)
+            await XCTAssertHistoryError(.writeFailed) {
+                try await store!.appendRaw(
+                    self.makeRecord(index: priorExists ? 361 : 362),
+                    expectedGeneration: 0
+                )
+            }
+            let anchor = historyArtifact("history-v1.tmp", in: directory)
+            let fullAnchor = try Data(contentsOf: anchor)
+            XCTAssertGreaterThan(fullAnchor.count, 8)
+            try truncateSecureArtifact(anchor, to: 8)
+
+            if let priorBytes {
+                XCTAssertEqual(try Data(contentsOf: primary), priorBytes)
+            } else {
+                XCTAssertFalse(FileManager.default.fileExists(atPath: primary.path))
+            }
+
+            store = nil
+            var reopened: JSONHistoryStore? = try JSONHistoryStore(
+                directory: directory,
+                enabled: false,
+                clock: TestHistoryClock()
+            )
+            if let priorBytes {
+                XCTAssertEqual(try Data(contentsOf: primary), priorBytes)
+            } else {
+                XCTAssertFalse(FileManager.default.fileExists(atPath: primary.path))
+            }
+            try await XCTAssertEqualAsync(reopened!.load(), expectedRecords)
+            reopened = nil
+            try FileManager.default.removeItem(at: directory)
+        }
+    }
+
+    func testArmedRecoveryStillFailsClosedWhenPrimaryAndTempBothMismatch() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let hooks = HistoryStoreHooks()
+        var store: JSONHistoryStore? = try JSONHistoryStore(
+            directory: directory,
+            enabled: true,
+            clock: TestHistoryClock(),
+            hooks: hooks
+        )
+        try await store!.appendRaw(makeRecord(index: 371), expectedGeneration: 0)
+        let primary = historyArtifact("history-v1.json", in: directory)
+
+        hooks.failNext(.primarySync)
+        hooks.failNext(.rollbackAnchorWrite)
+        await XCTAssertHistoryError(.writeFailed) {
+            try await store!.appendRaw(self.makeRecord(index: 372), expectedGeneration: 0)
+        }
+        store = nil
+        try truncateSecureArtifact(primary, to: 7)
+
+        let artifactNames = [
+            "history-v1.json", "history-v1.tmp", "history-v1.backup",
+            "history-v1.txn", "history-v1.commit"
+        ]
+        let before = try Dictionary(uniqueKeysWithValues: artifactNames.map { name in
+            (name, try Data(contentsOf: historyArtifact(name, in: directory)))
+        })
+        XCTAssertHistoryInitError(.corrupt, directory: directory)
+        for name in artifactNames {
+            XCTAssertEqual(
+                try Data(contentsOf: historyArtifact(name, in: directory)),
+                before[name]
+            )
+        }
     }
 
     func testDisableEnableGenerationIdempotenceConstructorMismatchAndReadableDisabledHistory() async throws {
@@ -1723,6 +1956,18 @@ private func writeSecure(_ data: Data, to url: URL) throws {
         throw TestHarnessError.fileCreation
     }
     try chmodPath(url, mode: 0o600)
+}
+
+private func truncateSecureArtifact(_ url: URL, to size: off_t) throws {
+    let descriptor = open(url.path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
+    guard descriptor >= 0 else {
+        throw TestHarnessError.posix
+    }
+    defer { close(descriptor) }
+    guard ftruncate(descriptor, size) == 0,
+          fsync(descriptor) == 0 else {
+        throw TestHarnessError.posix
+    }
 }
 
 private func chmodPath(_ url: URL, mode: mode_t) throws {
