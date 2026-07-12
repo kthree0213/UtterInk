@@ -1,0 +1,81 @@
+import Foundation
+
+public protocol SettingsStore: Sendable {
+    func current() async throws -> UserSettings
+    func save(_ settings: UserSettings) async throws
+}
+
+public protocol CredentialStore: Sendable {
+    func read(profileID: UUID) async throws -> SessionSecret?
+    func write(_ secret: SessionSecret, profileID: UUID) async throws
+    func delete(profileID: UUID) async throws
+}
+
+public protocol AudioRecordingService: Sendable {
+    func requestPermission() async -> PermissionState
+    func start(levels: @escaping @Sendable (Float) -> Void) async throws -> RecordingHandle
+    func stop(_ handle: RecordingHandle) async throws -> URL
+    func cancel(_ handle: RecordingHandle) async
+}
+
+public protocol SpeechModelService: Sendable {
+    func state() async -> SpeechModelState
+    func prepare(modelID: String, token: EffectToken) async -> AsyncStream<SpeechModelState>
+    func cancelPreparation() async
+    func acquireReadyModel(modelID: String, token: EffectToken) async throws -> SpeechModelLease
+    func release(_ lease: SpeechModelLease) async
+    func deleteCachedModel(modelID: String) async throws
+}
+
+public protocol TranscriptionService: Sendable {
+    func transcribe(
+        audioURL: URL,
+        model: SpeechModelLease,
+        configuration: RecognitionConfiguration,
+        token: EffectToken
+    ) async throws -> String
+}
+
+public protocol PolishingService: Sendable {
+    func polish(rawText: String, snapshot: SessionSnapshot, token: EffectToken) async throws -> String
+}
+
+public enum ProviderValidationResult: Equatable, Sendable {
+    case ready(normalizedHost: String, modelID: String)
+    case failed(DiagnosticCode)
+}
+
+public protocol ProviderValidationService: Sendable {
+    func validate(
+        profile: ProviderProfile,
+        credential: SessionSecret
+    ) async -> ProviderValidationResult
+}
+
+public protocol DeliveryService: Sendable {
+    func deliver(
+        text: String,
+        to target: DeliveryTarget,
+        preference: DeliveryPreference,
+        token: EffectToken
+    ) async -> DeliveryOutcome
+    func copyExplicitly(text: String, token: EffectToken) async -> DeliveryOutcome
+}
+
+public protocol OnboardingTestSink: Sendable {
+    func deliver(_ text: String, sessionID: SessionID) async
+    func values() async -> AsyncStream<(SessionID, String)>
+}
+
+public protocol TargetSnapshotService: Sendable {
+    func snapshotTarget() async -> DeliveryTarget
+}
+
+public protocol PermissionService: Sendable {
+    func microphoneState() async -> PermissionState
+    func accessibilityState() async -> PermissionState
+}
+
+public protocol DiagnosticsSink: Sendable {
+    func record(stage: PipelineStage, code: DiagnosticCode?) async
+}
