@@ -1,5 +1,8 @@
-Package.swift
 Package.resolved
+Package.swift
+Packaging/FlowType.entitlements
+Packaging/Info.plist
+Scripts/package-dmg.sh
 Sources/FlowType/AppLocalization.swift
 Sources/FlowType/Core/Constants.swift
 Sources/FlowType/Core/FlowCoordinator.swift

@@ -23,6 +23,8 @@ purpose_for() {
   case "$1" in
     Package.*) echo package-metadata ;;
     Tests/*) echo parity-test ;;
+    *.sh) echo parity-tooling ;;
+    *.entitlements) echo parity-configuration ;;
     *.png|*.json|*.txt) echo parity-resource ;;
     *.plist) echo parity-configuration ;;
     *.swift) echo parity-source ;;
@@ -50,8 +52,9 @@ while IFS= read -r path || [[ -n "$path" ]]; do
   reviewer="${remainder#*$'\t'}"
   [[ -n "$owner" && -n "$authority" && -n "$reviewer" ]] || { echo "incomplete rights row: $path" >&2; exit 1; }
   sha="$(shasum -a 256 "$source" | awk '{print $1}')"
+  purpose="$(purpose_for "$path")" || { echo "unsupported allowlist entry: $path" >&2; exit 1; }
   printf '%s\tLegacyParity/%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$path" "$path" "$sha" "$(purpose_for "$path")" "$owner" "$authority" "$reviewer" >> "$tmp"
+    "$path" "$path" "$sha" "$purpose" "$owner" "$authority" "$reviewer" >> "$tmp"
 done < "$ALLOWLIST"
 
 mv "$tmp" "$OUTPUT"
