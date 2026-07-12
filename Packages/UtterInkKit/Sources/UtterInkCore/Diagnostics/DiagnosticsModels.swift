@@ -1,6 +1,6 @@
 import Foundation
 
-public enum DiagnosticCode: String, Codable, CaseIterable, Sendable {
+public enum DiagnosticCode: String, Codable, CaseIterable, Sendable, Error {
     case permissionMicrophone = "permission.microphone"
     case permissionAccessibility = "permission.accessibility"
     case audioStart = "audio.start"
