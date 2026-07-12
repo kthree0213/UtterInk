@@ -21,6 +21,24 @@ public protocol CredentialStore: Sendable {
     func delete(profileID: UUID) async throws
 }
 
+public enum CredentialMigrationResult: Equatable, Sendable {
+    case noLegacyValue
+    case migrated
+    case alreadySecure
+    case conflict
+    case inaccessible
+}
+
+public enum CredentialConflictChoice: Equatable, Sendable {
+    case keepSecure
+    case replaceSecureWithLegacy
+}
+
+public protocol CredentialMigrationService: Sendable {
+    func migrate(profileID: UUID) async -> CredentialMigrationResult
+    func resolve(profileID: UUID, choice: CredentialConflictChoice) async -> CredentialMigrationResult
+}
+
 public protocol AudioRecordingService: Sendable {
     func requestPermission() async -> PermissionState
     func start(levels: @escaping @Sendable (Float) -> Void) async throws -> RecordingHandle

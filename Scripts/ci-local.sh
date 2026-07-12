@@ -12,6 +12,9 @@ case "$TMP" in
     exit 1
     ;;
 esac
+mkdir -p "$TMP/swift-module-cache" "$TMP/clang-module-cache"
+export SWIFT_MODULECACHE_PATH="$TMP/swift-module-cache"
+export CLANG_MODULE_CACHE_PATH="$TMP/clang-module-cache"
 CACHE_CLEANUP_ENABLED=0
 
 expected_origin="${UTTERINK_EXPECTED_ORIGIN:-}"
@@ -92,14 +95,21 @@ bash Tests/Scripts/test-generate-import-manifest.sh
 bash Tests/Scripts/test-scan-public-history.sh
 bash Tests/Scripts/test-import-legacy-parity.sh
 bash Tests/Scripts/test-check-repo-hygiene.sh
+bash Tests/Scripts/test-generate-legacy-defaults-map.sh
+swift Scripts/generate-legacy-defaults-map.swift \
+  --check \
+  --input docs/provenance/legacy-defaults-map.tsv \
+  --swift-output Packages/UtterInkKit/Sources/UtterInkServices/Generated/LegacyDefaultsMap.generated.swift
 
 swift test \
   --package-path LegacyParity \
   --scratch-path "$TMP/LegacyParity-build" \
+  --disable-sandbox \
   --force-resolved-versions
 swift test \
   --package-path Packages/UtterInkKit \
   --scratch-path "$TMP/UtterInkKit-build" \
+  --disable-sandbox \
   --force-resolved-versions
 
 xcodegen generate
