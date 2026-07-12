@@ -28,7 +28,7 @@ final class LegacyCredentialMigratorTests: XCTestCase {
             processState: process
         )
 
-        try reader.removeAtomically(expectedFingerprints: [
+        _ = try reader.removeAtomically(expectedFingerprints: [
             "remove-a": fingerprint("secret-a"),
             "remove-b": fingerprint("secret-b")
         ])
@@ -100,6 +100,105 @@ final class LegacyCredentialMigratorTests: XCTestCase {
             try verificationReader.removeAtomically(expectedFingerprints: ["target": fingerprint("secret")])
         )
         XCTAssertEqual(verificationFailure.copyRequests.count, 2)
+    }
+
+    func testConcreteReaderPreSyncFailureDoesNotMutatePlaintext() throws {
+        let preferences = MigratorFakePreferences(
+            values: ["target": "secret"],
+            synchronizeResults: [false]
+        )
+        let reader = try LegacyDefaultsReader(
+            suiteName: "dev.example.Legacy",
+            preferences: preferences,
+            processState: MigratorFakeProcessState(states: [false])
+        )
+
+        XCTAssertThrowsError(
+            try reader.removeAtomically(expectedFingerprints: ["target": fingerprint("secret")])
+        )
+        XCTAssertTrue(preferences.removeRequests.isEmpty)
+        XCTAssertEqual(preferences.value(forKey: "target") as? String, "secret")
+    }
+
+    func testConcreteReaderPostSyncFailureWithVerifiedAbsenceIsPending() throws {
+        let preferences = MigratorFakePreferences(
+            values: ["target": "secret"],
+            synchronizeResults: [true, false]
+        )
+        let reader = try LegacyDefaultsReader(
+            suiteName: "dev.example.Legacy",
+            preferences: preferences,
+            processState: MigratorFakeProcessState(states: [false, false])
+        )
+
+        let outcome = try reader.removeAtomically(
+            expectedFingerprints: ["target": fingerprint("secret")]
+        )
+
+        XCTAssertEqual(outcome, .pending)
+        XCTAssertNil(preferences.value(forKey: "target"))
+    }
+
+    func testConcreteReaderPostSyncFailureWithExactValuePresentIsInaccessible() throws {
+        let preferences = MigratorFakePreferences(
+            values: ["target": "secret"],
+            synchronizeResults: [true, false],
+            removalMode: .retainExpected
+        )
+        let reader = try LegacyDefaultsReader(
+            suiteName: "dev.example.Legacy",
+            preferences: preferences,
+            processState: MigratorFakeProcessState(states: [false, false])
+        )
+
+        XCTAssertThrowsError(
+            try reader.removeAtomically(expectedFingerprints: ["target": fingerprint("secret")])
+        )
+        XCTAssertEqual(preferences.value(forKey: "target") as? String, "secret")
+    }
+
+    func testConcreteReaderNilPostDeleteReadIsPending() throws {
+        let preferences = MigratorFakePreferences(
+            values: ["target": "secret"],
+            nilCopyCallNumbers: [2]
+        )
+        let reader = try LegacyDefaultsReader(
+            suiteName: "dev.example.Legacy",
+            preferences: preferences,
+            processState: MigratorFakeProcessState(states: [false, false])
+        )
+
+        let outcome = try reader.removeAtomically(
+            expectedFingerprints: ["target": fingerprint("secret")]
+        )
+
+        XCTAssertEqual(outcome, .pending)
+    }
+
+    func testChangedAndMixedPostMutationStatesArePendingWithoutRollback() throws {
+        for mode in [MigratorPreferencesRemovalMode.changed, .mixed] {
+            let preferences = MigratorFakePreferences(
+                values: ["first": "same", "second": "same"],
+                removalMode: mode
+            )
+            let reader = try LegacyDefaultsReader(
+                suiteName: "dev.example.Legacy",
+                preferences: preferences,
+                processState: MigratorFakeProcessState(states: [false, false])
+            )
+
+            let outcome = try reader.removeAtomically(expectedFingerprints: [
+                "first": fingerprint("same"),
+                "second": fingerprint("same")
+            ])
+
+            XCTAssertEqual(outcome, .pending)
+            XCTAssertFalse(preferences.setRequestsContainPlaintext)
+            XCTAssertTrue(
+                preferences.value(forKey: "first") as? String == "changed-after-removal" ||
+                preferences.value(forKey: "second") as? String == "changed-after-removal"
+            )
+        }
     }
 
     func testConcreteReaderFailsClosedWhenLegacyProcessIsRunningAtEitherCheck() throws {
@@ -212,6 +311,119 @@ final class LegacyCredentialMigratorTests: XCTestCase {
         XCTAssertEqual(stored, "direct-secret")
     }
 
+    func testDuplicateUUIDCustomThenOpenRouterCannotBindGlobalSecret() async throws {
+        let profileID = UUID()
+        let legacy = MigratorFakeLegacy(values: [
+            "llmProviderProfilesV1": try legacyProfiles([
+                .init(id: profileID, template: "custom", title: "Custom", customURL: "https://example.com/v1"),
+                .init(id: profileID, template: "openrouter", title: "Router", customURL: nil)
+            ]),
+            "openRouterApiKey": "duplicate-secret"
+        ])
+        let credentials = MigratorFakeCredentials()
+        let migrator = try LegacyCredentialMigrator(legacy: legacy, credentials: credentials, map: .bundled)
+
+        let result = await migrator.migrate(profileID: profileID)
+        let stored = await credentials.value(profileID: profileID)
+
+        XCTAssertEqual(result, .conflict)
+        XCTAssertNil(stored)
+        XCTAssertEqual(try legacy.value(forKey: "openRouterApiKey") as? String, "duplicate-secret")
+        XCTAssertTrue(legacy.removalBatches.isEmpty)
+    }
+
+    func testDuplicateUUIDAcrossTwoGlobalProvidersGuessesNeitherSecret() async throws {
+        let profileID = UUID()
+        let legacy = MigratorFakeLegacy(values: [
+            "llmProviderProfilesV1": try legacyProfiles([
+                .init(id: profileID, template: "openrouter", title: "Router", customURL: nil),
+                .init(id: profileID, template: "minimax", title: "MiniMax", customURL: nil)
+            ]),
+            "openRouterApiKey": "router-secret",
+            "minimaxApiKey": "minimax-secret"
+        ])
+        let credentials = MigratorFakeCredentials()
+        let migrator = try LegacyCredentialMigrator(legacy: legacy, credentials: credentials, map: .bundled)
+
+        let result = await migrator.migrate(profileID: profileID)
+        let stored = await credentials.value(profileID: profileID)
+
+        XCTAssertEqual(result, .conflict)
+        XCTAssertNil(stored)
+        XCTAssertEqual(try legacy.value(forKey: "openRouterApiKey") as? String, "router-secret")
+        XCTAssertEqual(try legacy.value(forKey: "minimaxApiKey") as? String, "minimax-secret")
+        XCTAssertTrue(legacy.removalBatches.isEmpty)
+    }
+
+    func testDuplicateUUIDWithinSameGlobalProviderConflicts() async throws {
+        let profileID = UUID()
+        let legacy = MigratorFakeLegacy(values: [
+            "llmProviderProfilesV1": try legacyProfiles([
+                .init(id: profileID, template: "openrouter", title: "One", customURL: nil),
+                .init(id: profileID, template: "openrouter", title: "Two", customURL: nil)
+            ]),
+            "openRouterApiKey": "duplicate-provider-secret"
+        ])
+        let credentials = MigratorFakeCredentials()
+        let migrator = try LegacyCredentialMigrator(legacy: legacy, credentials: credentials, map: .bundled)
+
+        let result = await migrator.migrate(profileID: profileID)
+        let stored = await credentials.value(profileID: profileID)
+
+        XCTAssertEqual(result, .conflict)
+        XCTAssertNil(stored)
+        XCTAssertEqual(try legacy.value(forKey: "openRouterApiKey") as? String, "duplicate-provider-secret")
+    }
+
+    func testUniqueDirectProfileMigratesWhileDuplicateGlobalIdentitiesRemainUntouched() async throws {
+        let duplicateID = UUID()
+        let directID = UUID()
+        let directKey = "llmP.\(directID.uuidString).apiKey"
+        let legacy = MigratorFakeLegacy(values: [
+            "llmProviderProfilesV1": try legacyProfiles([
+                .init(id: duplicateID, template: "custom", title: "Custom", customURL: "https://example.com/v1"),
+                .init(id: duplicateID, template: "openrouter", title: "Router", customURL: nil),
+                .init(id: directID, template: "custom", title: "Direct", customURL: "https://direct.example/v1")
+            ]),
+            "openRouterApiKey": "ambiguous-global",
+            directKey: "direct-secret"
+        ])
+        let credentials = MigratorFakeCredentials()
+        let migrator = try LegacyCredentialMigrator(legacy: legacy, credentials: credentials, map: .bundled)
+
+        let result = await migrator.migrate(profileID: directID)
+        let stored = await credentials.value(profileID: directID)
+
+        XCTAssertEqual(result, .migrated)
+        XCTAssertEqual(stored, "direct-secret")
+        XCTAssertNil(try legacy.value(forKey: directKey))
+        XCTAssertEqual(try legacy.value(forKey: "openRouterApiKey") as? String, "ambiguous-global")
+    }
+
+    func testDuplicateUUIDWithoutMatchingGlobalProviderStillAllowsDirectMigration() async throws {
+        let profileID = UUID()
+        let directKey = "llmP.\(profileID.uuidString).apiKey"
+        let legacy = MigratorFakeLegacy(values: [
+            "llmProviderProfilesV1": try legacyProfiles([
+                .init(id: profileID, template: "custom", title: "One", customURL: "https://one.example/v1"),
+                .init(id: profileID, template: "custom", title: "Two", customURL: "https://two.example/v1")
+            ]),
+            "openRouterApiKey": "unrelated-global",
+            directKey: "direct-secret"
+        ])
+        let credentials = MigratorFakeCredentials()
+        let migrator = try LegacyCredentialMigrator(legacy: legacy, credentials: credentials, map: .bundled)
+
+        let result = await migrator.migrate(profileID: profileID)
+        let stored = await credentials.value(profileID: profileID)
+
+        XCTAssertEqual(result, .migrated)
+        XCTAssertEqual(stored, "direct-secret")
+        XCTAssertNil(try legacy.value(forKey: directKey))
+        XCTAssertEqual(try legacy.value(forKey: "openRouterApiKey") as? String, "unrelated-global")
+        XCTAssertEqual(legacy.removalBatches, [[directKey]])
+    }
+
     func testChangedTargetAfterResolutionAbortsCleanupAndPreservesChangedPlaintext() async throws {
         let profileID = UUID()
         let key = "llmP.\(profileID.uuidString).apiKey"
@@ -281,6 +493,71 @@ final class LegacyCredentialMigratorTests: XCTestCase {
         XCTAssertEqual(result, .migrated)
         XCTAssertNil(try legacy.value(forKey: key))
         XCTAssertEqual(try legacy.value(forKey: "unrelated") as? String, "new")
+    }
+
+    func testMigratorMapsPostMutationUncertaintyToCleanupPendingOnEveryPath() async throws {
+        let migrateID = UUID()
+        let migrateKey = "llmP.\(migrateID.uuidString).apiKey"
+        let migrateLegacy = MigratorFakeLegacy(
+            values: [migrateKey: "secret"],
+            cleanupBehaviors: [.postSyncAbsent]
+        )
+        let migrate = try LegacyCredentialMigrator(
+            legacy: migrateLegacy,
+            credentials: MigratorFakeCredentials(),
+            map: .bundled
+        )
+        let migrateResult = await migrate.migrate(profileID: migrateID)
+        XCTAssertEqual(migrateResult, .cleanupPending)
+
+        let keepID = UUID()
+        let keepKey = "llmP.\(keepID.uuidString).apiKey"
+        let keepLegacy = MigratorFakeLegacy(
+            values: [keepKey: "legacy"],
+            cleanupBehaviors: [.postSyncAbsent]
+        )
+        let keep = try LegacyCredentialMigrator(
+            legacy: keepLegacy,
+            credentials: MigratorFakeCredentials(values: [keepID: "secure"]),
+            map: .bundled
+        )
+        let keepResult = await keep.resolve(profileID: keepID, choice: .keepSecure)
+        XCTAssertEqual(keepResult, .cleanupPending)
+
+        let replaceID = UUID()
+        let replaceKey = "llmP.\(replaceID.uuidString).apiKey"
+        let replaceLegacy = MigratorFakeLegacy(
+            values: [replaceKey: "new"],
+            cleanupBehaviors: [.postSyncAbsent]
+        )
+        let replace = try LegacyCredentialMigrator(
+            legacy: replaceLegacy,
+            credentials: MigratorFakeCredentials(values: [replaceID: "old"]),
+            map: .bundled
+        )
+        let replaceResult = await replace.resolve(profileID: replaceID, choice: .replaceSecureWithLegacy)
+        XCTAssertEqual(replaceResult, .cleanupPending)
+    }
+
+    func testRepeatedMigrationRetriesCleanupIfExpectedPlaintextReappears() async throws {
+        let profileID = UUID()
+        let key = "llmP.\(profileID.uuidString).apiKey"
+        let legacy = MigratorFakeLegacy(
+            values: [key: "secret"],
+            cleanupBehaviors: [.postSyncAbsent, .normal]
+        )
+        let credentials = MigratorFakeCredentials()
+        let migrator = try LegacyCredentialMigrator(legacy: legacy, credentials: credentials, map: .bundled)
+
+        let first = await migrator.migrate(profileID: profileID)
+        XCTAssertEqual(first, .cleanupPending)
+        legacy.setValue("secret", forKey: key)
+        let second = await migrator.migrate(profileID: profileID)
+        let stored = await credentials.value(profileID: profileID)
+
+        XCTAssertEqual(second, .alreadySecure)
+        XCTAssertNil(try legacy.value(forKey: key))
+        XCTAssertEqual(stored, "secret")
     }
 
     func testEqualDirectAndGlobalValuesAreOneLogicalSecretAndRemovedAtomically() async throws {
@@ -463,18 +740,21 @@ private final class MigratorFakeLegacy: LegacyDefaultsAccess, @unchecked Sendabl
     private let readFails: Bool
     private let removeFails: Bool
     private let beforeRemoval: ((inout [String: Any]) -> Void)?
+    private var cleanupBehaviors: [MigratorCleanupBehavior]
     private(set) var removalBatches: [[String]] = []
 
     init(
         values: [String: Any],
         readFails: Bool = false,
         removeFails: Bool = false,
-        beforeRemoval: ((inout [String: Any]) -> Void)? = nil
+        beforeRemoval: ((inout [String: Any]) -> Void)? = nil,
+        cleanupBehaviors: [MigratorCleanupBehavior] = [.normal]
     ) {
         self.values = values
         self.readFails = readFails
         self.removeFails = removeFails
         self.beforeRemoval = beforeRemoval
+        self.cleanupBehaviors = cleanupBehaviors
     }
 
     func persistentDomain() throws -> [String: Any]? {
@@ -484,7 +764,9 @@ private final class MigratorFakeLegacy: LegacyDefaultsAccess, @unchecked Sendabl
         }
     }
 
-    func removeAtomically(expectedFingerprints: [String: String]) throws {
+    func removeAtomically(
+        expectedFingerprints: [String: String]
+    ) throws -> LegacyCleanupOutcome {
         try lock.withLock {
             if removeFails { throw MigratorFakeError.unavailable }
             beforeRemoval?(&values)
@@ -493,37 +775,78 @@ private final class MigratorFakeLegacy: LegacyDefaultsAccess, @unchecked Sendabl
                       fingerprint(current) == expected
                 else { throw MigratorFakeError.unavailable }
             }
+            let behavior = cleanupBehaviors.isEmpty ? .normal : cleanupBehaviors.removeFirst()
             removalBatches.append(expectedFingerprints.keys.sorted())
-            for key in expectedFingerprints.keys { values.removeValue(forKey: key) }
+            switch behavior {
+            case .normal:
+                for key in expectedFingerprints.keys { values.removeValue(forKey: key) }
+                return .removed
+            case .postSyncAbsent:
+                for key in expectedFingerprints.keys { values.removeValue(forKey: key) }
+                return .pending
+            case .retainExpected:
+                throw MigratorFakeError.unavailable
+            case .changed:
+                if let first = expectedFingerprints.keys.sorted().first {
+                    values[first] = "changed-after-removal"
+                }
+                return .pending
+            case .mixed:
+                let keys = expectedFingerprints.keys.sorted()
+                if let first = keys.first { values.removeValue(forKey: first) }
+                if let last = keys.last { values[last] = "changed-after-removal" }
+                return .pending
+            }
         }
     }
 
     func value(forKey key: String) throws -> Any? {
         try persistentDomain()?[key]
     }
+
+    func setValue(_ value: Any, forKey key: String) {
+        lock.withLock { values[key] = value }
+    }
+}
+
+private enum MigratorCleanupBehavior {
+    case normal
+    case postSyncAbsent
+    case retainExpected
+    case changed
+    case mixed
 }
 
 private final class MigratorFakePreferences: LegacyPreferencesClient, @unchecked Sendable {
     private let lock = NSLock()
     private var values: [String: Any]
-    private let synchronizeResult: Bool
-    private let retainRemovedValues: Bool
+    private var synchronizeResults: [Bool]
+    private let removalMode: MigratorPreferencesRemovalMode
+    private let nilCopyCallNumbers: Set<Int>
+    private var copyCallCount = 0
     private(set) var copyRequests: [Set<String>] = []
     private(set) var removeRequests: [Set<String>] = []
+    private(set) var setRequestsContainPlaintext = false
 
     init(
         values: [String: Any],
         synchronizeResult: Bool = true,
-        retainRemovedValues: Bool = false
+        retainRemovedValues: Bool = false,
+        synchronizeResults: [Bool]? = nil,
+        removalMode: MigratorPreferencesRemovalMode? = nil,
+        nilCopyCallNumbers: Set<Int> = []
     ) {
         self.values = values
-        self.synchronizeResult = synchronizeResult
-        self.retainRemovedValues = retainRemovedValues
+        self.synchronizeResults = synchronizeResults ?? [synchronizeResult]
+        self.removalMode = removalMode ?? (retainRemovedValues ? .retainExpected : .normal)
+        self.nilCopyCallNumbers = nilCopyCallNumbers
     }
 
     func copyMultiple(keys: Set<String>, applicationID: String) -> [String: Any]? {
         lock.withLock {
+            copyCallCount += 1
             copyRequests.append(keys)
+            if nilCopyCallNumbers.contains(copyCallCount) { return nil }
             return values.filter { keys.contains($0.key) }
         }
     }
@@ -531,15 +854,35 @@ private final class MigratorFakePreferences: LegacyPreferencesClient, @unchecked
     func removeMultiple(keys: Set<String>, applicationID: String) {
         lock.withLock {
             removeRequests.append(keys)
-            if !retainRemovedValues {
+            switch removalMode {
+            case .normal:
                 for key in keys { values.removeValue(forKey: key) }
+            case .retainExpected:
+                break
+            case .changed:
+                if let first = keys.sorted().first { values[first] = "changed-after-removal" }
+            case .mixed:
+                let sorted = keys.sorted()
+                if let first = sorted.first { values.removeValue(forKey: first) }
+                if let last = sorted.last { values[last] = "changed-after-removal" }
             }
         }
     }
 
-    func synchronize(applicationID: String) -> Bool { synchronizeResult }
+    func synchronize(applicationID: String) -> Bool {
+        lock.withLock {
+            synchronizeResults.isEmpty ? true : synchronizeResults.removeFirst()
+        }
+    }
 
     func value(forKey key: String) -> Any? { lock.withLock { values[key] } }
+}
+
+private enum MigratorPreferencesRemovalMode {
+    case normal
+    case retainExpected
+    case changed
+    case mixed
 }
 
 private final class MigratorFakeProcessState: LegacyProcessStateChecking, @unchecked Sendable {

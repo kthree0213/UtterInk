@@ -25,6 +25,7 @@ public enum CredentialMigrationResult: Equatable, Sendable {
     case noLegacyValue
     case migrated
     case alreadySecure
+    case cleanupPending
     case conflict
     case inaccessible
 }

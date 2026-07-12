@@ -154,11 +154,14 @@ public actor UserDefaultsSettingsStore: SettingsStore {
     }
 
     private func migrateProfiles(_ domain: [String: Any]) -> [ProviderProfile] {
-        let decoded: [LegacyProviderSettings] = decodeLegacyArray(domain["llmProviderProfilesV1"])
+        let source = domain["llmProviderProfilesV1"]
+        let identifierOccurrences = legacyUUIDOccurrences(source)
+        let decoded: [LegacyProviderSettings] = decodeLegacyArray(source)
         var seen = Set<UUID>()
         var result: [ProviderProfile] = []
 
-        for legacyProfile in decoded where seen.insert(legacyProfile.id).inserted {
+        for legacyProfile in decoded
+        where identifierOccurrences[legacyProfile.id] == 1 && seen.insert(legacyProfile.id).inserted {
             guard let endpoint = endpoint(for: legacyProfile) else { continue }
             let title = nonblankString(legacyProfile.title) ?? displayName(for: legacyProfile.template)
             let modelKey = "llmP.\(legacyProfile.id.uuidString).modelId"
@@ -269,6 +272,27 @@ public actor UserDefaultsSettingsStore: SettingsStore {
     }
 
     private func decodeLegacyArray<T: Decodable>(_ value: Any?) -> [T] {
+        legacyJSONArray(value).compactMap { element in
+            guard JSONSerialization.isValidJSONObject(element),
+                  let elementData = try? JSONSerialization.data(withJSONObject: element),
+                  let decoded = try? JSONDecoder().decode(T.self, from: elementData)
+            else { return nil }
+            return decoded
+        }
+    }
+
+    private func legacyUUIDOccurrences(_ value: Any?) -> [UUID: Int] {
+        var occurrences: [UUID: Int] = [:]
+        for case let element as [String: Any] in legacyJSONArray(value) {
+            guard let rawID = element["id"] as? String,
+                  let id = UUID(uuidString: rawID)
+            else { continue }
+            occurrences[id, default: 0] += 1
+        }
+        return occurrences
+    }
+
+    private func legacyJSONArray(_ value: Any?) -> [Any] {
         let data: Data
         if let stored = value as? Data {
             data = stored
@@ -280,13 +304,7 @@ public actor UserDefaultsSettingsStore: SettingsStore {
         guard let array = try? JSONSerialization.jsonObject(with: data) as? [Any] else {
             return []
         }
-        return array.compactMap { element in
-            guard JSONSerialization.isValidJSONObject(element),
-                  let elementData = try? JSONSerialization.data(withJSONObject: element),
-                  let decoded = try? JSONDecoder().decode(T.self, from: elementData)
-            else { return nil }
-            return decoded
-        }
+        return array
     }
 
     private func nonblankString(_ value: Any?) -> String? {

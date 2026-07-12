@@ -67,8 +67,10 @@ public actor LegacyCredentialMigrator: CredentialMigrationService {
                 guard try secretsEqual(secure, legacySecret) else {
                     return .conflict
                 }
-                try legacy.removeAtomically(expectedFingerprints: resolution.expectedFingerprints)
-                return .alreadySecure
+                let cleanup = try legacy.removeAtomically(
+                    expectedFingerprints: resolution.expectedFingerprints
+                )
+                return migrationResult(after: cleanup, success: .alreadySecure)
             }
 
             try await credentials.write(legacySecret, profileID: profileID)
@@ -79,8 +81,10 @@ public actor LegacyCredentialMigrator: CredentialMigrationService {
             guard try secretsEqual(readback, legacySecret) else {
                 return .inaccessible
             }
-            try legacy.removeAtomically(expectedFingerprints: resolution.expectedFingerprints)
-            return .migrated
+            let cleanup = try legacy.removeAtomically(
+                expectedFingerprints: resolution.expectedFingerprints
+            )
+            return migrationResult(after: cleanup, success: .migrated)
         } catch {
             return .inaccessible
         }
@@ -111,8 +115,10 @@ public actor LegacyCredentialMigrator: CredentialMigrationService {
                     return .inaccessible
                 }
                 secure.clear()
-                try legacy.removeAtomically(expectedFingerprints: resolution.expectedFingerprints)
-                return .alreadySecure
+                let cleanup = try legacy.removeAtomically(
+                    expectedFingerprints: resolution.expectedFingerprints
+                )
+                return migrationResult(after: cleanup, success: .alreadySecure)
             } catch {
                 return .inaccessible
             }
@@ -132,8 +138,10 @@ public actor LegacyCredentialMigrator: CredentialMigrationService {
                 guard try secretsEqual(readback, legacySecret) else {
                     return .inaccessible
                 }
-                try legacy.removeAtomically(expectedFingerprints: resolution.expectedFingerprints)
-                return .migrated
+                let cleanup = try legacy.removeAtomically(
+                    expectedFingerprints: resolution.expectedFingerprints
+                )
+                return migrationResult(after: cleanup, success: .migrated)
             } catch {
                 return .inaccessible
             }
@@ -157,16 +165,20 @@ public actor LegacyCredentialMigrator: CredentialMigrationService {
         let profilesResult = decodeProfiles(from: domain["llmProviderProfilesV1"])
         for (key, provider) in globalMappings.sorted(by: { $0.key < $1.key }) {
             guard let raw = domain[key] else { continue }
-            guard case .success(let profiles) = profilesResult,
-                  profiles.contains(where: { $0.id == profileID && $0.template == provider })
-            else {
+            guard case .success(let profiles) = profilesResult else {
                 continue
             }
+            let identityRows = profiles.filter { $0.id == profileID }
+            guard identityRows.contains(where: { $0.template == provider }) else { continue }
             guard let string = raw as? String else {
                 structuralConflict = true
                 continue
             }
             guard !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue
+            }
+            guard identityRows.count == 1, identityRows[0].template == provider else {
+                structuralConflict = true
                 continue
             }
             let matching = profiles.filter { $0.template == provider }
@@ -209,6 +221,13 @@ public actor LegacyCredentialMigrator: CredentialMigrationService {
             expectedFingerprints: expectedFingerprints,
             secret: first.secret
         )
+    }
+
+    private func migrationResult(
+        after cleanup: LegacyCleanupOutcome,
+        success: CredentialMigrationResult
+    ) -> CredentialMigrationResult {
+        cleanup == .removed ? success : .cleanupPending
     }
 
     private func collectCandidate(

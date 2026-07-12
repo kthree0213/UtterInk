@@ -4,7 +4,12 @@ import Foundation
 
 package protocol LegacyDefaultsAccess: Sendable {
     func persistentDomain() throws -> [String: Any]?
-    func removeAtomically(expectedFingerprints: [String: String]) throws
+    func removeAtomically(expectedFingerprints: [String: String]) throws -> LegacyCleanupOutcome
+}
+
+package enum LegacyCleanupOutcome: Equatable, Sendable {
+    case removed
+    case pending
 }
 
 package protocol LegacyPreferencesClient: Sendable {
@@ -60,16 +65,24 @@ public struct LegacyDefaultsReader: Sendable, LegacyDefaultsAccess {
         UserDefaults.standard.persistentDomain(forName: suiteName)
     }
 
-    package func removeAtomically(expectedFingerprints: [String: String]) throws {
-        guard !expectedFingerprints.isEmpty else { return }
+    package func removeAtomically(
+        expectedFingerprints: [String: String]
+    ) throws -> LegacyCleanupOutcome {
+        guard !expectedFingerprints.isEmpty else { return .removed }
 
-        try Self.mutationLock.withLock {
+        return try Self.mutationLock.withLock {
             guard !processState.isRunning(bundleIdentifier: suiteName) else {
                 throw LegacyDefaultsAccessError.legacyProcessRunning
             }
 
+            guard preferences.synchronize(applicationID: suiteName) else {
+                throw LegacyDefaultsAccessError.synchronizationFailed
+            }
+
             let keys = Set(expectedFingerprints.keys)
-            let current = preferences.copyMultiple(keys: keys, applicationID: suiteName) ?? [:]
+            guard let current = preferences.copyMultiple(keys: keys, applicationID: suiteName) else {
+                throw LegacyDefaultsAccessError.expectedValueMismatch
+            }
             guard current.count == expectedFingerprints.count else {
                 throw LegacyDefaultsAccessError.expectedValueMismatch
             }
@@ -86,14 +99,23 @@ public struct LegacyDefaultsReader: Sendable, LegacyDefaultsAccess {
             }
 
             preferences.removeMultiple(keys: keys, applicationID: suiteName)
-            guard preferences.synchronize(applicationID: suiteName) else {
-                throw LegacyDefaultsAccessError.synchronizationFailed
+            let synchronized = preferences.synchronize(applicationID: suiteName)
+
+            guard let verified = preferences.copyMultiple(keys: keys, applicationID: suiteName) else {
+                return .pending
+            }
+            if keys.allSatisfy({ verified[$0] == nil }) {
+                return synchronized ? .removed : .pending
             }
 
-            let verified = preferences.copyMultiple(keys: keys, applicationID: suiteName) ?? [:]
-            guard keys.allSatisfy({ verified[$0] == nil }) else {
+            let exactExpectedValueRemains = expectedFingerprints.allSatisfy { key, fingerprint in
+                guard let value = verified[key] as? String else { return false }
+                return legacyUTF8Fingerprint(value) == fingerprint
+            }
+            if exactExpectedValueRemains {
                 throw LegacyDefaultsAccessError.removalVerificationFailed
             }
+            return .pending
         }
     }
 }

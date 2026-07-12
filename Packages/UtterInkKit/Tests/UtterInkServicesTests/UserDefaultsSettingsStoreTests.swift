@@ -158,6 +158,31 @@ final class UserDefaultsSettingsStoreTests: XCTestCase {
         XCTAssertEqual(value.recognition, UserSettings.p0Default.recognition)
     }
 
+    func testDuplicateLegacyProfileUUIDsAreAllDroppedAndSelectionCleared() async throws {
+        let defaults = makeDefaults()
+        let duplicateID = UUID()
+        let uniqueID = UUID()
+        let profiles = try JSONEncoder().encode([
+            SettingsLegacyProfile(id: duplicateID, title: "Custom", template: "custom", customOpenAIBaseURL: "https://custom.example/v1"),
+            SettingsLegacyProfile(id: duplicateID, title: "Router", template: "openrouter", customOpenAIBaseURL: nil),
+            SettingsLegacyProfile(id: uniqueID, title: "Unique", template: "openai", customOpenAIBaseURL: nil)
+        ])
+        let legacy = SettingsFakeLegacy(values: [
+            "llmProviderProfilesV1": profiles,
+            "llmActiveProviderProfileId": duplicateID.uuidString,
+            "llmP.\(duplicateID.uuidString).modelId": "duplicate-model",
+            "llmP.\(uniqueID.uuidString).modelId": "unique-model"
+        ])
+        let store = try UserDefaultsSettingsStore(defaults: defaults, legacy: legacy, legacyMap: .bundled)
+
+        let value = try await store.current()
+
+        XCTAssertEqual(value.providerProfiles.map(\.id), [uniqueID])
+        XCTAssertNil(value.selectedProviderProfileID)
+        XCTAssertEqual(value.outputModes.first, .raw)
+        XCTAssertEqual(value.selectedOutputModeID, OutputMode.rawID)
+    }
+
     func testApiKeysAreNeverCopiedIntoNewDomainOrEncodedBlob() async throws {
         let defaults = makeDefaults()
         let profileID = UUID()
@@ -342,9 +367,12 @@ private final class SettingsFakeLegacy: LegacyDefaultsAccess, @unchecked Sendabl
         lock.withLock { values }
     }
 
-    func removeAtomically(expectedFingerprints: [String: String]) throws {
+    func removeAtomically(
+        expectedFingerprints: [String: String]
+    ) throws -> LegacyCleanupOutcome {
         lock.withLock {
             for key in expectedFingerprints.keys { values.removeValue(forKey: key) }
+            return .removed
         }
     }
 
