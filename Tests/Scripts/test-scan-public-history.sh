@@ -183,6 +183,19 @@ git -C "$unreachable_repo" prune-packed
 expect_failure "$unreachable_repo" transcript-canary
 assert_value_redacted "$transcript_canary"
 
+# Standalone unreachable tree objects are scanned recursively even when no
+# commit or ref names them and the forbidden path is absent from index/worktree.
+dangling_tree_repo="$(new_repo dangling-tree)"
+mkdir -p "$dangling_tree_repo/orphaned/private"
+printf 'benign dangling tree contents\n' > "$dangling_tree_repo/orphaned/private/.env"
+git -C "$dangling_tree_repo" add -f orphaned/private/.env
+dangling_tree_oid="$(git -C "$dangling_tree_repo" write-tree)"
+git -C "$dangling_tree_repo" rm -qf --cached orphaned/private/.env
+rm -f "$dangling_tree_repo/orphaned/private/.env"
+rmdir "$dangling_tree_repo/orphaned/private" "$dangling_tree_repo/orphaned"
+[[ "$(git -C "$dangling_tree_repo" cat-file -t "$dangling_tree_oid")" == tree ]]
+expect_failure "$dangling_tree_repo" private-path
+
 # Personal absolute paths are rejected without printing the path itself.
 personal_repo="$(new_repo personal-path)"
 personal_path="$(printf '/%s/%s/%s' 'Users' 'fixture-user' 'Documents/private.txt')"

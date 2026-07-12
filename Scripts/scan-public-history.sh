@@ -366,6 +366,8 @@ fi
 
 commits_file="$TMP/commits"
 : > "$commits_file"
+trees_file="$TMP/trees"
+: > "$trees_file"
 while IFS=$'\t' read -r oid type size || [[ -n "${oid-}" ]]; do
   [[ -n "${oid-}" ]] || continue
   if [[ ! "$oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ || ! "$size" =~ ^[0-9]+$ ]]; then
@@ -402,7 +404,7 @@ while IFS=$'\t' read -r oid type size || [[ -n "${oid-}" ]]; do
         printf '%s\n' "$oid" >> "$commits_file"
       fi
       ;;
-    tree) ;;
+    tree) printf '%s\n' "$oid" >> "$trees_file" ;;
     *) emit_object unscannable-object "$oid" ;;
   esac
 done < "$objects_file"
@@ -427,12 +429,16 @@ if ! git fsck --full --no-reflogs --unreachable >/dev/null 2> "$TMP/fsck-errors"
   emit_file object-integrity .git/objects
 fi
 
-# Parse every commit tree, including unreachable commits, to enforce historical
-# private-path and reviewed LegacyParity provenance constraints.
-while IFS= read -r commit_oid || [[ -n "$commit_oid" ]]; do
+# Parse every unique tree object recursively, including loose/packed unreachable
+# trees and trees targeted only by tags. Commit-rooted trees are part of the same
+# complete object inventory.
+unique_trees_file="$TMP/unique-trees"
+sort -u "$trees_file" > "$unique_trees_file"
+while IFS= read -r tree_oid || [[ -n "$tree_oid" ]]; do
+  [[ -n "$tree_oid" ]] || continue
   tree_entries="$TMP/tree-entries"
-  if ! git ls-tree -rz "$commit_oid" > "$tree_entries" 2>/dev/null; then
-    emit_object unscannable-object "$commit_oid"
+  if ! git ls-tree -rz "$tree_oid" > "$tree_entries" 2>/dev/null; then
+    emit_object unscannable-object "$tree_oid"
     continue
   fi
   while IFS= read -r -d '' entry; do
@@ -446,23 +452,23 @@ while IFS= read -r commit_oid || [[ -n "$commit_oid" ]]; do
     case "$path" in
       LegacyParity/*)
         if [[ "$manifest_valid" -ne 1 || "$type" != blob || ( "$mode" != 100644 && "$mode" != 100755 ) ]]; then
-          emit_object legacy-provenance "$commit_oid"
+          emit_object legacy-provenance "$tree_oid"
           continue
         fi
         expected_hash="$(awk -F '\t' -v path="$path" '$1 == path { print $2 }' "$MANIFEST_MAP")"
         if [[ -z "$expected_hash" ]]; then
-          emit_object legacy-provenance "$commit_oid"
+          emit_object legacy-provenance "$tree_oid"
           continue
         fi
         if ! actual_hash="$(git cat-file blob "$blob_oid" 2>/dev/null | shasum -a 256 | awk '{print $1}')"; then
           emit_object unscannable-object "$blob_oid"
           continue
         fi
-        [[ "$actual_hash" == "$expected_hash" ]] || emit_object legacy-provenance "$commit_oid"
+        [[ "$actual_hash" == "$expected_hash" ]] || emit_object legacy-provenance "$tree_oid"
         ;;
     esac
   done < "$tree_entries"
-done < "$commits_file"
+done < "$unique_trees_file"
 
 if [[ -s "$FINDINGS" ]]; then
   exit 1
