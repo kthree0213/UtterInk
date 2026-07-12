@@ -5,6 +5,16 @@ public protocol SettingsStore: Sendable {
     func save(_ settings: UserSettings) async throws
 }
 
+public protocol HistoryStore: Sendable {
+    func generation() async -> UInt64
+    func appendRaw(_ record: HistoryRecord, expectedGeneration: UInt64) async throws
+    func updateResult(sessionID: SessionID, finalText: String, source: ResultSource, warning: DiagnosticCode?, delivery: DeliveryOutcome?, outcome: HistoryOutcome, expectedGeneration: UInt64) async throws
+    func delete(sessionID: SessionID) async throws
+    func setEnabled(_ enabled: Bool) async throws -> UInt64
+    func clear() async throws -> UInt64
+    func load() async throws -> [HistoryRecord]
+}
+
 public protocol CredentialStore: Sendable {
     func read(profileID: UUID) async throws -> SessionSecret?
     func write(_ secret: SessionSecret, profileID: UUID) async throws
