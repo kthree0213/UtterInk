@@ -1,0 +1,361 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		349C1B0F770375BDD8F28842 /* UtterInkServices in Frameworks */ = {isa = PBXBuildFile; productRef = 5A4BEEB3487789DBD48B4F72 /* UtterInkServices */; };
+		885436C25493662D4CF7723A /* UtterInkApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 579124F6FE0A0EBD4FD6AFA4 /* UtterInkApp.swift */; };
+		8A0C974FAF8354D2972D9C27 /* UtterInkCore in Frameworks */ = {isa = PBXBuildFile; productRef = 36950818E6668CD9756F0083 /* UtterInkCore */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		579124F6FE0A0EBD4FD6AFA4 /* UtterInkApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UtterInkApp.swift; sourceTree = "<group>"; };
+		57E906AE6303DB7884EF7539 /* UtterInk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = UtterInk.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6B59AC7610A4B669532FBE11 /* UtterInk.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = UtterInk.entitlements; sourceTree = "<group>"; };
+		9DADA0B685CAE1A236A6CF01 /* UtterInkKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = UtterInkKit; path = Packages/UtterInkKit; sourceTree = SOURCE_ROOT; };
+		EE4551F49BDBC9887EDB42F4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		B55F350EB983E9790972DE7C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8A0C974FAF8354D2972D9C27 /* UtterInkCore in Frameworks */,
+				349C1B0F770375BDD8F28842 /* UtterInkServices in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0EB5E7BAFAB8AD124DF0091F /* Supporting */ = {
+			isa = PBXGroup;
+			children = (
+				EE4551F49BDBC9887EDB42F4 /* Info.plist */,
+				6B59AC7610A4B669532FBE11 /* UtterInk.entitlements */,
+			);
+			path = Supporting;
+			sourceTree = "<group>";
+		};
+		88543F2ABB51400CD0C27834 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				57E906AE6303DB7884EF7539 /* UtterInk.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A0F68DD837A42BA3A8C83670 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				579124F6FE0A0EBD4FD6AFA4 /* UtterInkApp.swift */,
+				0EB5E7BAFAB8AD124DF0091F /* Supporting */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		A7E49B003FD85588DC811F1C = {
+			isa = PBXGroup;
+			children = (
+				A0F68DD837A42BA3A8C83670 /* App */,
+				C7EC2B54F7C20F132F876E54 /* Packages */,
+				88543F2ABB51400CD0C27834 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		C7EC2B54F7C20F132F876E54 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				9DADA0B685CAE1A236A6CF01 /* UtterInkKit */,
+			);
+			path = Packages;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		675146D8A9E81872F5343486 /* UtterInk */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C311FA5CF37F9C1EE305737D /* Build configuration list for PBXNativeTarget "UtterInk" */;
+			buildPhases = (
+				6B8E46C1B8DF64F252D7E3EF /* Sources */,
+				B55F350EB983E9790972DE7C /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = UtterInk;
+			packageProductDependencies = (
+				36950818E6668CD9756F0083 /* UtterInkCore */,
+				5A4BEEB3487789DBD48B4F72 /* UtterInkServices */,
+			);
+			productName = UtterInk;
+			productReference = 57E906AE6303DB7884EF7539 /* UtterInk.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		FB1A7C98E2286FAE3AE4C18B /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 2640;
+				TargetAttributes = {
+					675146D8A9E81872F5343486 = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = ECC9595E574F8760963B72C8 /* Build configuration list for PBXProject "UtterInk" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = A7E49B003FD85588DC811F1C;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				AEC103A5F13C91FDCC8CEB44 /* XCLocalSwiftPackageReference "Packages/UtterInkKit" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 88543F2ABB51400CD0C27834 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				675146D8A9E81872F5343486 /* UtterInk */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		6B8E46C1B8DF64F252D7E3EF /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				885436C25493662D4CF7723A /* UtterInkApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		18D1A595B810670919657B69 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		7737FD61AA82E4A23ECB4990 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/Supporting/UtterInk.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Supporting/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.utterink.UtterInk;
+				PRODUCT_NAME = UtterInk;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		8DEBA7774A90B66ECE38C7F0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/Supporting/UtterInk.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Supporting/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.utterink.UtterInk;
+				PRODUCT_NAME = UtterInk;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		C9B705CBF983B7B7A430A2A9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		C311FA5CF37F9C1EE305737D /* Build configuration list for PBXNativeTarget "UtterInk" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7737FD61AA82E4A23ECB4990 /* Debug */,
+				8DEBA7774A90B66ECE38C7F0 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		ECC9595E574F8760963B72C8 /* Build configuration list for PBXProject "UtterInk" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				18D1A595B810670919657B69 /* Debug */,
+				C9B705CBF983B7B7A430A2A9 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		AEC103A5F13C91FDCC8CEB44 /* XCLocalSwiftPackageReference "Packages/UtterInkKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/UtterInkKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		36950818E6668CD9756F0083 /* UtterInkCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = UtterInkCore;
+		};
+		5A4BEEB3487789DBD48B4F72 /* UtterInkServices */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = UtterInkServices;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = FB1A7C98E2286FAE3AE4C18B /* Project object */;
+}
