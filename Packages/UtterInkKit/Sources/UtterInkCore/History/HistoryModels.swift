@@ -1,5 +1,43 @@
 import Foundation
 
+package enum HistoryStoreError: Error, Equatable, Sendable, CustomStringConvertible {
+    case corrupt
+    case dirty
+    case disabled
+    case duplicateSession
+    case generationOverflow
+    case invalidRecord
+    case locked
+    case missingRecord
+    case poisoned
+    case staleGeneration
+    case staleOperation
+    case tombstoned
+    case unsafeStorage
+    case unsupportedSchema
+    case writeFailed
+
+    package var description: String {
+        switch self {
+        case .corrupt: return "history-store-corrupt"
+        case .dirty: return "history-store-dirty"
+        case .disabled: return "history-store-disabled"
+        case .duplicateSession: return "history-store-duplicate-session"
+        case .generationOverflow: return "history-store-generation-overflow"
+        case .invalidRecord: return "history-store-invalid-record"
+        case .locked: return "history-store-locked"
+        case .missingRecord: return "history-store-missing-record"
+        case .poisoned: return "history-store-poisoned"
+        case .staleGeneration: return "history-store-stale-generation"
+        case .staleOperation: return "history-store-stale-operation"
+        case .tombstoned: return "history-store-tombstoned"
+        case .unsafeStorage: return "history-store-unsafe-storage"
+        case .unsupportedSchema: return "history-store-unsupported-schema"
+        case .writeFailed: return "history-store-write-failed"
+        }
+    }
+}
+
 public enum HistoryOutcome: String, Codable, Sendable {
     case rawSaved, finalized, delivered, cancelled, failed
 }

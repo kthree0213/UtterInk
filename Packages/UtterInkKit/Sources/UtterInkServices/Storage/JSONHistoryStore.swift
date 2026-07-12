@@ -1,44 +1,7 @@
+import CryptoKit
 import Darwin
 import Foundation
 import UtterInkCore
-
-enum HistoryStoreError: Error, Equatable, Sendable, CustomStringConvertible {
-    case corrupt
-    case dirty
-    case disabled
-    case duplicateSession
-    case generationOverflow
-    case invalidRecord
-    case locked
-    case missingRecord
-    case poisoned
-    case staleGeneration
-    case staleOperation
-    case tombstoned
-    case unsafeStorage
-    case unsupportedSchema
-    case writeFailed
-
-    var description: String {
-        switch self {
-        case .corrupt: return "history-store-corrupt"
-        case .dirty: return "history-store-dirty"
-        case .disabled: return "history-store-disabled"
-        case .duplicateSession: return "history-store-duplicate-session"
-        case .generationOverflow: return "history-store-generation-overflow"
-        case .invalidRecord: return "history-store-invalid-record"
-        case .locked: return "history-store-locked"
-        case .missingRecord: return "history-store-missing-record"
-        case .poisoned: return "history-store-poisoned"
-        case .staleGeneration: return "history-store-stale-generation"
-        case .staleOperation: return "history-store-stale-operation"
-        case .tombstoned: return "history-store-tombstoned"
-        case .unsafeStorage: return "history-store-unsafe-storage"
-        case .unsupportedSchema: return "history-store-unsupported-schema"
-        case .writeFailed: return "history-store-write-failed"
-        }
-    }
-}
 
 enum HistoryMutationKind: Sendable {
     case append
@@ -55,9 +18,24 @@ enum HistoryWritePhase: String, Sendable {
     case backupSync
     case replace
     case parentSyncAfterReplace
-    case backupRemove
-    case finalParentSync
     case rollbackReplace
+    case journalCreate
+    case journalWrite
+    case journalSync
+    case commitRecordCreate
+    case commitRecordPrepareSync
+    case armedDirectorySync
+    case primaryReplace
+    case primarySync
+    case commitRecordPublish
+    case rollbackRestore
+    case rollbackSync
+    case rollbackCleanupSync
+    case cleanupBackup
+    case cleanupJournal
+    case cleanupArmedDirectorySync
+    case cleanupCommit
+    case cleanupFinalDirectorySync
 }
 
 actor HistoryCommitGate {
@@ -255,6 +233,9 @@ public actor JSONHistoryStore: HistoryStore {
         candidate.records[index].warning = warning
         candidate.records[index].delivery = delivery
         candidate.records[index].outcome = outcome
+        guard HistoryPersistence.isValidRecord(candidate.records[index]) else {
+            throw HistoryStoreError.invalidRecord
+        }
         let capturedRevision = revision
         if let gate = hooks.takeGate(for: .update) {
             await gate.pause()
@@ -396,6 +377,8 @@ public actor JSONHistoryStore: HistoryStore {
         } catch TransactionFailure.unrecoverable {
             poisoned = true
             throw HistoryStoreError.writeFailed
+        } catch TransactionFailure.invalidCandidate {
+            throw HistoryStoreError.invalidRecord
         } catch {
             throw HistoryStoreError.writeFailed
         }
@@ -412,6 +395,8 @@ public actor JSONHistoryStore: HistoryStore {
         } catch TransactionFailure.unrecoverable {
             poisoned = true
             throw HistoryStoreError.writeFailed
+        } catch TransactionFailure.invalidCandidate {
+            throw HistoryStoreError.invalidRecord
         } catch {
             throw HistoryStoreError.writeFailed
         }
@@ -427,6 +412,7 @@ private struct HistoryBootstrapState {
 private enum TransactionFailure: Error {
     case ordinary
     case unrecoverable
+    case invalidCandidate
 }
 
 private enum HistoryPersistence {
@@ -434,6 +420,8 @@ private enum HistoryPersistence {
     private static let lockName = "history-v1.lock"
     private static let tempName = "history-v1.tmp"
     private static let backupName = "history-v1.backup"
+    private static let journalName = "history-v1.txn"
+    private static let commitName = "history-v1.commit"
     private static let maximumEnvelopeBytes = 16 * 1_024 * 1_024
 
     private struct SchemaProbe: Decodable {
@@ -447,6 +435,14 @@ private enum HistoryPersistence {
         let records: [HistoryRecord]
     }
 
+    private struct SchemaOneEnvelope: Decodable {
+        let schemaVersion: Int
+        let generation: UInt64
+        let enabled: Bool
+        let records: [HistoryRecord]
+        let tombstones: [SessionID]
+    }
+
     private struct PersistedEnvelope: Encodable {
         let schemaVersion: Int
         let generation: UInt64
@@ -458,6 +454,27 @@ private enum HistoryPersistence {
     private struct DecodedEnvelope {
         let envelope: HistoryEnvelope
         let requiresMigration: Bool
+    }
+
+    private struct TransactionManifest: Codable, Equatable {
+        let formatVersion: Int
+        let transactionID: String
+        let priorExists: Bool
+        let priorSHA256: String
+        let candidateSHA256: String
+    }
+
+    private struct CommitPayload: Codable {
+        let formatVersion: Int
+        let transactionID: String
+        let candidateSHA256: String
+    }
+
+    private struct CommitRecord: Codable {
+        let formatVersion: Int
+        let transactionID: String
+        let candidateSHA256: String
+        let checksumSHA256: String
     }
 
     static func bootstrap(
@@ -506,17 +523,22 @@ private enum HistoryPersistence {
             directoryDescriptor: directoryDescriptor,
             hooks: hooks
         )
-
-        try recoverInterruptedTransaction(
+        try verifyArtifactIfPresent(
+            journalName,
             directoryDescriptor: directoryDescriptor,
             hooks: hooks
         )
-        if try artifactExists(tempName, directoryDescriptor: directoryDescriptor) {
-            guard unlinkat(directoryDescriptor, tempName, 0) == 0 else {
-                throw HistoryStoreError.writeFailed
-            }
-            try synchronizeDirectory(directoryDescriptor, as: HistoryStoreError.writeFailed)
-        }
+        try verifyArtifactIfPresent(
+            commitName,
+            directoryDescriptor: directoryDescriptor,
+            hooks: hooks
+        )
+
+        try resolveTransactionArtifacts(
+            directoryDescriptor: directoryDescriptor,
+            hooks: hooks,
+            startup: true
+        )
 
         let loaded: HistoryEnvelope
         if try artifactExists(primaryName, directoryDescriptor: directoryDescriptor) {
@@ -563,13 +585,34 @@ private enum HistoryPersistence {
     }
 
     static func isValidRawRecord(_ record: HistoryRecord) -> Bool {
-        !record.rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && record.startedAt.timeIntervalSinceReferenceDate.isFinite
-            && record.finalText == nil
-            && record.source == .raw
-            && record.warning == nil
-            && record.delivery == nil
-            && record.outcome == .rawSaved
+        isValidRecord(record) && record.outcome == .rawSaved
+    }
+
+    static func isValidRecord(_ record: HistoryRecord) -> Bool {
+        guard !record.rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              record.startedAt.timeIntervalSinceReferenceDate.isFinite else {
+            return false
+        }
+        let nonemptyFinal = record.finalText.map {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        if record.source != .raw, nonemptyFinal != true {
+            return false
+        }
+
+        switch record.outcome {
+        case .rawSaved:
+            return record.source == .raw
+                && record.finalText == nil
+                && record.warning == nil
+                && record.delivery == nil
+        case .finalized:
+            return nonemptyFinal == true && record.delivery == nil
+        case .delivered:
+            return nonemptyFinal == true && record.delivery != nil
+        case .cancelled, .failed:
+            return record.delivery == nil && nonemptyFinal != false
+        }
     }
 
     static func sorted(_ records: [HistoryRecord]) -> [HistoryRecord] {
@@ -603,6 +646,9 @@ private enum HistoryPersistence {
             bytes = try encoder.encode(persisted)
         } catch {
             throw TransactionFailure.ordinary
+        }
+        guard bytes.count <= maximumEnvelopeBytes else {
+            throw TransactionFailure.invalidCandidate
         }
         try commitBytes(
             bytes,
@@ -792,6 +838,18 @@ private enum HistoryPersistence {
     }
 
     private static func decodeEnvelope(_ bytes: Data) throws -> DecodedEnvelope {
+        let root: [String: Any]
+        do {
+            guard let object = try JSONSerialization.jsonObject(with: bytes) as? [String: Any] else {
+                throw HistoryStoreError.corrupt
+            }
+            root = object
+        } catch let error as HistoryStoreError {
+            throw error
+        } catch {
+            throw HistoryStoreError.corrupt
+        }
+
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .millisecondsSince1970
         let probe: SchemaProbe
@@ -806,7 +864,16 @@ private enum HistoryPersistence {
         switch probe.schemaVersion {
         case 0:
             do {
+                guard Set(root.keys) == ["schemaVersion", "generation", "enabled", "records"] else {
+                    throw HistoryStoreError.corrupt
+                }
                 let legacy = try decoder.decode(SchemaZeroEnvelope.self, from: bytes)
+                guard try hasCanonicalElements(
+                    root["records"],
+                    matching: legacy.records
+                ) else {
+                    throw HistoryStoreError.corrupt
+                }
                 envelope = HistoryEnvelope(
                     schemaVersion: 1,
                     generation: legacy.generation,
@@ -815,20 +882,40 @@ private enum HistoryPersistence {
                     tombstones: []
                 )
                 migration = true
+            } catch let error as HistoryStoreError {
+                throw error
             } catch {
                 throw HistoryStoreError.corrupt
             }
         case 1:
             do {
-                let current = try decoder.decode(HistoryEnvelope.self, from: bytes)
+                guard Set(root.keys) == [
+                    "schemaVersion", "generation", "enabled", "records", "tombstones"
+                ] else {
+                    throw HistoryStoreError.corrupt
+                }
+                let current = try decoder.decode(SchemaOneEnvelope.self, from: bytes)
+                guard try hasCanonicalElements(
+                    root["records"],
+                    matching: current.records
+                ),
+                try hasCanonicalElements(
+                    root["tombstones"],
+                    matching: current.tombstones
+                ),
+                Set(current.tombstones).count == current.tombstones.count else {
+                    throw HistoryStoreError.corrupt
+                }
                 envelope = HistoryEnvelope(
                     schemaVersion: 1,
                     generation: current.generation,
                     enabled: current.enabled,
                     records: sorted(current.records),
-                    tombstones: current.tombstones
+                    tombstones: Set(current.tombstones)
                 )
                 migration = false
+            } catch let error as HistoryStoreError {
+                throw error
             } catch {
                 throw HistoryStoreError.corrupt
             }
@@ -839,6 +926,38 @@ private enum HistoryPersistence {
         return DecodedEnvelope(envelope: envelope, requiresMigration: migration)
     }
 
+    private static func hasCanonicalElements<Value: Encodable>(
+        _ rawValue: Any?,
+        matching values: [Value]
+    ) throws -> Bool {
+        guard let rawElements = rawValue as? [Any], rawElements.count == values.count else {
+            return false
+        }
+        return try zip(rawElements, values).allSatisfy { raw, value in
+            try isCanonicalJSON(raw, matching: value)
+        }
+    }
+
+    private static func isCanonicalJSON<Value: Encodable>(
+        _ rawValue: Any,
+        matching value: Value
+    ) throws -> Bool {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        encoder.outputFormatting = [.sortedKeys]
+        let encoded = try encoder.encode(value)
+        let canonicalObject = try JSONSerialization.jsonObject(with: encoded)
+        let rawBytes = try JSONSerialization.data(
+            withJSONObject: rawValue,
+            options: [.sortedKeys, .fragmentsAllowed]
+        )
+        let canonicalBytes = try JSONSerialization.data(
+            withJSONObject: canonicalObject,
+            options: [.sortedKeys, .fragmentsAllowed]
+        )
+        return rawBytes == canonicalBytes
+    }
+
     private static func validateDecodedEnvelope(_ envelope: HistoryEnvelope) throws {
         guard envelope.schemaVersion == 1,
               envelope.records.count <= 20 else {
@@ -846,8 +965,7 @@ private enum HistoryPersistence {
         }
         var identifiers: Set<SessionID> = []
         for record in envelope.records {
-            guard !record.rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  record.startedAt.timeIntervalSinceReferenceDate.isFinite,
+            guard isValidRecord(record),
                   identifiers.insert(record.sessionID).inserted,
                   !envelope.tombstones.contains(record.sessionID) else {
                 throw HistoryStoreError.corrupt
@@ -855,39 +973,301 @@ private enum HistoryPersistence {
         }
     }
 
-    private static func recoverInterruptedTransaction(
+    private static func resolveTransactionArtifacts(
+        directoryDescriptor: Int32,
+        hooks: HistoryStoreHooks,
+        startup: Bool
+    ) throws {
+        do {
+            try resolveTransactionArtifactsUnchecked(
+                directoryDescriptor: directoryDescriptor,
+                hooks: hooks
+            )
+        } catch let error as HistoryStoreError {
+            throw error
+        } catch {
+            if startup {
+                throw HistoryStoreError.writeFailed
+            }
+            throw TransactionFailure.unrecoverable
+        }
+    }
+
+    private static func resolveTransactionArtifactsUnchecked(
         directoryDescriptor: Int32,
         hooks: HistoryStoreHooks
     ) throws {
-        guard try artifactExists(backupName, directoryDescriptor: directoryDescriptor) else {
+        let hasJournal = try artifactExists(
+            journalName,
+            directoryDescriptor: directoryDescriptor
+        )
+        let hasCommit = try artifactExists(
+            commitName,
+            directoryDescriptor: directoryDescriptor
+        )
+        let hasBackup = try artifactExists(
+            backupName,
+            directoryDescriptor: directoryDescriptor
+        )
+        let hasTemp = try artifactExists(
+            tempName,
+            directoryDescriptor: directoryDescriptor
+        )
+
+        guard hasJournal || hasCommit else {
+            guard !hasBackup, !hasTemp else {
+                throw HistoryStoreError.corrupt
+            }
             return
         }
-        let backup = try readArtifact(
+
+        let commitBytes = hasCommit
+            ? try readArtifact(
+                commitName,
+                directoryDescriptor: directoryDescriptor,
+                hooks: hooks
+            )
+            : Data()
+        let validCommit = commitBytes.isEmpty ? nil : try? decodeCommitRecord(commitBytes)
+
+        if let commit = validCommit {
+            if hasJournal {
+                let manifest = try decodeManifest(
+                    readArtifact(
+                        journalName,
+                        directoryDescriptor: directoryDescriptor,
+                        hooks: hooks
+                    )
+                )
+                guard manifest.transactionID == commit.transactionID,
+                      manifest.candidateSHA256 == commit.candidateSHA256 else {
+                    throw HistoryStoreError.corrupt
+                }
+            }
+            guard try artifactExists(
+                primaryName,
+                directoryDescriptor: directoryDescriptor
+            ) else {
+                throw HistoryStoreError.corrupt
+            }
+            let primary = try readArtifact(
+                primaryName,
+                directoryDescriptor: directoryDescriptor,
+                hooks: hooks
+            )
+            guard sha256(primary) == commit.candidateSHA256 else {
+                throw HistoryStoreError.corrupt
+            }
+            if hasTemp {
+                let temp = try readArtifact(
+                    tempName,
+                    directoryDescriptor: directoryDescriptor,
+                    hooks: hooks
+                )
+                guard sha256(temp) == commit.candidateSHA256 else {
+                    throw HistoryStoreError.corrupt
+                }
+            }
+            try cleanupCommittedArtifacts(
+                directoryDescriptor: directoryDescriptor,
+                hooks: hooks
+            )
+            return
+        }
+
+        guard hasJournal else {
+            throw HistoryStoreError.corrupt
+        }
+        let manifest = try decodeManifest(
+            readArtifact(
+                journalName,
+                directoryDescriptor: directoryDescriptor,
+                hooks: hooks
+            )
+        )
+        try resolveArmedTransaction(
+            manifest,
+            directoryDescriptor: directoryDescriptor,
+            hooks: hooks
+        )
+    }
+
+    private static func resolveArmedTransaction(
+        _ manifest: TransactionManifest,
+        directoryDescriptor: Int32,
+        hooks: HistoryStoreHooks
+    ) throws {
+        let primary = try readArtifactIfPresent(
+            primaryName,
+            directoryDescriptor: directoryDescriptor,
+            hooks: hooks
+        )
+        let backup = try readArtifactIfPresent(
             backupName,
             directoryDescriptor: directoryDescriptor,
             hooks: hooks
         )
-        if backup.isEmpty {
-            if try artifactExists(primaryName, directoryDescriptor: directoryDescriptor),
-               unlinkat(directoryDescriptor, primaryName, 0) != 0 {
-                throw HistoryStoreError.writeFailed
-            }
-            guard unlinkat(directoryDescriptor, backupName, 0) == 0 else {
-                throw HistoryStoreError.writeFailed
-            }
-            try synchronizeDirectory(directoryDescriptor, as: HistoryStoreError.writeFailed)
-            return
-        }
+        let temp = try readArtifactIfPresent(
+            tempName,
+            directoryDescriptor: directoryDescriptor,
+            hooks: hooks
+        )
 
-        do {
-            _ = try decodeEnvelope(backup)
-        } catch {
+        if let backup {
+            guard sha256(backup) == manifest.priorSHA256,
+                  manifest.priorExists || backup.isEmpty else {
+                throw HistoryStoreError.corrupt
+            }
+            if manifest.priorExists {
+                do {
+                    _ = try decodeEnvelope(backup)
+                } catch {
+                    throw HistoryStoreError.corrupt
+                }
+            }
+        }
+        if let temp, sha256(temp) != manifest.candidateSHA256 {
             throw HistoryStoreError.corrupt
         }
-        guard renameat(directoryDescriptor, backupName, directoryDescriptor, primaryName) == 0 else {
-            throw HistoryStoreError.writeFailed
+
+        let priorAlreadyRestored: Bool
+        if manifest.priorExists {
+            priorAlreadyRestored = primary.map(sha256) == manifest.priorSHA256
+        } else {
+            priorAlreadyRestored = primary == nil
         }
-        try synchronizeDirectory(directoryDescriptor, as: HistoryStoreError.writeFailed)
+
+        if !priorAlreadyRestored {
+            guard let backup,
+                  sha256(backup) == manifest.priorSHA256,
+                  manifest.priorExists || backup.isEmpty else {
+                throw HistoryStoreError.corrupt
+            }
+            let primaryIsCandidate = primary.map(sha256) == manifest.candidateSHA256
+            let tempIsCandidate = temp.map(sha256) == manifest.candidateSHA256
+            guard primaryIsCandidate || tempIsCandidate else {
+                throw HistoryStoreError.corrupt
+            }
+            guard let candidate = tempIsCandidate ? temp : primary else {
+                throw HistoryStoreError.corrupt
+            }
+            try restoreArmedPrior(
+                manifest,
+                backup: backup,
+                candidate: candidate,
+                candidateTempExists: tempIsCandidate,
+                directoryDescriptor: directoryDescriptor,
+                hooks: hooks
+            )
+        }
+
+        try cleanupRolledBackArtifacts(
+            directoryDescriptor: directoryDescriptor,
+            hooks: hooks
+        )
+    }
+
+    private static func restoreArmedPrior(
+        _ manifest: TransactionManifest,
+        backup: Data,
+        candidate: Data,
+        candidateTempExists: Bool,
+        directoryDescriptor: Int32,
+        hooks: HistoryStoreHooks
+    ) throws {
+        try inject(.rollbackReplace, hooks: hooks)
+
+        if !candidateTempExists {
+            let descriptor = openat(
+                directoryDescriptor,
+                tempName,
+                O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                mode_t(0o600)
+            )
+            guard descriptor >= 0 else { throw TransactionFailure.unrecoverable }
+            do {
+                defer { close(descriptor) }
+                try verifyFileDescriptor(descriptor, hooks: hooks)
+                try writeAll(candidate, descriptor: descriptor)
+                try synchronizeFile(descriptor)
+                try synchronizeFile(directoryDescriptor)
+            } catch {
+                throw TransactionFailure.unrecoverable
+            }
+        }
+
+        try inject(.rollbackRestore, hooks: hooks)
+
+        if manifest.priorExists {
+            let descriptor = openat(
+                directoryDescriptor,
+                primaryName,
+                O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC,
+                mode_t(0o600)
+            )
+            guard descriptor >= 0 else { throw TransactionFailure.unrecoverable }
+            do {
+                defer { close(descriptor) }
+                try verifyFileDescriptor(descriptor, hooks: hooks)
+                try writeAll(backup, descriptor: descriptor)
+                try synchronizeFile(descriptor)
+            } catch {
+                throw TransactionFailure.unrecoverable
+            }
+        } else if try artifactExists(
+            primaryName,
+            directoryDescriptor: directoryDescriptor
+        ) {
+            guard unlinkat(directoryDescriptor, primaryName, 0) == 0 else {
+                throw TransactionFailure.unrecoverable
+            }
+        }
+
+        try inject(.rollbackSync, hooks: hooks)
+        do {
+            try synchronizeFile(directoryDescriptor)
+        } catch {
+            throw TransactionFailure.unrecoverable
+        }
+    }
+
+    private static func cleanupRolledBackArtifacts(
+        directoryDescriptor: Int32,
+        hooks: HistoryStoreHooks
+    ) throws {
+        do {
+            try removeArtifactIfPresent(tempName, directoryDescriptor: directoryDescriptor)
+            try removeArtifactIfPresent(backupName, directoryDescriptor: directoryDescriptor)
+            try removeArtifactIfPresent(commitName, directoryDescriptor: directoryDescriptor)
+            try inject(.rollbackCleanupSync, hooks: hooks)
+            try synchronizeFile(directoryDescriptor)
+
+            try removeArtifactIfPresent(journalName, directoryDescriptor: directoryDescriptor)
+            try synchronizeFile(directoryDescriptor)
+        } catch {
+            throw TransactionFailure.unrecoverable
+        }
+    }
+
+    private static func cleanupCommittedArtifacts(
+        directoryDescriptor: Int32,
+        hooks: HistoryStoreHooks
+    ) throws {
+        try inject(.cleanupBackup, hooks: hooks)
+        try removeArtifactIfPresent(backupName, directoryDescriptor: directoryDescriptor)
+        try removeArtifactIfPresent(tempName, directoryDescriptor: directoryDescriptor)
+
+        try inject(.cleanupJournal, hooks: hooks)
+        try removeArtifactIfPresent(journalName, directoryDescriptor: directoryDescriptor)
+
+        try inject(.cleanupArmedDirectorySync, hooks: hooks)
+        try synchronizeFile(directoryDescriptor)
+
+        try inject(.cleanupCommit, hooks: hooks)
+        try removeArtifactIfPresent(commitName, directoryDescriptor: directoryDescriptor)
+
+        try inject(.cleanupFinalDirectorySync, hooks: hooks)
+        try synchronizeFile(directoryDescriptor)
     }
 
     private static func commitBytes(
@@ -895,6 +1275,16 @@ private enum HistoryPersistence {
         directoryDescriptor: Int32,
         hooks: HistoryStoreHooks
     ) throws {
+        do {
+            try resolveTransactionArtifacts(
+                directoryDescriptor: directoryDescriptor,
+                hooks: hooks,
+                startup: false
+            )
+        } catch {
+            throw TransactionFailure.unrecoverable
+        }
+
         let priorExists: Bool
         let priorBytes: Data
         do {
@@ -913,16 +1303,47 @@ private enum HistoryPersistence {
             throw TransactionFailure.ordinary
         }
 
+        let priorHash = sha256(priorBytes)
+        let candidateHash = sha256(candidate)
+        let transactionID = transactionIdentifier(
+            priorExists: priorExists,
+            priorSHA256: priorHash,
+            candidateSHA256: candidateHash
+        )
+        let manifest = TransactionManifest(
+            formatVersion: 1,
+            transactionID: transactionID,
+            priorExists: priorExists,
+            priorSHA256: priorHash,
+            candidateSHA256: candidateHash
+        )
+        let manifestBytes: Data
+        let validCommitBytes: Data
+        do {
+            manifestBytes = try encodeSorted(manifest)
+            validCommitBytes = try encodeCommitRecord(
+                transactionID: transactionID,
+                candidateSHA256: candidateHash
+            )
+        } catch {
+            throw TransactionFailure.ordinary
+        }
+
         var tempDescriptor: Int32 = -1
         var backupDescriptor: Int32 = -1
+        var journalDescriptor: Int32 = -1
+        var commitDescriptor: Int32 = -1
         var tempCreated = false
         var backupCreated = false
-        var replaced = false
-        var backupRemoved = false
+        var journalCreated = false
+        var commitCreated = false
+        var armedArtifactsPrepared = false
 
         defer {
             if tempDescriptor >= 0 { close(tempDescriptor) }
             if backupDescriptor >= 0 { close(backupDescriptor) }
+            if journalDescriptor >= 0 { close(journalDescriptor) }
+            if commitDescriptor >= 0 { close(commitDescriptor) }
         }
 
         do {
@@ -972,9 +1393,51 @@ private enum HistoryPersistence {
             try synchronizeFile(backupDescriptor)
             guard close(backupDescriptor) == 0 else { throw TransactionFailure.ordinary }
             backupDescriptor = -1
+
+            try inject(.journalCreate, hooks: hooks)
+            journalDescriptor = openat(
+                directoryDescriptor,
+                journalName,
+                O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                mode_t(0o600)
+            )
+            guard journalDescriptor >= 0 else { throw TransactionFailure.ordinary }
+            journalCreated = true
+            do {
+                try verifyFileDescriptor(journalDescriptor, hooks: hooks)
+            } catch {
+                throw TransactionFailure.ordinary
+            }
+            try inject(.journalWrite, hooks: hooks)
+            try writeAll(manifestBytes, descriptor: journalDescriptor)
+            try inject(.journalSync, hooks: hooks)
+            try synchronizeFile(journalDescriptor)
+            guard close(journalDescriptor) == 0 else { throw TransactionFailure.ordinary }
+            journalDescriptor = -1
+
+            try inject(.commitRecordCreate, hooks: hooks)
+            commitDescriptor = openat(
+                directoryDescriptor,
+                commitName,
+                O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                mode_t(0o600)
+            )
+            guard commitDescriptor >= 0 else { throw TransactionFailure.ordinary }
+            commitCreated = true
+            do {
+                try verifyFileDescriptor(commitDescriptor, hooks: hooks)
+            } catch {
+                throw TransactionFailure.ordinary
+            }
+            try inject(.commitRecordPrepareSync, hooks: hooks)
+            try synchronizeFile(commitDescriptor)
+            armedArtifactsPrepared = true
+
+            try inject(.armedDirectorySync, hooks: hooks)
             try synchronizeFile(directoryDescriptor)
 
             try inject(.replace, hooks: hooks)
+            try inject(.primaryReplace, hooks: hooks)
             guard renameat(
                 directoryDescriptor,
                 tempName,
@@ -983,53 +1446,23 @@ private enum HistoryPersistence {
             ) == 0 else {
                 throw TransactionFailure.ordinary
             }
-            replaced = true
             tempCreated = false
 
             try inject(.parentSyncAfterReplace, hooks: hooks)
+            try inject(.primarySync, hooks: hooks)
             try synchronizeFile(directoryDescriptor)
 
-            try inject(.backupRemove, hooks: hooks)
-            guard unlinkat(directoryDescriptor, backupName, 0) == 0 else {
-                throw TransactionFailure.ordinary
-            }
-            backupRemoved = true
-            backupCreated = false
+            try inject(.commitRecordPublish, hooks: hooks)
+            try publishCommitRecord(
+                validCommitBytes,
+                descriptor: commitDescriptor
+            )
 
-            try inject(.finalParentSync, hooks: hooks)
-            try synchronizeFile(directoryDescriptor)
+            try? cleanupCommittedArtifacts(
+                directoryDescriptor: directoryDescriptor,
+                hooks: hooks
+            )
         } catch {
-            if replaced {
-                if backupRemoved {
-                    do {
-                        try establishRecoveryBackup(
-                            priorBytes: priorBytes,
-                            directoryDescriptor: directoryDescriptor,
-                            hooks: hooks
-                        )
-                        backupCreated = true
-                        backupRemoved = false
-                    } catch {
-                        throw TransactionFailure.unrecoverable
-                    }
-                }
-                if hooks.consumeFailure(.rollbackReplace) {
-                    throw TransactionFailure.unrecoverable
-                }
-                do {
-                    try rollbackReplacement(
-                        priorExists: priorExists,
-                        directoryDescriptor: directoryDescriptor
-                    )
-                    backupCreated = false
-                    throw TransactionFailure.ordinary
-                } catch TransactionFailure.ordinary {
-                    throw TransactionFailure.ordinary
-                } catch {
-                    throw TransactionFailure.unrecoverable
-                }
-            }
-
             if tempDescriptor >= 0 {
                 close(tempDescriptor)
                 tempDescriptor = -1
@@ -1038,76 +1471,203 @@ private enum HistoryPersistence {
                 close(backupDescriptor)
                 backupDescriptor = -1
             }
-            var cleanupSucceeded = true
-            if tempCreated,
-               unlinkat(directoryDescriptor, tempName, 0) != 0,
-               errno != ENOENT {
-                cleanupSucceeded = false
+            if journalDescriptor >= 0 {
+                close(journalDescriptor)
+                journalDescriptor = -1
             }
-            if backupCreated,
-               unlinkat(directoryDescriptor, backupName, 0) != 0,
-               errno != ENOENT {
-                cleanupSucceeded = false
+            if commitDescriptor >= 0 {
+                close(commitDescriptor)
+                commitDescriptor = -1
             }
-            if fsync(directoryDescriptor) != 0 {
-                cleanupSucceeded = false
+
+            if armedArtifactsPrepared {
+                do {
+                    try resolveTransactionArtifacts(
+                        directoryDescriptor: directoryDescriptor,
+                        hooks: hooks,
+                        startup: false
+                    )
+                    throw TransactionFailure.ordinary
+                } catch TransactionFailure.ordinary {
+                    throw TransactionFailure.ordinary
+                } catch {
+                    throw TransactionFailure.unrecoverable
+                }
             }
-            throw cleanupSucceeded
-                ? TransactionFailure.ordinary
-                : TransactionFailure.unrecoverable
+
+            do {
+                if tempCreated {
+                    try removeArtifactIfPresent(
+                        tempName,
+                        directoryDescriptor: directoryDescriptor
+                    )
+                }
+                if backupCreated {
+                    try removeArtifactIfPresent(
+                        backupName,
+                        directoryDescriptor: directoryDescriptor
+                    )
+                }
+                if journalCreated {
+                    try removeArtifactIfPresent(
+                        journalName,
+                        directoryDescriptor: directoryDescriptor
+                    )
+                }
+                if commitCreated {
+                    try removeArtifactIfPresent(
+                        commitName,
+                        directoryDescriptor: directoryDescriptor
+                    )
+                }
+                try synchronizeFile(directoryDescriptor)
+            } catch {
+                throw TransactionFailure.unrecoverable
+            }
+            throw TransactionFailure.ordinary
         }
     }
 
-    private static func establishRecoveryBackup(
-        priorBytes: Data,
+    private static func readArtifactIfPresent(
+        _ name: String,
         directoryDescriptor: Int32,
         hooks: HistoryStoreHooks
+    ) throws -> Data? {
+        guard try artifactExists(name, directoryDescriptor: directoryDescriptor) else {
+            return nil
+        }
+        return try readArtifact(
+            name,
+            directoryDescriptor: directoryDescriptor,
+            hooks: hooks
+        )
+    }
+
+    private static func removeArtifactIfPresent(
+        _ name: String,
+        directoryDescriptor: Int32
     ) throws {
-        if try artifactExists(backupName, directoryDescriptor: directoryDescriptor) {
+        if unlinkat(directoryDescriptor, name, 0) == 0 || errno == ENOENT {
             return
         }
-        let descriptor = openat(
-            directoryDescriptor,
-            backupName,
-            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
-            mode_t(0o600)
-        )
-        guard descriptor >= 0 else { throw TransactionFailure.unrecoverable }
-        defer { close(descriptor) }
-        do {
-            try verifyFileDescriptor(descriptor, hooks: hooks)
-            try writeAll(priorBytes, descriptor: descriptor)
-            try synchronizeFile(descriptor)
-            try synchronizeFile(directoryDescriptor)
-        } catch {
-            throw TransactionFailure.unrecoverable
+        throw TransactionFailure.ordinary
+    }
+
+    private static func encodeSorted<Value: Encodable>(_ value: Value) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(value)
+    }
+
+    private static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func transactionIdentifier(
+        priorExists: Bool,
+        priorSHA256: String,
+        candidateSHA256: String
+    ) -> String {
+        sha256(Data(
+            "history-v1|1|\(priorExists ? 1 : 0)|\(priorSHA256)|\(candidateSHA256)".utf8
+        ))
+    }
+
+    private static func isSHA256(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { byte in
+            (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
         }
     }
 
-    private static func rollbackReplacement(
-        priorExists: Bool,
-        directoryDescriptor: Int32
-    ) throws {
-        if priorExists {
-            guard renameat(
-                directoryDescriptor,
-                backupName,
-                directoryDescriptor,
-                primaryName
-            ) == 0 else {
-                throw TransactionFailure.unrecoverable
+    private static func decodeManifest(_ bytes: Data) throws -> TransactionManifest {
+        do {
+            guard let root = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+                  Set(root.keys) == [
+                    "formatVersion", "transactionID", "priorExists",
+                    "priorSHA256", "candidateSHA256"
+                  ] else {
+                throw HistoryStoreError.corrupt
             }
-        } else {
-            if try artifactExists(primaryName, directoryDescriptor: directoryDescriptor),
-               unlinkat(directoryDescriptor, primaryName, 0) != 0 {
-                throw TransactionFailure.unrecoverable
+            let manifest = try JSONDecoder().decode(TransactionManifest.self, from: bytes)
+            guard manifest.formatVersion == 1,
+                  isSHA256(manifest.transactionID),
+                  isSHA256(manifest.priorSHA256),
+                  isSHA256(manifest.candidateSHA256),
+                  manifest.transactionID == transactionIdentifier(
+                    priorExists: manifest.priorExists,
+                    priorSHA256: manifest.priorSHA256,
+                    candidateSHA256: manifest.candidateSHA256
+                  ),
+                  manifest.priorExists || manifest.priorSHA256 == sha256(Data()) else {
+                throw HistoryStoreError.corrupt
             }
-            if try artifactExists(backupName, directoryDescriptor: directoryDescriptor),
-               unlinkat(directoryDescriptor, backupName, 0) != 0 {
-                throw TransactionFailure.unrecoverable
-            }
+            return manifest
+        } catch let error as HistoryStoreError {
+            throw error
+        } catch {
+            throw HistoryStoreError.corrupt
         }
-        try synchronizeFile(directoryDescriptor)
+    }
+
+    private static func encodeCommitRecord(
+        transactionID: String,
+        candidateSHA256: String
+    ) throws -> Data {
+        let payload = CommitPayload(
+            formatVersion: 1,
+            transactionID: transactionID,
+            candidateSHA256: candidateSHA256
+        )
+        let checksum = sha256(try encodeSorted(payload))
+        return try encodeSorted(CommitRecord(
+            formatVersion: 1,
+            transactionID: transactionID,
+            candidateSHA256: candidateSHA256,
+            checksumSHA256: checksum
+        ))
+    }
+
+    private static func decodeCommitRecord(_ bytes: Data) throws -> CommitRecord {
+        do {
+            guard let root = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+                  Set(root.keys) == [
+                    "formatVersion", "transactionID", "candidateSHA256", "checksumSHA256"
+                  ] else {
+                throw HistoryStoreError.corrupt
+            }
+            let record = try JSONDecoder().decode(CommitRecord.self, from: bytes)
+            guard record.formatVersion == 1,
+                  isSHA256(record.transactionID),
+                  isSHA256(record.candidateSHA256),
+                  isSHA256(record.checksumSHA256) else {
+                throw HistoryStoreError.corrupt
+            }
+            let expected = try encodeCommitRecord(
+                transactionID: record.transactionID,
+                candidateSHA256: record.candidateSHA256
+            )
+            let expectedRecord = try JSONDecoder().decode(CommitRecord.self, from: expected)
+            guard record.checksumSHA256 == expectedRecord.checksumSHA256 else {
+                throw HistoryStoreError.corrupt
+            }
+            return record
+        } catch let error as HistoryStoreError {
+            throw error
+        } catch {
+            throw HistoryStoreError.corrupt
+        }
+    }
+
+    private static func publishCommitRecord(
+        _ bytes: Data,
+        descriptor: Int32
+    ) throws {
+        guard lseek(descriptor, 0, SEEK_SET) == 0,
+              ftruncate(descriptor, 0) == 0 else {
+            throw TransactionFailure.ordinary
+        }
+        try writeAll(bytes, descriptor: descriptor)
+        try synchronizeFile(descriptor)
     }
 
     private static func inject(
@@ -1148,14 +1708,4 @@ private enum HistoryPersistence {
         }
     }
 
-    private static func synchronizeDirectory(
-        _ descriptor: Int32,
-        as error: HistoryStoreError
-    ) throws {
-        do {
-            try synchronizeFile(descriptor)
-        } catch {
-            throw error
-        }
-    }
 }
