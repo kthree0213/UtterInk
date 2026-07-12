@@ -105,14 +105,14 @@ public enum DictationReducer {
                     result,
                     finalText: result.rawText,
                     source: .rawFallback,
-                    warning: .polishInvalidResponse
+                    warning: .replace(.polishInvalidResponse)
                 )
             } else {
                 selected = rebuild(
                     result,
                     finalText: trimmed,
                     source: .polished,
-                    warning: nil
+                    warning: .replace(nil)
                 )
             }
             return advanceSelectedResult(selected, token: token, context: context)
@@ -123,7 +123,7 @@ public enum DictationReducer {
                 result,
                 finalText: result.rawText,
                 source: .rawFallback,
-                warning: sanitizedPolishCode(code)
+                warning: .replace(sanitizedPolishCode(code))
             )
             return advanceSelectedResult(fallback, token: token, context: context)
 
@@ -145,7 +145,7 @@ public enum DictationReducer {
 
         case let (.delivering, .deliveryFinished(outcome)):
             guard let result = state.result else { return noOp(state) }
-            let delivered = rebuild(result, delivery: outcome)
+            let delivered = rebuild(result, delivery: .replace(outcome))
             if context.historyEnabled {
                 return Reduction(
                     state: activeState(
@@ -181,7 +181,7 @@ public enum DictationReducer {
 
         case (.delivering, .deliveryPersistenceFailed(.historyWrite)):
             guard let result = state.result else { return noOp(state) }
-            let warned = rebuild(result, warning: .historyWrite)
+            let warned = rebuild(result, warning: .replace(.historyWrite))
             return Reduction(
                 state: activeState(
                     stage: .completed,
@@ -320,7 +320,7 @@ public enum DictationReducer {
             if isAfterRawStage(state.stage),
                let result = state.result,
                !trim(result.rawText).isEmpty {
-                let cancelled = rebuild(result, warning: .cancelled)
+                let cancelled = rebuild(result, warning: .replace(.cancelled))
                 return Reduction(
                     state: activeState(
                         stage: .completed,
@@ -395,8 +395,8 @@ public enum DictationReducer {
         _ result: DictationResult,
         finalText: String? = nil,
         source: ResultSource? = nil,
-        warning: DiagnosticCode?? = nil,
-        delivery: DeliveryOutcome?? = nil,
+        warning: OptionalFieldReplacement<DiagnosticCode> = .preserve,
+        delivery: OptionalFieldReplacement<DeliveryOutcome> = .preserve,
         persistence: ResultPersistence? = nil
     ) -> DictationResult {
         DictationResult(
@@ -405,10 +405,24 @@ public enum DictationReducer {
             rawText: result.rawText,
             finalText: finalText ?? result.finalText,
             source: source ?? result.source,
-            warning: warning ?? result.warning,
-            delivery: delivery ?? result.delivery,
+            warning: warning.applying(to: result.warning),
+            delivery: delivery.applying(to: result.delivery),
             persistence: persistence ?? result.persistence
         )
+    }
+
+    private enum OptionalFieldReplacement<Value> {
+        case preserve
+        case replace(Value?)
+
+        func applying(to current: Value?) -> Value? {
+            switch self {
+            case .preserve:
+                return current
+            case let .replace(value):
+                return value
+            }
+        }
     }
 
     private static func sanitizedPolishCode(_ code: DiagnosticCode) -> DiagnosticCode {

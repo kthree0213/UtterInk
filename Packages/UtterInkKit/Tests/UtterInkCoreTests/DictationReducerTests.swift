@@ -374,12 +374,12 @@ final class DictationReducerTests: XCTestCase {
         let invalidFallbackPersistent = replacing(
             persistentRaw,
             source: .rawFallback,
-            warning: .polishInvalidResponse
+            warning: .replace(.polishInvalidResponse)
         )
         let invalidFallbackVolatile = replacing(
             volatileRaw,
             source: .rawFallback,
-            warning: .polishInvalidResponse
+            warning: .replace(.polishInvalidResponse)
         )
 
         assertTransitions([
@@ -434,6 +434,35 @@ final class DictationReducerTests: XCTestCase {
         ])
     }
 
+    func testNonEmptyPolishSuccessClearsPriorWarningAndPreservesResultIdentity() {
+        let prior = makeResult(
+            rawText: "  original raw  ",
+            finalText: "original raw",
+            source: .rawFallback,
+            warning: .polishTransport,
+            persistence: .persistent
+        )
+        let expected = DictationResult(
+            sessionID: prior.sessionID,
+            startedAt: prior.startedAt,
+            rawText: prior.rawText,
+            finalText: "cleaned polish",
+            source: .polished,
+            warning: nil,
+            delivery: prior.delivery,
+            persistence: prior.persistence
+        )
+
+        assertTransition(
+            name: "successful retry clears stale polish warning",
+            state: activeState(stage: .polishing, result: prior),
+            intent: .polishSucceeded("  cleaned polish\n"),
+            context: .polishing,
+            expectedState: activeState(stage: .polishing, result: expected),
+            expectedEffects: [expectedEffect(.persistFinal, payload: .text("cleaned polish"))]
+        )
+    }
+
     func testPolishFailureWarningsAreRestrictedToPolishCodes() {
         let raw = makeResult(
             rawText: "raw",
@@ -452,7 +481,7 @@ final class DictationReducerTests: XCTestCase {
             let expectedResult = replacing(
                 raw,
                 source: .rawFallback,
-                warning: item.expected
+                warning: .replace(item.expected)
             )
             assertTransition(
                 name: "sanitize \(item.input.rawValue)",
@@ -468,7 +497,7 @@ final class DictationReducerTests: XCTestCase {
         let volatileFallback = replacing(
             volatileRaw,
             source: .rawFallback,
-            warning: .polishTransport
+            warning: .replace(.polishTransport)
         )
         assertTransition(
             name: "no-history polish failure delivers fallback",
@@ -497,7 +526,7 @@ final class DictationReducerTests: XCTestCase {
         let volatile = replacing(persistent, persistence: .volatile)
 
         for outcome in outcomes {
-            let persistentDelivered = replacing(persistent, delivery: outcome)
+            let persistentDelivered = replacing(persistent, delivery: .replace(outcome))
             assertTransition(
                 name: "history delivery outcome \(outcome)",
                 state: activeState(stage: .delivering, result: persistent),
@@ -507,7 +536,7 @@ final class DictationReducerTests: XCTestCase {
                 expectedEffects: [expectedEffect(.persistDelivery)]
             )
 
-            let volatileDelivered = replacing(volatile, delivery: outcome)
+            let volatileDelivered = replacing(volatile, delivery: .replace(outcome))
             assertTransition(
                 name: "no-history delivery outcome \(outcome)",
                 state: activeState(stage: .delivering, result: volatile),
@@ -518,7 +547,7 @@ final class DictationReducerTests: XCTestCase {
             )
         }
 
-        let delivered = replacing(persistent, delivery: .copiedByPreference)
+        let delivered = replacing(persistent, delivery: .replace(.copiedByPreference))
         assertTransitions([
             TransitionFixture(
                 name: "delivery persisted",
@@ -535,7 +564,7 @@ final class DictationReducerTests: XCTestCase {
                 context: .polishing,
                 expectedState: activeState(
                     stage: .completed,
-                    result: replacing(delivered, warning: .historyWrite)
+                    result: replacing(delivered, warning: .replace(.historyWrite))
                 ),
                 expectedEffects: [expectedEffect(.cleanup)]
             )
@@ -589,7 +618,7 @@ final class DictationReducerTests: XCTestCase {
             (.delivering, fallback)
         ]
         for (stage, result) in afterRaw {
-            let cancelled = replacing(result, warning: .cancelled)
+            let cancelled = replacing(result, warning: .replace(.cancelled))
             assertTransition(
                 name: "cancel after raw from \(stage.rawValue)",
                 state: activeState(stage: stage, result: result),
@@ -800,8 +829,8 @@ final class DictationReducerTests: XCTestCase {
         _ result: DictationResult,
         finalText: String? = nil,
         source: ResultSource? = nil,
-        warning: DiagnosticCode?? = nil,
-        delivery: DeliveryOutcome?? = nil,
+        warning: OptionalFieldReplacement<DiagnosticCode> = .preserve,
+        delivery: OptionalFieldReplacement<DeliveryOutcome> = .preserve,
         persistence: ResultPersistence? = nil
     ) -> DictationResult {
         DictationResult(
@@ -810,10 +839,24 @@ final class DictationReducerTests: XCTestCase {
             rawText: result.rawText,
             finalText: finalText ?? result.finalText,
             source: source ?? result.source,
-            warning: warning ?? result.warning,
-            delivery: delivery ?? result.delivery,
+            warning: warning.applying(to: result.warning),
+            delivery: delivery.applying(to: result.delivery),
             persistence: persistence ?? result.persistence
         )
+    }
+
+    private enum OptionalFieldReplacement<Value> {
+        case preserve
+        case replace(Value?)
+
+        func applying(to current: Value?) -> Value? {
+            switch self {
+            case .preserve:
+                return current
+            case let .replace(value):
+                return value
+            }
+        }
     }
 
     private func activeState(
