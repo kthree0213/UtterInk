@@ -40,12 +40,7 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
     }
 
     var isPlaceholder: Bool {
-        switch self {
-        case .general, .permissions, .recognitionLanguage, .speechModel, .shortcuts:
-            return false
-        case .outputModes, .provider, .diagnostics:
-            return true
-        }
+        false
     }
 }
 
@@ -76,6 +71,9 @@ final class SettingsRootModel {
     let recognitionLanguage: RecognitionLanguageSettingsViewModel
     let speechModel: SpeechModelSettingsViewModel
     let shortcuts: ShortcutSettingsViewModel
+    let outputModes: OutputModeSettingsViewModel
+    let provider: ProviderSettingsViewModel
+    let diagnostics: DiagnosticsSettingsViewModel
 
     init(
         dependencies: AppFeatureDependencies,
@@ -106,6 +104,27 @@ final class SettingsRootModel {
             settings: dependencies.settings,
             writer: writer,
             hotkey: dependencies.hotkeyConfiguration
+        )
+        outputModes = OutputModeSettingsViewModel(
+            settings: dependencies.settings,
+            writer: writer
+        )
+        provider = ProviderSettingsViewModel(
+            settings: dependencies.settings,
+            writer: writer,
+            credentials: dependencies.credentials,
+            migration: dependencies.credentialMigration,
+            validation: dependencies.providerValidation
+        )
+        diagnostics = DiagnosticsSettingsViewModel(
+            exporter: dependencies.diagnosticsExport,
+            snapshotProvider: {
+                try await DiagnosticsSettingsViewModel.liveSnapshot(
+                    settings: dependencies.settings,
+                    controller: controller,
+                    permissions: dependencies.permissions
+                )
+            }
         )
     }
 }
@@ -144,13 +163,12 @@ struct SettingsRootView: View {
             SpeechModelSettingsView(model: model.speechModel)
         case .shortcuts:
             ShortcutSettingsView(model: model.shortcuts)
-        case .outputModes, .provider, .diagnostics:
-            ContentUnavailableView(
-                "\(route.title) is not installed yet",
-                systemImage: route.systemImage,
-                description: Text("This section will become available in a later product task.")
-            )
-            .navigationTitle(route.title)
+        case .outputModes:
+            OutputModeSettingsView(model: model.outputModes)
+        case .provider:
+            ProviderSettingsView(model: model.provider)
+        case .diagnostics:
+            DiagnosticsSettingsView(model: model.diagnostics)
         }
     }
 }

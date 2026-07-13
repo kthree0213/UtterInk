@@ -20,9 +20,9 @@ final class SettingsPresentationTests: XCTestCase {
             ]
         )
         XCTAssertFalse(SettingsRoute.speechModel.isPlaceholder)
-        XCTAssertTrue(SettingsRoute.outputModes.isPlaceholder)
-        XCTAssertTrue(SettingsRoute.provider.isPlaceholder)
-        XCTAssertTrue(SettingsRoute.diagnostics.isPlaceholder)
+        XCTAssertFalse(SettingsRoute.outputModes.isPlaceholder)
+        XCTAssertFalse(SettingsRoute.provider.isPlaceholder)
+        XCTAssertFalse(SettingsRoute.diagnostics.isPlaceholder)
     }
 
     func testGeneralOrdinaryValuesPublishOnlyAfterSuccessfulRoundTrip() async throws {
