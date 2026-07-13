@@ -56,7 +56,7 @@ final class TransientAudioStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: nestedCAF.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: link.path))
         let preservedLink = try XCTUnwrap(try directChild(with: linkIdentity, in: root))
-        XCTAssertFalse(isCanonicalCAFNameForTest(preservedLink.lastPathComponent))
+        assertStrictPreservedName(preservedLink.lastPathComponent)
         XCTAssertEqual(try symlinkDestination(preservedLink), outside.path)
         XCTAssertEqual(try Data(contentsOf: outside), Data([5]))
 
@@ -270,7 +270,7 @@ final class TransientAudioStoreTests: XCTestCase {
         let preserved = try XCTUnwrap(
             try directChild(with: substituteIdentity, in: root)
         )
-        XCTAssertFalse(isCanonicalCAFNameForTest(preserved.lastPathComponent))
+        assertStrictPreservedName(preserved.lastPathComponent)
         XCTAssertEqual(try posixMode(preserved), 0o600)
         XCTAssertEqual(try Data(contentsOf: preserved), Data())
         try await store!.delete(issued)
@@ -312,7 +312,7 @@ final class TransientAudioStoreTests: XCTestCase {
         let preserved = try XCTUnwrap(
             try directChild(with: substituteIdentity, in: root)
         )
-        XCTAssertFalse(isCanonicalCAFNameForTest(preserved.lastPathComponent))
+        assertStrictPreservedName(preserved.lastPathComponent)
         XCTAssertEqual(try symlinkDestination(preserved), outside.path)
         XCTAssertEqual(try Data(contentsOf: outside), marker)
         try await store!.delete(issued)
@@ -323,6 +323,138 @@ final class TransientAudioStoreTests: XCTestCase {
         try await reopened.sweep()
         XCTAssertEqual(try fileIdentity(preserved), substituteIdentity)
         XCTAssertEqual(try Data(contentsOf: outside), marker)
+    }
+
+    func testPendingOwnedStatFailureRecoversByHandleSweepAndRelaunch() async throws {
+        enum Recovery {
+            case handle
+            case sweep
+            case relaunch
+        }
+
+        for recovery in [Recovery.handle, .sweep, .relaunch] {
+            let parent = temporaryAudioDirectory()
+            defer { try? FileManager.default.removeItem(at: parent) }
+            let root = parent.appendingPathComponent("TransientAudio", isDirectory: true)
+            let hooks = TransientAudioStoreTestHooks()
+            let failure = OneShotErrno(EIO)
+            hooks.forcedQuarantinedEntryStatErrno = { _ in failure.take() }
+            var store: TransientAudioStore? = try TransientAudioStore(
+                root: root,
+                clock: AudioTestClock(),
+                testHooks: hooks
+            )
+            let issued = try await store!.makeCaptureFile()
+            let issuedIdentity = try fileIdentity(issued)
+
+            await XCTAssertThrowsAudioStoreError { try await store!.delete(issued) }
+
+            XCTAssertFalse(FileManager.default.fileExists(atPath: issued.path))
+            let pending = try XCTUnwrap(try directChild(with: issuedIdentity, in: root))
+            assertStrictPendingName(
+                pending.lastPathComponent,
+                namespace: "owned",
+                originalCanonicalName: issued.lastPathComponent,
+                identity: issuedIdentity
+            )
+            hooks.forcedQuarantinedEntryStatErrno = nil
+
+            switch recovery {
+            case .handle:
+                try await store!.delete(issued)
+            case .sweep:
+                try await store!.sweep()
+                try await store!.delete(issued)
+            case .relaunch:
+                store = nil
+                store = try TransientAudioStore(root: root, clock: AudioTestClock())
+            }
+
+            XCTAssertNil(try directChild(with: issuedIdentity, in: root))
+            withExtendedLifetime(store) {}
+        }
+    }
+
+    func testPendingOwnedUnlinkFailureRecoversByHandleSweepAndRelaunch() async throws {
+        enum Recovery {
+            case handle
+            case sweep
+            case relaunch
+        }
+
+        for recovery in [Recovery.handle, .sweep, .relaunch] {
+            let parent = temporaryAudioDirectory()
+            defer { try? FileManager.default.removeItem(at: parent) }
+            let root = parent.appendingPathComponent("TransientAudio", isDirectory: true)
+            let hooks = TransientAudioStoreTestHooks()
+            let failure = OneShotErrno(EIO)
+            hooks.forcedQuarantinedEntryUnlinkErrno = { _ in failure.take() }
+            var store: TransientAudioStore? = try TransientAudioStore(
+                root: root,
+                clock: AudioTestClock(),
+                testHooks: hooks
+            )
+            let issued = try await store!.makeCaptureFile()
+            let issuedIdentity = try fileIdentity(issued)
+
+            await XCTAssertThrowsAudioStoreError { try await store!.delete(issued) }
+
+            XCTAssertFalse(FileManager.default.fileExists(atPath: issued.path))
+            let pending = try XCTUnwrap(try directChild(with: issuedIdentity, in: root))
+            assertStrictPendingName(
+                pending.lastPathComponent,
+                namespace: "owned",
+                originalCanonicalName: issued.lastPathComponent,
+                identity: issuedIdentity
+            )
+            hooks.forcedQuarantinedEntryUnlinkErrno = nil
+
+            switch recovery {
+            case .handle:
+                try await store!.delete(issued)
+            case .sweep:
+                try await store!.sweep()
+                try await store!.delete(issued)
+            case .relaunch:
+                store = nil
+                store = try TransientAudioStore(root: root, clock: AudioTestClock())
+            }
+
+            XCTAssertNil(try directChild(with: issuedIdentity, in: root))
+            withExtendedLifetime(store) {}
+        }
+    }
+
+    func testUnrelatedPendingOwnedDoesNotRetireAnIntactCanonicalHandle() async throws {
+        let parent = temporaryAudioDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = parent.appendingPathComponent("TransientAudio", isDirectory: true)
+        let store = try TransientAudioStore(root: root, clock: AudioTestClock())
+        let issued = try await store.makeCaptureFile()
+        let issuedIdentity = try fileIdentity(issued)
+
+        let substitute = root.appendingPathComponent("pending-substitute.tmp")
+        try Data([0x5A]).write(to: substitute)
+        XCTAssertEqual(chmod(substitute.path, 0o600), 0)
+        let substituteIdentity = try fileIdentity(substitute)
+        XCTAssertNotEqual(substituteIdentity, issuedIdentity)
+        let pending = root.appendingPathComponent(
+            strictPendingNameForTest(
+                namespace: "owned",
+                originalCanonicalName: issued.lastPathComponent,
+                identity: substituteIdentity
+            )
+        )
+        XCTAssertEqual(rename(substitute.path, pending.path), 0)
+
+        try await store.sweep()
+
+        XCTAssertEqual(try fileIdentity(issued), issuedIdentity)
+        let preserved = try XCTUnwrap(try directChild(with: substituteIdentity, in: root))
+        assertStrictPreservedName(preserved.lastPathComponent)
+        try await store.delete(issued)
+        XCTAssertNil(try directChild(with: issuedIdentity, in: root))
+        XCTAssertEqual(try fileIdentity(preserved), substituteIdentity)
     }
 
     func testManualSweepQuarantinesCompromisedIssuedEntryBeforeRelaunch() async throws {
@@ -345,7 +477,7 @@ final class TransientAudioStoreTests: XCTestCase {
         await XCTAssertThrowsAudioStoreError { try await store!.sweep() }
         XCTAssertFalse(FileManager.default.fileExists(atPath: issued.path))
         let preserved = try XCTUnwrap(try directChild(with: substituteIdentity, in: root))
-        XCTAssertFalse(isCanonicalCAFNameForTest(preserved.lastPathComponent))
+        assertStrictPreservedName(preserved.lastPathComponent)
         try await store!.delete(issued)
 
         store = nil
@@ -383,7 +515,7 @@ final class TransientAudioStoreTests: XCTestCase {
         XCTAssertEqual(try backupExclusionXattr(moved), try expectedBackupExclusionXattr())
     }
 
-    func testEnumerationFailsClosedOnReadAndUnexpectedStatErrorsButAcceptsCleanEOFAndENOENT() async throws {
+    func testEnumerationFailsClosedOnReadAndPendingStatErrorThenRecovers() async throws {
         let parent = temporaryAudioDirectory()
         defer { try? FileManager.default.removeItem(at: parent) }
         let root = parent.appendingPathComponent("TransientAudio", isDirectory: true)
@@ -407,31 +539,61 @@ final class TransientAudioStoreTests: XCTestCase {
         }
         await XCTAssertThrowsAudioStoreError { try await store.sweep() }
         XCTAssertFalse(FileManager.default.fileExists(atPath: statFailure.path))
-        let preservedStatFailure = try XCTUnwrap(
+        let pendingStatFailure = try XCTUnwrap(
             try directChild(with: statFailureIdentity, in: root)
         )
-        XCTAssertFalse(isCanonicalCAFNameForTest(preservedStatFailure.lastPathComponent))
-        XCTAssertEqual(try Data(contentsOf: preservedStatFailure), Data([0x42]))
-
-        let disappeared = root.appendingPathComponent("88888888-8888-4888-8888-888888888888.caf")
-        try Data([0x24]).write(to: disappeared)
-        let disappearedIdentity = try fileIdentity(disappeared)
-        hooks.forcedQuarantinedEntryStatErrno = { name in
-            name == disappeared.lastPathComponent ? ENOENT : nil
-        }
-        try await store.sweep()
-        XCTAssertFalse(FileManager.default.fileExists(atPath: disappeared.path))
-        let preservedDisappeared = try XCTUnwrap(
-            try directChild(with: disappearedIdentity, in: root)
+        assertStrictPendingName(
+            pendingStatFailure.lastPathComponent,
+            namespace: "unowned",
+            originalCanonicalName: statFailure.lastPathComponent,
+            identity: statFailureIdentity
         )
-        XCTAssertFalse(isCanonicalCAFNameForTest(preservedDisappeared.lastPathComponent))
-        XCTAssertEqual(try Data(contentsOf: preservedDisappeared), Data([0x24]))
+        XCTAssertEqual(try Data(contentsOf: pendingStatFailure), Data([0x42]))
 
         hooks.forcedQuarantinedEntryStatErrno = nil
+        try await store.sweep()
+        XCTAssertNil(try directChild(with: statFailureIdentity, in: root))
+
         let stale = root.appendingPathComponent("77777777-7777-4777-8777-777777777777.caf")
         try Data([0x66]).write(to: stale)
         try await store.sweep()
         XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
+    }
+
+    func testMalformedPendingLikeNamesRemainUntouchedAcrossSweepAndRelaunch() async throws {
+        let parent = temporaryAudioDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = parent.appendingPathComponent("TransientAudio", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        let nonce = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        let malformedNames = [
+            ".utterink-pending-owned-v1.not-a-uuid.1.2.\(nonce)",
+            ".utterink-pending-owned-v1.aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.01.2.\(nonce)",
+            ".utterink-pending-unowned-v1.aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.1.2.NOT-A-UUID",
+            ".utterink-pending-owned-v2.aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.1.2.\(nonce)"
+        ]
+        let entries = try malformedNames.enumerated().map { index, name -> (URL, TestFileIdentity, Data) in
+            let url = root.appendingPathComponent(name)
+            let marker = Data([UInt8(index + 1)])
+            try marker.write(to: url)
+            return (url, try fileIdentity(url), marker)
+        }
+
+        var store: TransientAudioStore? = try TransientAudioStore(root: root, clock: AudioTestClock())
+        try await store!.sweep()
+        for (url, identity, marker) in entries {
+            XCTAssertEqual(try fileIdentity(url), identity)
+            XCTAssertEqual(try Data(contentsOf: url), marker)
+        }
+
+        store = nil
+        store = try TransientAudioStore(root: root, clock: AudioTestClock())
+        try await store!.sweep()
+        for (url, identity, marker) in entries {
+            XCTAssertEqual(try fileIdentity(url), identity)
+            XCTAssertEqual(try Data(contentsOf: url), marker)
+        }
+        withExtendedLifetime(store) {}
     }
 
     func testRootRenameAndReplacementFailClosedButDescriptorRelativeCleanupStillWorks() async throws {
@@ -563,6 +725,22 @@ private final class PinnedRootReplacementHook: @unchecked Sendable {
     }
 }
 
+private final class OneShotErrno: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Int32?
+
+    init(_ value: Int32) {
+        self.value = value
+    }
+
+    func take() -> Int32? {
+        lock.withLock {
+            defer { value = nil }
+            return value
+        }
+    }
+}
+
 private func fileIdentity(_ url: URL) throws -> TestFileIdentity {
     var info = stat()
     guard lstat(url.path, &info) == 0 else {
@@ -591,6 +769,60 @@ private func isCanonicalCAFNameForTest(_ name: String) -> Bool {
     let basename = String(name.dropLast(4))
     guard let uuid = UUID(uuidString: basename) else { return false }
     return basename == uuid.uuidString.lowercased()
+}
+
+private func assertStrictPendingName(
+    _ name: String,
+    namespace: String,
+    originalCanonicalName: String,
+    identity: TestFileIdentity,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    let pieces = name.split(separator: ".", omittingEmptySubsequences: false)
+    guard pieces.count == 6 else {
+        XCTFail("Pending name has unexpected shape", file: file, line: line)
+        return
+    }
+    XCTAssertEqual(String(pieces[0]), "", file: file, line: line)
+    XCTAssertEqual(String(pieces[1]), "utterink-pending-\(namespace)-v1", file: file, line: line)
+    XCTAssertEqual(
+        String(pieces[2]),
+        String(originalCanonicalName.dropLast(4)),
+        file: file,
+        line: line
+    )
+    XCTAssertEqual(UInt64(pieces[3], radix: 16), UInt64(identity.device), file: file, line: line)
+    XCTAssertEqual(UInt64(pieces[4], radix: 16), UInt64(identity.inode), file: file, line: line)
+    XCTAssertNotNil(UUID(uuidString: String(pieces[5])), file: file, line: line)
+    XCTAssertEqual(
+        String(pieces[5]),
+        UUID(uuidString: String(pieces[5]))?.uuidString.lowercased(),
+        file: file,
+        line: line
+    )
+}
+
+private func strictPendingNameForTest(
+    namespace: String,
+    originalCanonicalName: String,
+    identity: TestFileIdentity
+) -> String {
+    ".utterink-pending-\(namespace)-v1.\(originalCanonicalName.dropLast(4))."
+        + String(UInt64(identity.device), radix: 16) + "."
+        + String(UInt64(identity.inode), radix: 16) + "."
+        + "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+}
+
+private func assertStrictPreservedName(
+    _ name: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    let prefix = ".utterink-preserved-v1."
+    XCTAssertTrue(name.hasPrefix(prefix), file: file, line: line)
+    let nonce = String(name.dropFirst(prefix.count))
+    XCTAssertEqual(UUID(uuidString: nonce)?.uuidString.lowercased(), nonce, file: file, line: line)
 }
 
 private func driftRoot(_ root: URL) throws {

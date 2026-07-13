@@ -35,6 +35,7 @@ final class TransientAudioStoreTestHooks: @unchecked Sendable {
     private var storedBeforeQuarantine: (@Sendable (String) -> Void)?
     private var storedForcedDirectoryReadErrno: Int32?
     private var storedForcedQuarantinedEntryStatErrno: (@Sendable (String) -> Int32?)?
+    private var storedForcedQuarantinedEntryUnlinkErrno: (@Sendable (String) -> Int32?)?
 
     var afterRootPinned: (@Sendable () -> Void)? {
         get { lock.withLock { storedAfterRootPinned } }
@@ -57,6 +58,11 @@ final class TransientAudioStoreTestHooks: @unchecked Sendable {
         get { lock.withLock { storedForcedQuarantinedEntryStatErrno } }
         set { lock.withLock { storedForcedQuarantinedEntryStatErrno = newValue } }
     }
+
+    var forcedQuarantinedEntryUnlinkErrno: (@Sendable (String) -> Int32?)? {
+        get { lock.withLock { storedForcedQuarantinedEntryUnlinkErrno } }
+        set { lock.withLock { storedForcedQuarantinedEntryUnlinkErrno = newValue } }
+    }
 }
 
 /// Owns short-lived CAF files used by a single application process.
@@ -72,6 +78,38 @@ public actor TransientAudioStore: TransientAudioFileStore {
             device = info.st_dev
             inode = info.st_ino
         }
+
+        init?(device: UInt64, inode: UInt64) {
+            guard let device = dev_t(exactly: device),
+                  let inode = ino_t(exactly: inode) else {
+                return nil
+            }
+            self.device = device
+            self.inode = inode
+        }
+    }
+
+    private enum PendingNamespace: String, Sendable {
+        case owned
+        case unowned
+    }
+
+    private struct PendingEntry: Sendable {
+        let name: String
+        let namespace: PendingNamespace
+        let originalName: String
+        let expected: FileIdentity
+    }
+
+    private enum PendingOutcome: Sendable {
+        case removed
+        case missing
+        case preserved
+    }
+
+    private struct SweepResult: Sendable {
+        var cleaned: Set<String> = []
+        var compromised: Set<String> = []
     }
 
     private struct PreparedRoot {
@@ -94,7 +132,7 @@ public actor TransientAudioStore: TransientAudioFileStore {
     private let clock: any AppClock
     private let testHooks: TransientAudioStoreTestHooks?
     private var issued: [String: FileIdentity] = [:]
-    private var quarantinedIssued: [String: String] = [:]
+    private var pendingIssued: [String: String] = [:]
     private var cleanedNames: Set<String> = []
 
     public init(root: URL, clock: any AppClock) throws {
@@ -143,16 +181,16 @@ public actor TransientAudioStore: TransientAudioFileStore {
     public func sweep() async throws {
         try validateMutation(requirePublicRoot: true)
         do {
-            let compromised = try Self.sweepFiles(
+            let result = try Self.sweepFiles(
                 rootDescriptor: rootDescriptor,
                 protected: issued,
                 testHooks: testHooks
             )
-            for name in compromised {
+            for name in result.cleaned.union(result.compromised) {
                 retireIssued(name)
             }
             try validateMutation(requirePublicRoot: true)
-            if !compromised.isEmpty {
+            if !result.compromised.isEmpty {
                 throw TransientAudioStoreError.invalidCapture
             }
         } catch let error as TransientAudioStoreError {
@@ -276,44 +314,46 @@ public actor TransientAudioStore: TransientAudioFileStore {
         guard let expected = issued[name] else {
             throw TransientAudioStoreError.invalidCapture
         }
-        let quarantine: String
-        if let existing = quarantinedIssued[name] {
-            quarantine = existing
+        let pending: PendingEntry
+        if let existing = pendingIssued[name] {
+            guard let parsed = Self.parsePendingName(existing),
+                  parsed.namespace == .owned,
+                  parsed.originalName == name,
+                  parsed.expected == expected else {
+                throw TransientAudioStoreError.fileOperation
+            }
+            pending = parsed
         } else {
-            guard let moved = try Self.moveToQuarantine(
+            guard let moved = try Self.moveToPending(
                 name: name,
+                namespace: .owned,
+                originalName: name,
+                expected: expected,
                 rootDescriptor: rootDescriptor,
                 testHooks: testHooks
             ) else {
                 retireIssued(name)
                 return
             }
-            quarantinedIssued[name] = moved
-            quarantine = moved
+            pendingIssued[name] = moved.name
+            pending = moved
         }
 
-        var info = stat()
-        if fstatat(rootDescriptor, quarantine, &info, AT_SYMLINK_NOFOLLOW) != 0 {
-            guard errno == ENOENT else {
-                throw TransientAudioStoreError.fileOperation
-            }
+        switch try Self.processPending(
+            pending,
+            rootDescriptor: rootDescriptor,
+            testHooks: testHooks
+        ) {
+        case .removed, .missing:
             retireIssued(name)
-            return
-        }
-        guard Self.isRegular(info),
-              info.st_nlink == 1,
-              FileIdentity(info) == expected else {
+        case .preserved:
             retireIssued(name)
             throw TransientAudioStoreError.invalidCapture
         }
-        guard unlinkat(rootDescriptor, quarantine, 0) == 0 || errno == ENOENT else {
-            throw TransientAudioStoreError.fileOperation
-        }
-        retireIssued(name)
     }
 
     private func retireIssued(_ name: String) {
-        quarantinedIssued.removeValue(forKey: name)
+        pendingIssued.removeValue(forKey: name)
         issued.removeValue(forKey: name)
         cleanedNames.insert(name)
     }
@@ -447,12 +487,12 @@ public actor TransientAudioStore: TransientAudioFileStore {
             throw TransientAudioStoreError.unsafeRoot
         }
         try requirePublicRoot(root, identity: identity)
-        let compromised = try sweepFiles(
+        let sweepResult = try sweepFiles(
             rootDescriptor: rootDescriptor,
             protected: [:],
             testHooks: testHooks
         )
-        guard compromised.isEmpty else {
+        guard sweepResult.compromised.isEmpty else {
             throw TransientAudioStoreError.unsafeRoot
         }
         try requirePublicRoot(root, identity: identity)
@@ -541,7 +581,7 @@ public actor TransientAudioStore: TransientAudioFileStore {
         rootDescriptor: Int32,
         protected: [String: FileIdentity],
         testHooks: TransientAudioStoreTestHooks?
-    ) throws -> [String] {
+    ) throws -> SweepResult {
         let enumerationDescriptor = openat(
             rootDescriptor,
             ".",
@@ -552,7 +592,7 @@ public actor TransientAudioStore: TransientAudioFileStore {
             throw TransientAudioStoreError.fileOperation
         }
         defer { _ = closedir(directory) }
-        var compromised: [String] = []
+        var names: [String] = []
 
         while true {
             errno = 0
@@ -568,60 +608,99 @@ public actor TransientAudioStore: TransientAudioFileStore {
                     String(cString: $0)
                 }
             }
-            guard isCanonicalCAFName(name) else { continue }
+            names.append(name)
+        }
 
-            if let expected = protected[name] {
-                var info = stat()
-                if fstatat(rootDescriptor, name, &info, AT_SYMLINK_NOFOLLOW) != 0 {
-                    guard errno == ENOENT else {
-                        throw TransientAudioStoreError.fileOperation
-                    }
-                    compromised.append(name)
-                    continue
-                }
-                if isRegular(info),
-                   info.st_nlink == 1,
-                   FileIdentity(info) == expected {
-                    continue
-                }
-                _ = try moveToQuarantine(
-                    name: name,
+        var result = SweepResult()
+
+        // Recover durable in-progress cleanup before inspecting canonical CAFs.
+        // Preserved and malformed pending-like names are intentionally ignored.
+        let pendingEntries = names.compactMap(parsePendingName).sorted { $0.name < $1.name }
+        for pending in pendingEntries {
+            let outcome: PendingOutcome
+            if pending.namespace == .owned,
+               let protectedIdentity = protected[pending.originalName],
+               protectedIdentity != pending.expected {
+                outcome = try preservePending(pending.name, rootDescriptor: rootDescriptor)
+            } else {
+                outcome = try processPending(
+                    pending,
                     rootDescriptor: rootDescriptor,
                     testHooks: testHooks
                 )
-                compromised.append(name)
+            }
+
+            guard pending.namespace == .owned,
+                  protected[pending.originalName] != nil else {
+                continue
+            }
+            switch outcome {
+            case .removed, .missing:
+                result.cleaned.insert(pending.originalName)
+            case .preserved:
+                result.compromised.insert(pending.originalName)
+            }
+        }
+
+        for name in names.sorted() where isCanonicalCAFName(name) {
+            var info = stat()
+            if fstatat(rootDescriptor, name, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+                guard errno == ENOENT else {
+                    throw TransientAudioStoreError.fileOperation
+                }
+                if protected[name] != nil,
+                   !result.cleaned.contains(name),
+                   !result.compromised.contains(name) {
+                    result.compromised.insert(name)
+                }
                 continue
             }
 
-            guard let quarantine = try moveToQuarantine(
+            if let expected = protected[name] {
+                if isRegular(info), info.st_nlink == 1, FileIdentity(info) == expected {
+                    // A live canonical file wins over an unrelated pending entry
+                    // that happened to encode the same original name.
+                    result.cleaned.remove(name)
+                    result.compromised.remove(name)
+                    continue
+                }
+                if let pending = try moveToPending(
+                    name: name,
+                    namespace: .owned,
+                    originalName: name,
+                    expected: expected,
+                    rootDescriptor: rootDescriptor,
+                    testHooks: testHooks
+                ) {
+                    _ = try processPending(
+                        pending,
+                        rootDescriptor: rootDescriptor,
+                        testHooks: testHooks
+                    )
+                }
+                result.cleaned.remove(name)
+                result.compromised.insert(name)
+                continue
+            }
+
+            let expected = FileIdentity(info)
+            guard let pending = try moveToPending(
                 name: name,
+                namespace: .unowned,
+                originalName: name,
+                expected: expected,
                 rootDescriptor: rootDescriptor,
                 testHooks: testHooks
             ) else {
                 continue
             }
-
-            if let injected = testHooks?.forcedQuarantinedEntryStatErrno?(name) {
-                guard injected == ENOENT else {
-                    throw TransientAudioStoreError.fileOperation
-                }
-                continue
-            }
-            var info = stat()
-            if fstatat(rootDescriptor, quarantine, &info, AT_SYMLINK_NOFOLLOW) != 0 {
-                guard errno == ENOENT else {
-                    throw TransientAudioStoreError.fileOperation
-                }
-                continue
-            }
-            guard isRegular(info), info.st_nlink == 1 else {
-                continue
-            }
-            guard unlinkat(rootDescriptor, quarantine, 0) == 0 || errno == ENOENT else {
-                throw TransientAudioStoreError.fileOperation
-            }
+            _ = try processPending(
+                pending,
+                rootDescriptor: rootDescriptor,
+                testHooks: testHooks
+            )
         }
-        return compromised
+        return result
     }
 
     private static func cleanupUnissuedCapture(
@@ -630,48 +709,70 @@ public actor TransientAudioStore: TransientAudioFileStore {
         rootDescriptor: Int32,
         testHooks: TransientAudioStoreTestHooks?
     ) throws {
-        guard let quarantine = try moveToQuarantine(
+        let recoverableIdentity: FileIdentity
+        if let expected {
+            recoverableIdentity = expected
+        } else {
+            var info = stat()
+            if fstatat(rootDescriptor, name, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+                guard errno == ENOENT else {
+                    throw TransientAudioStoreError.fileOperation
+                }
+                return
+            }
+            recoverableIdentity = FileIdentity(info)
+        }
+
+        guard let pending = try moveToPending(
             name: name,
+            namespace: .unowned,
+            originalName: name,
+            expected: recoverableIdentity,
             rootDescriptor: rootDescriptor,
             testHooks: testHooks
         ) else {
             return
         }
-        guard let expected else { return }
-
-        var info = stat()
-        if fstatat(rootDescriptor, quarantine, &info, AT_SYMLINK_NOFOLLOW) != 0 {
-            guard errno == ENOENT else {
-                throw TransientAudioStoreError.fileOperation
-            }
-            return
-        }
-        guard isRegular(info),
-              info.st_nlink == 1,
-              FileIdentity(info) == expected else {
-            return
-        }
-        guard unlinkat(rootDescriptor, quarantine, 0) == 0 || errno == ENOENT else {
-            throw TransientAudioStoreError.fileOperation
-        }
+        _ = try processPending(
+            pending,
+            rootDescriptor: rootDescriptor,
+            testHooks: testHooks
+        )
     }
 
-    private static func moveToQuarantine(
+    private static func moveToPending(
         name: String,
+        namespace: PendingNamespace,
+        originalName: String,
+        expected: FileIdentity,
         rootDescriptor: Int32,
         testHooks: TransientAudioStoreTestHooks?
-    ) throws -> String? {
+    ) throws -> PendingEntry? {
         testHooks?.beforeQuarantine?(name)
         for _ in 0..<16 {
-            let quarantine = ".utterink-quarantine-" + UUID().uuidString.lowercased()
+            let pending = PendingEntry(
+                name: pendingName(
+                    namespace: namespace,
+                    originalName: originalName,
+                    expected: expected,
+                    nonce: UUID()
+                ),
+                namespace: namespace,
+                originalName: originalName,
+                expected: expected
+            )
+            // macOS 14 has no public unlink-by-fd or inode-CAS unlink. This
+            // exclusive descriptor-relative rename is the supported atomic
+            // selection boundary; hostile same-UID directory mutation remains
+            // outside this slice's trust model.
             if renameatx_np(
                 rootDescriptor,
                 name,
                 rootDescriptor,
-                quarantine,
+                pending.name,
                 UInt32(RENAME_EXCL)
             ) == 0 {
-                return quarantine
+                return pending
             }
             switch errno {
             case ENOENT:
@@ -683,6 +784,127 @@ public actor TransientAudioStore: TransientAudioFileStore {
             }
         }
         throw TransientAudioStoreError.fileOperation
+    }
+
+    private static func processPending(
+        _ pending: PendingEntry,
+        rootDescriptor: Int32,
+        testHooks: TransientAudioStoreTestHooks?
+    ) throws -> PendingOutcome {
+        if let injected = testHooks?.forcedQuarantinedEntryStatErrno?(pending.originalName),
+           injected != 0 {
+            throw TransientAudioStoreError.fileOperation
+        }
+
+        var info = stat()
+        if fstatat(rootDescriptor, pending.name, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+            guard errno == ENOENT else {
+                throw TransientAudioStoreError.fileOperation
+            }
+            return .missing
+        }
+        guard isRegular(info),
+              info.st_nlink == 1,
+              FileIdentity(info) == pending.expected else {
+            return try preservePending(pending.name, rootDescriptor: rootDescriptor)
+        }
+
+        if let injected = testHooks?.forcedQuarantinedEntryUnlinkErrno?(pending.originalName),
+           injected != 0 {
+            throw TransientAudioStoreError.fileOperation
+        }
+        if unlinkat(rootDescriptor, pending.name, 0) == 0 {
+            return .removed
+        }
+        guard errno == ENOENT else {
+            throw TransientAudioStoreError.fileOperation
+        }
+        return .missing
+    }
+
+    private static func preservePending(
+        _ pendingName: String,
+        rootDescriptor: Int32
+    ) throws -> PendingOutcome {
+        for _ in 0..<16 {
+            let preserved = ".utterink-preserved-v1." + UUID().uuidString.lowercased()
+            if renameatx_np(
+                rootDescriptor,
+                pendingName,
+                rootDescriptor,
+                preserved,
+                UInt32(RENAME_EXCL)
+            ) == 0 {
+                return .preserved
+            }
+            switch errno {
+            case ENOENT:
+                return .missing
+            case EEXIST:
+                continue
+            default:
+                throw TransientAudioStoreError.fileOperation
+            }
+        }
+        throw TransientAudioStoreError.fileOperation
+    }
+
+    private static func pendingName(
+        namespace: PendingNamespace,
+        originalName: String,
+        expected: FileIdentity,
+        nonce: UUID
+    ) -> String {
+        let basename = String(originalName.dropLast(4))
+        return ".utterink-pending-\(namespace.rawValue)-v1.\(basename)."
+            + String(UInt64(expected.device), radix: 16) + "."
+            + String(UInt64(expected.inode), radix: 16) + "."
+            + nonce.uuidString.lowercased()
+    }
+
+    private static func parsePendingName(_ name: String) -> PendingEntry? {
+        let pieces = name.split(separator: ".", omittingEmptySubsequences: false)
+        guard pieces.count == 6, pieces[0].isEmpty else { return nil }
+
+        let namespace: PendingNamespace
+        switch pieces[1] {
+        case "utterink-pending-owned-v1":
+            namespace = .owned
+        case "utterink-pending-unowned-v1":
+            namespace = .unowned
+        default:
+            return nil
+        }
+
+        let originalBase = String(pieces[2])
+        guard let originalUUID = UUID(uuidString: originalBase),
+              originalBase == originalUUID.uuidString.lowercased() else {
+            return nil
+        }
+        let originalName = originalBase + ".caf"
+        guard isCanonicalCAFName(originalName) else { return nil }
+
+        let deviceText = String(pieces[3])
+        let inodeText = String(pieces[4])
+        guard let device = UInt64(deviceText, radix: 16),
+              let inode = UInt64(inodeText, radix: 16),
+              deviceText == String(device, radix: 16),
+              inodeText == String(inode, radix: 16),
+              let expected = FileIdentity(device: device, inode: inode) else {
+            return nil
+        }
+
+        let nonceText = String(pieces[5])
+        guard let nonce = UUID(uuidString: nonceText),
+              nonceText == nonce.uuidString.lowercased() else {
+            return nil
+        }
+        return PendingEntry(
+            name: name,
+            namespace: namespace,
+            originalName: originalName,
+            expected: expected
+        )
     }
 
     private static func isCanonicalCAFName(_ name: String) -> Bool {

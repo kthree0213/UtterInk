@@ -359,17 +359,124 @@ final class SynchronousLevelPublisher: @unchecked Sendable {
     }
 }
 
+/// The no-microphone lifecycle shared by the real AVFoundation session and
+/// deterministic tests. Its condition is the single state boundary for open
+/// work, callback reservation, close ownership, and close completion.
+final class AVFoundationRecordingSessionLifecycle: @unchecked Sendable {
+    struct CloseResult {
+        let ownsTeardown: Bool
+        let error: Error?
+    }
+
+    private enum Phase {
+        case open
+        case closing
+        case closed
+    }
+
+    private let condition = NSCondition()
+    private var callback: (@Sendable (Float) -> Void)?
+    private let beforeReservation: (@Sendable () -> Void)?
+    private var phase: Phase = .open
+    private var inFlightCallbacks = 0
+    private var finalError: Error?
+
+    init(
+        levels: @escaping @Sendable (Float) -> Void,
+        beforeReservation: (@Sendable () -> Void)? = nil
+    ) {
+        callback = levels
+        self.beforeReservation = beforeReservation
+    }
+
+    func performOpenWork(_ work: () throws -> Void) rethrows -> Bool {
+        condition.lock()
+        guard phase == .open else {
+            condition.unlock()
+            return false
+        }
+        defer { condition.unlock() }
+        try work()
+        return true
+    }
+
+    func reserveLevel(
+        afterOpenWork work: () -> Float?
+    ) -> SynchronousLevelPublisher.Invocation? {
+        beforeReservation?()
+        condition.lock()
+        guard phase == .open else {
+            condition.unlock()
+            return nil
+        }
+        let level = work()
+        guard let level, let callback else {
+            condition.unlock()
+            return nil
+        }
+        inFlightCallbacks += 1
+        condition.unlock()
+
+        return SynchronousLevelPublisher.Invocation { [self] in
+            callback(level)
+            finishCallback()
+        }
+    }
+
+    func beginClose(_ prepare: () -> Error?) -> CloseResult {
+        condition.lock()
+        while phase == .closing {
+            condition.wait()
+        }
+        guard phase == .open else {
+            let error = finalError
+            condition.unlock()
+            return CloseResult(ownsTeardown: false, error: error)
+        }
+        phase = .closing
+        callback = nil
+        finalError = prepare()
+        let error = finalError
+        condition.unlock()
+        return CloseResult(ownsTeardown: true, error: error)
+    }
+
+    func waitForCallbackDrain() {
+        condition.lock()
+        while inFlightCallbacks > 0 {
+            condition.wait()
+        }
+        condition.unlock()
+    }
+
+    func completeClose() {
+        condition.lock()
+        if phase == .closing {
+            phase = .closed
+            condition.broadcast()
+        }
+        condition.unlock()
+    }
+
+    private func finishCallback() {
+        condition.lock()
+        inFlightCallbacks -= 1
+        if inFlightCallbacks == 0 {
+            condition.broadcast()
+        }
+        condition.unlock()
+    }
+}
+
 private final class AVFoundationRecordingSession: RecordingSession, @unchecked Sendable {
-    private let lock = NSLock()
     private let engine: AVAudioEngine
     private let input: AVAudioInputNode
     private var file: AVAudioFile?
-    private let levelPublisher: SynchronousLevelPublisher
+    private let lifecycle: AVFoundationRecordingSessionLifecycle
     private var firstWriteError: Error?
     private var lastLevelEmission: TimeInterval = -.infinity
     private var smoothedLevel: Float = 0
     private var started = false
-    private var closed = false
 
     init(url: URL, levels: @escaping @Sendable (Float) -> Void) throws {
         let engine = AVAudioEngine()
@@ -383,26 +490,31 @@ private final class AVFoundationRecordingSession: RecordingSession, @unchecked S
         self.engine = engine
         self.input = input
         self.file = file
-        levelPublisher = SynchronousLevelPublisher(levels)
+        lifecycle = AVFoundationRecordingSessionLifecycle(levels: levels)
         input.installTap(onBus: 0, bufferSize: 4_096, format: format) { [weak self] buffer, _ in
             self?.consume(buffer)
         }
     }
 
     func start() throws {
-        let canStart = lock.withLock { () -> Bool in
-            guard !closed, !started else { return false }
-            started = true
-            return true
-        }
-        guard canStart else {
-            throw AVFoundationRecordingSessionError.closed
-        }
+        var attemptedStart = false
         do {
-            engine.prepare()
-            try engine.start()
+            let open = try lifecycle.performOpenWork {
+                guard !started else {
+                    throw AVFoundationRecordingSessionError.closed
+                }
+                started = true
+                attemptedStart = true
+                engine.prepare()
+                try engine.start()
+            }
+            guard open else {
+                throw AVFoundationRecordingSessionError.closed
+            }
         } catch {
-            cancel()
+            if attemptedStart {
+                cancel()
+            }
             throw error
         }
     }
@@ -420,10 +532,7 @@ private final class AVFoundationRecordingSession: RecordingSession, @unchecked S
 
     private func consume(_ buffer: AVAudioPCMBuffer) {
         let rawLevel = Self.meterLevel(for: buffer)
-        var invocation: SynchronousLevelPublisher.Invocation?
-
-        lock.withLock {
-            guard !closed else { return }
+        let invocation = lifecycle.reserveLevel(afterOpenWork: {
             if firstWriteError == nil, let file {
                 do {
                     try file.write(from: buffer)
@@ -436,27 +545,26 @@ private final class AVFoundationRecordingSession: RecordingSession, @unchecked S
             let now = ProcessInfo.processInfo.systemUptime
             if now - lastLevelEmission >= 0.025 {
                 lastLevelEmission = now
-                invocation = levelPublisher.reserve(min(1, max(0, smoothedLevel)))
+                return min(1, max(0, smoothedLevel))
             }
-        }
+            return nil
+        })
         invocation?.invoke()
     }
 
     private func close() -> Error? {
-        let result = lock.withLock { () -> (shouldClose: Bool, error: Error?) in
-            guard !closed else { return (false, firstWriteError) }
-            closed = true
-            levelPublisher.beginClose()
+        let result = lifecycle.beginClose {
+            let error = firstWriteError
             file = nil
-            return (true, firstWriteError)
+            return error
         }
-        guard result.shouldClose else {
-            levelPublisher.waitForDrain()
+        guard result.ownsTeardown else {
             return result.error
         }
         input.removeTap(onBus: 0)
         engine.stop()
-        levelPublisher.waitForDrain()
+        lifecycle.waitForCallbackDrain()
+        lifecycle.completeClose()
         return result.error
     }
 

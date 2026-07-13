@@ -459,6 +459,88 @@ final class AVAudioRecordingServiceTests: XCTestCase {
         XCTAssertTrue(recorder.values.isEmpty)
     }
 
+    func testRealSessionLifecycleReservesDropsAndDrainsCallbacks() throws {
+        let callbackEntered = DispatchSemaphore(value: 0)
+        let callbackRelease = DispatchSemaphore(value: 0)
+        let callbackReturned = DispatchSemaphore(value: 0)
+        let drainReturned = DispatchSemaphore(value: 0)
+        let recorder = LevelRecorder()
+        let draining = AVFoundationRecordingSessionLifecycle(levels: { value in
+            callbackEntered.signal()
+            callbackRelease.wait()
+            recorder.append(value)
+            callbackReturned.signal()
+        })
+        let invocation = try XCTUnwrap(
+            draining.reserveLevel(afterOpenWork: { 0.4 })
+        )
+
+        DispatchQueue.global().async { invocation.invoke() }
+        XCTAssertEqual(callbackEntered.wait(timeout: .now() + 2), .success)
+        let close = draining.beginClose { nil }
+        XCTAssertTrue(close.ownsTeardown)
+        DispatchQueue.global().async {
+            draining.waitForCallbackDrain()
+            drainReturned.signal()
+        }
+        XCTAssertEqual(drainReturned.wait(timeout: .now() + 0.05), .timedOut)
+        callbackRelease.signal()
+        XCTAssertEqual(callbackReturned.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(drainReturned.wait(timeout: .now() + 2), .success)
+        draining.completeClose()
+        XCTAssertNil(draining.reserveLevel(afterOpenWork: { 0.8 }))
+        XCTAssertFalse(draining.performOpenWork {})
+        XCTAssertEqual(recorder.values, [0.4])
+
+        let reservationGate = OneShotSynchronousGate()
+        let poisedReturned = DispatchSemaphore(value: 0)
+        let poisedRecorder = LevelRecorder()
+        let poised = AVFoundationRecordingSessionLifecycle(
+            levels: { poisedRecorder.append($0) },
+            beforeReservation: { reservationGate.pause() }
+        )
+        DispatchQueue.global().async {
+            poised.reserveLevel(afterOpenWork: { 0.6 })?.invoke()
+            poisedReturned.signal()
+        }
+        XCTAssertEqual(reservationGate.entered.wait(timeout: .now() + 2), .success)
+        let poisedClose = poised.beginClose { nil }
+        XCTAssertTrue(poisedClose.ownsTeardown)
+        reservationGate.release.signal()
+        XCTAssertEqual(poisedReturned.wait(timeout: .now() + 2), .success)
+        poised.waitForCallbackDrain()
+        poised.completeClose()
+        XCTAssertTrue(poisedRecorder.values.isEmpty)
+    }
+
+    func testRealSessionLifecycleConcurrentCloseWaitsForTeardownCompletion() {
+        let lifecycle = AVFoundationRecordingSessionLifecycle(levels: { _ in })
+        let first = lifecycle.beginClose { nil }
+        XCTAssertTrue(first.ownsTeardown)
+
+        let secondStarted = DispatchSemaphore(value: 0)
+        let secondReturned = DispatchSemaphore(value: 0)
+        let unexpectedPrepare = EventRecorder()
+        DispatchQueue.global().async {
+            secondStarted.signal()
+            let second = lifecycle.beginClose {
+                unexpectedPrepare.append("prepared")
+                return nil
+            }
+            if second.ownsTeardown {
+                unexpectedPrepare.append("owned")
+            }
+            secondReturned.signal()
+        }
+
+        XCTAssertEqual(secondStarted.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(secondReturned.wait(timeout: .now() + 0.05), .timedOut)
+        XCTAssertTrue(unexpectedPrepare.values.isEmpty)
+        lifecycle.completeClose()
+        XCTAssertEqual(secondReturned.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(unexpectedPrepare.values.isEmpty)
+    }
+
     func testLevelMeterUsesAllChannelsLegacyMappingAndAttackReleaseSmoothing() {
         let floatLevel = AudioLevelMeter.level(floatChannels: [
             [0, 0, 0, 0],
