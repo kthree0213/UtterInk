@@ -6,6 +6,24 @@ public enum SpeechModelState: Equatable, Sendable {
     case loading(modelID: String)
     case ready(modelID: String)
     case failed(modelID: String, code: DiagnosticCode, retryable: Bool)
+
+    public var modelID: String {
+        switch self {
+        case let .missing(modelID),
+             let .downloading(modelID, _),
+             let .loading(modelID),
+             let .ready(modelID),
+             let .failed(modelID, _, _):
+            return modelID
+        }
+    }
+}
+
+public enum SpeechModelCacheActionStatus: Equatable, Sendable {
+    case idle
+    case deleting(modelID: String)
+    case deleted(modelID: String)
+    case deleteFailed(modelID: String)
 }
 
 public struct SpeechModelLease: Hashable, Sendable {

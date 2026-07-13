@@ -41,9 +41,9 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
 
     var isPlaceholder: Bool {
         switch self {
-        case .general, .permissions, .recognitionLanguage, .shortcuts:
+        case .general, .permissions, .recognitionLanguage, .speechModel, .shortcuts:
             return false
-        case .speechModel, .outputModes, .provider, .diagnostics:
+        case .outputModes, .provider, .diagnostics:
             return true
         }
     }
@@ -74,6 +74,7 @@ final class SettingsRootModel {
     let general: GeneralSettingsViewModel
     let permissions: PermissionSettingsViewModel
     let recognitionLanguage: RecognitionLanguageSettingsViewModel
+    let speechModel: SpeechModelSettingsViewModel
     let shortcuts: ShortcutSettingsViewModel
 
     init(
@@ -96,6 +97,10 @@ final class SettingsRootModel {
         recognitionLanguage = RecognitionLanguageSettingsViewModel(
             settings: dependencies.settings,
             writer: writer
+        )
+        speechModel = SpeechModelSettingsViewModel(
+            controller: controller,
+            settings: dependencies.settings
         )
         shortcuts = ShortcutSettingsViewModel(
             settings: dependencies.settings,
@@ -135,9 +140,11 @@ struct SettingsRootView: View {
             PermissionSettingsView(model: model.permissions)
         case .recognitionLanguage:
             RecognitionLanguageSettingsView(model: model.recognitionLanguage)
+        case .speechModel:
+            SpeechModelSettingsView(model: model.speechModel)
         case .shortcuts:
             ShortcutSettingsView(model: model.shortcuts)
-        case .speechModel, .outputModes, .provider, .diagnostics:
+        case .outputModes, .provider, .diagnostics:
             ContentUnavailableView(
                 "\(route.title) is not installed yet",
                 systemImage: route.systemImage,

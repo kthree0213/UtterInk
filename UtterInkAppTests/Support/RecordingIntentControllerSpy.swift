@@ -23,13 +23,20 @@ actor AppBootstrapGate {
 final class RecordingIntentControllerSpy: DictationControlling {
     var state: PipelineState = .idle
     var speechModelState: SpeechModelState = .ready(modelID: "small")
+    var speechModelCacheActionStatus: SpeechModelCacheActionStatus = .idle
     var volatileResults: [DictationResult] = []
     var historyRecords: [HistoryRecord] = []
     var historyControlStatus: HistoryControlStatus = .settled(enabled: true)
     var recordingTelemetry: RecordingTelemetry?
     var sessionPresentation: SessionPresentationContext?
     var speechModelCatalog: [SpeechModelDescriptor] = []
+    var activeSpeechModelID: String?
+    var preparingSpeechModelID: String?
     var intents: [UserIntent] = []
+    var preparedSpeechModelIDs: [String] = []
+    var cancelPreparationCount = 0
+    var deletedSpeechModelIDs: [String] = []
+    var rejectPreparation = false
     var bootstrapCount = 0
     var bootstrapGate: AppBootstrapGate?
 
@@ -48,7 +55,17 @@ final class RecordingIntentControllerSpy: DictationControlling {
             break
         }
     }
-    func prepareSpeechModel(_ modelID: String) {}
-    func cancelSpeechModelPreparation() {}
-    func deleteCachedSpeechModel(_ modelID: String) {}
+    func prepareSpeechModel(_ modelID: String) {
+        guard !rejectPreparation else { return }
+        preparedSpeechModelIDs.append(modelID)
+        preparingSpeechModelID = modelID
+    }
+    func cancelSpeechModelPreparation() {
+        cancelPreparationCount += 1
+        preparingSpeechModelID = nil
+    }
+    func deleteCachedSpeechModel(_ modelID: String) {
+        deletedSpeechModelIDs.append(modelID)
+        speechModelCacheActionStatus = .deleted(modelID: modelID)
+    }
 }

@@ -89,12 +89,15 @@ struct UtterInkApp: App {
 private final class InertAppController: DictationControlling {
     var state: PipelineState = .idle
     var speechModelState: SpeechModelState = .missing(modelID: "small")
+    var speechModelCacheActionStatus: SpeechModelCacheActionStatus = .idle
     var volatileResults: [DictationResult] = []
     var historyRecords: [HistoryRecord] = []
     var historyControlStatus: HistoryControlStatus = .settled(enabled: true)
     var recordingTelemetry: RecordingTelemetry?
     var sessionPresentation: SessionPresentationContext?
     var speechModelCatalog: [SpeechModelDescriptor] = []
+    var activeSpeechModelID: String?
+    var preparingSpeechModelID: String?
 
     func bootstrap() async {}
     func send(_ intent: UserIntent) {}

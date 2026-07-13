@@ -19,7 +19,7 @@ final class SettingsPresentationTests: XCTestCase {
                 .diagnostics,
             ]
         )
-        XCTAssertTrue(SettingsRoute.speechModel.isPlaceholder)
+        XCTAssertFalse(SettingsRoute.speechModel.isPlaceholder)
         XCTAssertTrue(SettingsRoute.outputModes.isPlaceholder)
         XCTAssertTrue(SettingsRoute.provider.isPlaceholder)
         XCTAssertTrue(SettingsRoute.diagnostics.isPlaceholder)

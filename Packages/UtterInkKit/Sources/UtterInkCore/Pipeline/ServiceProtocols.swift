@@ -164,12 +164,15 @@ public enum HistoryControlStatus: Equatable, Sendable {
 public protocol DictationControlling: AnyObject {
     var state: PipelineState { get }
     var speechModelState: SpeechModelState { get }
+    var speechModelCacheActionStatus: SpeechModelCacheActionStatus { get }
     var volatileResults: [DictationResult] { get }
     var historyRecords: [HistoryRecord] { get }
     var historyControlStatus: HistoryControlStatus { get }
     var recordingTelemetry: RecordingTelemetry? { get }
     var sessionPresentation: SessionPresentationContext? { get }
     var speechModelCatalog: [SpeechModelDescriptor] { get }
+    var activeSpeechModelID: String? { get }
+    var preparingSpeechModelID: String? { get }
 
     func bootstrap() async
     func send(_ intent: UserIntent)

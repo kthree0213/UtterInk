@@ -366,8 +366,11 @@ final class DictationSessionControllerTests: XCTestCase {
         let models = ModelFake(state: .ready(modelID: "small"))
         let harness = Harness(settings: rawSettings(), models: models)
         await harness.bootstrapWithVolatileProbe()
+        XCTAssertEqual(harness.controller.activeSpeechModelID, "small")
 
         harness.controller.prepareSpeechModel("base")
+        XCTAssertEqual(harness.controller.preparingSpeechModelID, "base")
+        XCTAssertEqual(harness.controller.speechModelState, .missing(modelID: "base"))
         await waitUntil { await models.prepareCount() == 1 }
         await models.emit(call: 1, .missing(modelID: "base"))
         await waitUntil { harness.controller.speechModelState == .missing(modelID: "base") }
@@ -375,18 +378,57 @@ final class DictationSessionControllerTests: XCTestCase {
         await waitUntil {
             harness.controller.speechModelState == .downloading(modelID: "base", progress: 0.5)
         }
+        XCTAssertEqual(harness.controller.activeSpeechModelID, "small")
 
         harness.controller.prepareSpeechModel("large-v3")
         await waitUntil { await models.prepareCount() == 2 }
         await models.emit(call: 2, .loading(modelID: "large-v3"))
         await models.emit(call: 2, .ready(modelID: "large-v3"))
         await waitUntil { harness.controller.speechModelState == .ready(modelID: "large-v3") }
+        XCTAssertEqual(harness.controller.activeSpeechModelID, "large-v3")
         await models.emit(call: 1, .failed(modelID: "base", code: .transcriptionFailed, retryable: true))
         await settle()
         XCTAssertEqual(harness.controller.speechModelState, .ready(modelID: "large-v3"))
 
+        harness.controller.prepareSpeechModel("base")
+        await waitUntil { await models.prepareCount() == 3 }
         harness.controller.cancelSpeechModelPreparation()
         harness.controller.cancelSpeechModelPreparation()
+        await waitUntil { await models.cancelCount() == 1 }
+        XCTAssertNil(harness.controller.preparingSpeechModelID)
+        XCTAssertEqual(harness.controller.activeSpeechModelID, "large-v3")
+        XCTAssertEqual(
+            harness.controller.speechModelState,
+            .failed(modelID: "base", code: .cancelled, retryable: true)
+        )
+    }
+
+    func testCancelReplacesDownloadingStateAndSuppressesStalePreparationCallbacks() async {
+        let models = ModelFake(state: .ready(modelID: "small"))
+        let harness = Harness(settings: rawSettings(), models: models)
+        await harness.bootstrapWithVolatileProbe()
+
+        harness.controller.prepareSpeechModel("base")
+        await waitUntil { await models.prepareCount() == 1 }
+        await models.emit(call: 1, .downloading(modelID: "base", progress: 0.4))
+        await waitUntil {
+            harness.controller.speechModelState == .downloading(modelID: "base", progress: 0.4)
+        }
+
+        harness.controller.cancelSpeechModelPreparation()
+        XCTAssertEqual(
+            harness.controller.speechModelState,
+            .failed(modelID: "base", code: .cancelled, retryable: true)
+        )
+        XCTAssertNil(harness.controller.preparingSpeechModelID)
+        XCTAssertEqual(harness.controller.activeSpeechModelID, "small")
+
+        await models.emit(call: 1, .loading(modelID: "base"))
+        await settle()
+        XCTAssertEqual(
+            harness.controller.speechModelState,
+            .failed(modelID: "base", code: .cancelled, retryable: true)
+        )
         await waitUntil { await models.cancelCount() == 1 }
     }
 
@@ -434,7 +476,7 @@ final class DictationSessionControllerTests: XCTestCase {
         XCTAssertEqual(capturesAfterCancellation, 1)
     }
 
-    func testModelDeletionForwardsOnlyInactiveUnselectedIDsAndSanitizesFailure() async {
+    func testModelDeletionForwardsOnlyInactiveUnselectedIDsAndKeepsReadinessOnFailure() async {
         let models = ModelFake(state: .ready(modelID: "small"))
         let harness = Harness(settings: rawSettings(), models: models)
         await harness.bootstrapWithVolatileProbe()
@@ -450,9 +492,70 @@ final class DictationSessionControllerTests: XCTestCase {
         await models.setDeleteFailure(.audioStart)
         harness.controller.deleteCachedSpeechModel("large-v3")
         await waitUntil {
-            harness.controller.speechModelState
-                == .failed(modelID: "large-v3", code: .audioStart, retryable: true)
+            harness.controller.speechModelCacheActionStatus
+                == .deleteFailed(modelID: "large-v3")
         }
+        XCTAssertEqual(harness.controller.speechModelState, .ready(modelID: "small"))
+        XCTAssertEqual(harness.controller.activeSpeechModelID, "small")
+    }
+
+    func testBootstrapRetainsMismatchedReadyModelAsProtectedActiveCache() async {
+        var settings = rawSettings()
+        settings.speechModelID = "base"
+        let models = ModelFake(state: .ready(modelID: "small"))
+        let harness = Harness(settings: settings, models: models)
+        await harness.bootstrapWithVolatileProbe()
+
+        XCTAssertEqual(harness.controller.speechModelState, .missing(modelID: "base"))
+        XCTAssertEqual(harness.controller.activeSpeechModelID, "small")
+
+        harness.controller.deleteCachedSpeechModel("small")
+        await settle()
+        let deletedModelIDs = await models.deletedModelIDs()
+        XCTAssertTrue(deletedModelIDs.isEmpty)
+    }
+
+    func testPreviouslySelectedModelCanBeDeletedAfterFreshSelectionBecomesReady() async {
+        let models = ModelFake(state: .ready(modelID: "small"))
+        let harness = Harness(settings: rawSettings(), models: models)
+        await harness.bootstrapWithVolatileProbe()
+
+        await harness.settings.setSpeechModelID("base")
+        harness.controller.prepareSpeechModel("base")
+        await waitUntil { await models.prepareCount() == 1 }
+        await models.emit(call: 1, .ready(modelID: "base"))
+        await waitUntil { harness.controller.activeSpeechModelID == "base" }
+
+        harness.controller.deleteCachedSpeechModel("small")
+
+        await waitUntil { await models.deletedModelIDs() == ["small"] }
+    }
+
+    func testPreparationIsRejectedWhileSameModelCacheDeletionIsInFlight() async {
+        let deletionGate = AsyncGate()
+        let models = ModelFake(
+            state: .ready(modelID: "small"),
+            deleteGate: deletionGate
+        )
+        let harness = Harness(settings: rawSettings(), models: models)
+        await harness.bootstrapWithVolatileProbe()
+
+        harness.controller.deleteCachedSpeechModel("base")
+        await deletionGate.waitUntilEntered()
+        XCTAssertEqual(
+            harness.controller.speechModelCacheActionStatus,
+            .deleting(modelID: "base")
+        )
+
+        harness.controller.prepareSpeechModel("base")
+        await settle()
+
+        let prepareCount = await models.prepareCount()
+        XCTAssertEqual(prepareCount, 0)
+        XCTAssertNil(harness.controller.preparingSpeechModelID)
+        XCTAssertEqual(harness.controller.speechModelState, .ready(modelID: "small"))
+        await deletionGate.open()
+        await waitUntil { await models.deletedModelIDs() == ["base"] }
     }
 
     func testDisableKeepsExistingHistoryAndClearImmediatelyRemovesAllResults() async {
@@ -1019,9 +1122,13 @@ private actor ModelFake: SpeechModelService {
     private var releases = 0
     private var deleted: [String] = []
     private var deleteFailure: DiagnosticCode?
+    private let deleteGate: AsyncGate?
     private var continuations: [Int: AsyncStream<SpeechModelState>.Continuation] = [:]
 
-    init(state: SpeechModelState) { current = state }
+    init(state: SpeechModelState, deleteGate: AsyncGate? = nil) {
+        current = state
+        self.deleteGate = deleteGate
+    }
     func state() async -> SpeechModelState { current }
     func prepare(modelID: String, token: EffectToken) async -> AsyncStream<SpeechModelState> {
         prepares += 1
@@ -1045,6 +1152,7 @@ private actor ModelFake: SpeechModelService {
     }
     func release(_ lease: SpeechModelLease) async { releases += 1 }
     func deleteCachedModel(modelID: String) async throws {
+        if let deleteGate { await deleteGate.wait() }
         if let deleteFailure { throw deleteFailure }
         deleted.append(modelID)
     }
