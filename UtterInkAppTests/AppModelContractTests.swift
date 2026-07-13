@@ -105,6 +105,173 @@ final class AppModelContractTests: XCTestCase {
         )
     }
 
+    func testToggleHotkeyResolvesEveryPressAgainstAuthoritativePipelineStage() async {
+        let controller = RecordingIntentControllerSpy()
+        let model = AppModel(controller: controller)
+        await model.bootstrap()
+
+        // Two idle presses model a service latch that advanced after a rejected
+        // start. Neither press is allowed to become a dead Stop intent.
+        controller.state = pipelineState(stage: .idle)
+        model.handleToggleHotkey()
+        model.handleToggleHotkey()
+        controller.state = pipelineState(stage: .requestingPermission)
+        model.handleToggleHotkey()
+        controller.state = pipelineState(stage: .recording)
+        model.handleToggleHotkey()
+        for stage in [
+            PipelineStage.stopping,
+            .transcribing,
+            .polishing,
+            .delivering,
+        ] {
+            controller.state = pipelineState(stage: stage)
+            model.handleToggleHotkey()
+        }
+        controller.state = pipelineState(stage: .completed)
+        model.handleToggleHotkey()
+
+        XCTAssertEqual(
+            controller.intents,
+            [
+                .start(.focusedExternal),
+                .start(.focusedExternal),
+                .cancel,
+                .stop,
+                .start(.focusedExternal),
+            ]
+        )
+    }
+
+    func testHoldReleaseCancelsPendingOrActiveStartAndStopsRecording() async {
+        let controller = RecordingIntentControllerSpy()
+        let model = AppModel(controller: controller)
+        await model.bootstrap()
+
+        controller.state = pipelineState(stage: .idle)
+        model.releaseHoldToTalk()
+        controller.state = pipelineState(stage: .requestingPermission)
+        model.releaseHoldToTalk()
+        controller.state = pipelineState(stage: .recording)
+        model.releaseHoldToTalk()
+        for stage in [
+            PipelineStage.stopping,
+            .transcribing,
+            .polishing,
+            .delivering,
+        ] {
+            controller.state = pipelineState(stage: stage)
+            model.releaseHoldToTalk()
+        }
+        controller.state = pipelineState(stage: .completed)
+        model.releaseHoldToTalk()
+
+        XCTAssertEqual(controller.intents, [.cancel, .cancel, .stop])
+    }
+
+    func testEscapeCancelsActiveStagesAndAcknowledgesTerminalStages() async {
+        let controller = RecordingIntentControllerSpy()
+        let model = AppModel(controller: controller)
+        await model.bootstrap()
+
+        let activeStages: [PipelineStage] = [
+            .requestingPermission,
+            .recording,
+            .stopping,
+            .transcribing,
+            .polishing,
+            .delivering,
+        ]
+        for stage in activeStages {
+            controller.state = pipelineState(stage: stage)
+            model.performEscape()
+        }
+        controller.state = pipelineState(stage: .completed)
+        model.performEscape()
+        controller.state = pipelineState(stage: .failed)
+        model.performEscape()
+        controller.state = pipelineState(stage: .idle)
+        model.performEscape()
+
+        XCTAssertEqual(
+            controller.intents,
+            Array(repeating: .cancel, count: activeStages.count)
+                + [.acknowledge, .acknowledge, .cancel]
+        )
+    }
+
+    func testLatestResultRecoveryUsesTypedControllerIntents() async {
+        let controller = RecordingIntentControllerSpy()
+        let model = AppModel(controller: controller)
+        await model.bootstrap()
+        let olderID = SessionID()
+        let latestID = SessionID()
+        controller.volatileResults = [
+            DictationResult(
+                sessionID: olderID,
+                startedAt: Date(timeIntervalSince1970: 1),
+                rawText: "older",
+                finalText: "older",
+                source: .raw,
+                warning: nil,
+                delivery: nil
+            ),
+            DictationResult(
+                sessionID: latestID,
+                startedAt: Date(timeIntervalSince1970: 2),
+                rawText: "latest",
+                finalText: "latest",
+                source: .raw,
+                warning: nil,
+                delivery: nil
+            ),
+        ]
+
+        XCTAssertEqual(model.latestResult?.sessionID, latestID)
+        model.copyResult(latestID)
+        model.pasteAgain(latestID)
+        model.acknowledge()
+
+        XCTAssertEqual(
+            controller.intents,
+            [.copyResult(latestID), .pasteAgain(latestID), .acknowledge]
+        )
+    }
+
+    func testLatestResultDoesNotRegressToAnOlderVolatileRecoveryAction() async {
+        let controller = RecordingIntentControllerSpy()
+        let model = AppModel(controller: controller)
+        await model.bootstrap()
+        let oldID = SessionID()
+        let currentID = SessionID()
+        controller.volatileResults = [
+            DictationResult(
+                sessionID: oldID,
+                startedAt: Date(timeIntervalSince1970: 1),
+                rawText: "old",
+                finalText: "old",
+                source: .raw,
+                warning: nil,
+                delivery: .copiedByUser
+            ),
+        ]
+        controller.historyRecords = [
+            HistoryRecord(
+                sessionID: currentID,
+                startedAt: Date(timeIntervalSince1970: 2),
+                rawText: "current",
+                finalText: "current",
+                source: .raw,
+                warning: nil,
+                delivery: .pasteEventDispatched,
+                outcome: .delivered
+            ),
+        ]
+
+        XCTAssertEqual(model.latestResult?.sessionID, currentID)
+        XCTAssertEqual(model.latestResult?.finalText, "current")
+    }
+
     func testCompositionArmsHotkeyOnlyAfterSharedModelIsReady() async {
         let gate = AppBootstrapGate()
         let controller = RecordingIntentControllerSpy()

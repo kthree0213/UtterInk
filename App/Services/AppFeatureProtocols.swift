@@ -76,7 +76,10 @@ final class SafeDiagnosticsExporter: DiagnosticsExporting {
 
 @MainActor
 final class LazyHotkeyService: HotkeyProbing, HotkeyConfiguring {
-    typealias EventHandler = @MainActor @Sendable (KeyboardShortcutsHotkeyService.Event) -> Void
+    typealias EventHandler = @MainActor @Sendable (
+        ShortcutMode,
+        KeyboardShortcutsHotkeyService.Event
+    ) -> Void
 
     private let settings: any SettingsStore
     private let eventHandler: EventHandler
@@ -98,7 +101,10 @@ final class LazyHotkeyService: HotkeyProbing, HotkeyConfiguring {
             currentMode = (try? await settings.current().shortcutMode) ?? .toggle
             let service = KeyboardShortcutsHotkeyService(
                 mode: currentMode,
-                onEvent: eventHandler
+                onEvent: { [weak self] event in
+                    guard let self else { return }
+                    self.eventHandler(self.currentMode, event)
+                }
             )
             self.service = service
             hasConflict = service.hasConflict

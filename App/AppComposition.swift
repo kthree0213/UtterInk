@@ -21,13 +21,19 @@ struct AppFeatureDependencies {
 final class AppComposition {
     let model: AppModel
     let features: AppFeatureDependencies
+    let floatingWindowController: FloatingWindowController?
 
     private var hotkeyListenerTask: Task<Void, Never>?
     private var hotkeyArmTask: Task<AsyncStream<Void>, Never>?
 
-    init(model: AppModel, features: AppFeatureDependencies) {
+    init(
+        model: AppModel,
+        features: AppFeatureDependencies,
+        floatingWindowController: FloatingWindowController? = nil
+    ) {
         self.model = model
         self.features = features
+        self.floatingWindowController = floatingWindowController
     }
 
     static func live() throws -> AppComposition {
@@ -104,12 +110,19 @@ final class AppComposition {
                 _ = try await history.load()
             }
         )
-        let hotkey = LazyHotkeyService(settings: settings) { [weak model] event in
-            switch event {
-            case .startRequested:
-                model?.start()
-            case .stopRequested:
-                model?.stop()
+        let hotkey = LazyHotkeyService(settings: settings) { [weak model] mode, event in
+            switch mode {
+            case .toggle:
+                // The service event is a physical-key latch, not recording state.
+                // Resolve every accepted press against the controller's current stage.
+                model?.handleToggleHotkey()
+            case .holdToTalk:
+                switch event {
+                case .startRequested:
+                    model?.start()
+                case .stopRequested:
+                    model?.releaseHoldToTalk()
+                }
             }
         }
 
@@ -127,12 +140,22 @@ final class AppComposition {
             onboardingSink: onboardingSink,
             clock: clock
         )
-        return AppComposition(model: model, features: features)
+        return AppComposition(
+            model: model,
+            features: features,
+            floatingWindowController: FloatingWindowController(model: model, clock: clock)
+        )
     }
 
     func start() async {
         await model.bootstrap()
         guard model.readiness == .ready else { return }
+
+        if let floatingWindowController {
+            let showFloatingRecorder = (try? await features.settings.current())?
+                .showFloatingRecorder ?? false
+            floatingWindowController.start(isEnabled: showFloatingRecorder)
+        }
         if hotkeyListenerTask != nil { return }
 
         let events: AsyncStream<Void>

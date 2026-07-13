@@ -49,20 +49,10 @@ struct UtterInkApp: App {
 
     var body: some Scene {
         MenuBarExtra(ProductIdentity.name, systemImage: "text.cursor") {
-            Text(model.readiness == .failed ? "Unavailable" : model.pipeline.stage.rawValue)
-            Divider()
-            Button(model.pipeline.stage == .recording ? "Stop" : "Start") {
-                model.startOrStop()
-            }
-            .disabled(model.readiness != .ready)
-
-            Button("Cancel") {
-                model.cancel()
-            }
-            .disabled(model.readiness != .ready)
-
-            Divider()
-            Button("Quit") { NSApplication.shared.terminate(nil) }
+            MenuBarRootView(
+                model: model,
+                settingsStore: composition?.features.settings
+            )
         }
 
         Settings {
