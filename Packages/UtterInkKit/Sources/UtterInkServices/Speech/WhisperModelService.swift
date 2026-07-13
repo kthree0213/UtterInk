@@ -217,9 +217,28 @@ public actor WhisperModelService: SpeechModelService {
             if !cached {
                 emit(.missing(modelID: entry.id), generation: generation)
                 setPhase(.downloading, generation: generation)
-                try await backend.download(entry, root: root) { [weak self] value in
-                    Task { await self?.emitProgress(value, modelID: entry.id, generation: generation) }
+                let progressPair = AsyncStream<Double>.makeStream()
+                let progressTask = Task { [weak self] in
+                    for await value in progressPair.stream {
+                        guard !Task.isCancelled else { return }
+                        await self?.emitProgress(
+                            value,
+                            modelID: entry.id,
+                            generation: generation
+                        )
+                    }
                 }
+                do {
+                    try await backend.download(entry, root: root) { value in
+                        progressPair.continuation.yield(value)
+                    }
+                } catch {
+                    progressPair.continuation.finish()
+                    await progressTask.value
+                    throw error
+                }
+                progressPair.continuation.finish()
+                await progressTask.value
                 guard isCurrent(generation: generation, token: token), !Task.isCancelled else { return }
             }
 
