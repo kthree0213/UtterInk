@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 GENERATOR="$ROOT/Scripts/generate-legacy-defaults-map.swift"
 BASE_MAP="$ROOT/docs/provenance/legacy-defaults-map.tsv"
+HISTORICAL_COMMIT="17f7894f3e2c27a6cedea1b272c49e29a60121dd"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/utterink-legacy-map-test.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/swift-module-cache" "$TMP/clang-module-cache"
@@ -20,6 +21,15 @@ fail() {
 
 case_number=0
 
+materialize_historical_file() {
+  local path="$1"
+  local destination="$CASE_ROOT/$path"
+  mkdir -p "$(dirname "$destination")"
+  if ! git -C "$ROOT" show "$HISTORICAL_COMMIT:$path" > "$destination"; then
+    fail "cannot materialize historical evidence: $path"
+  fi
+}
+
 new_case() {
   local label="$1"
   case_number=$((case_number + 1))
@@ -32,10 +42,10 @@ new_case() {
     "$CASE_ROOT/out"
   cp "$BASE_MAP" "$CASE_ROOT/docs/provenance/legacy-defaults-map.tsv"
   cp "$ROOT/docs/provenance/legacy-source-import.tsv" "$CASE_ROOT/docs/provenance/legacy-source-import.tsv"
-  cp "$ROOT/LegacyParity/Sources/FlowType/Core/LLMProviderProfiles.swift" "$CASE_ROOT/LegacyParity/Sources/FlowType/Core/LLMProviderProfiles.swift"
-  cp "$ROOT/LegacyParity/Packaging/Info.plist" "$CASE_ROOT/LegacyParity/Packaging/Info.plist"
-  cp "$ROOT/LegacyParity/Packaging/FlowType.entitlements" "$CASE_ROOT/LegacyParity/Packaging/FlowType.entitlements"
-  cp "$ROOT/LegacyParity/Scripts/package-dmg.sh" "$CASE_ROOT/LegacyParity/Scripts/package-dmg.sh"
+  materialize_historical_file LegacyParity/Sources/FlowType/Core/LLMProviderProfiles.swift
+  materialize_historical_file LegacyParity/Packaging/Info.plist
+  materialize_historical_file LegacyParity/Packaging/FlowType.entitlements
+  materialize_historical_file LegacyParity/Scripts/package-dmg.sh
   MAP="$CASE_ROOT/docs/provenance/legacy-defaults-map.tsv"
   OUTPUT="$CASE_ROOT/out/LegacyDefaultsMap.generated.swift"
 }
@@ -86,6 +96,7 @@ replace_map_evidence_hash() {
 new_case valid
 emit
 cp "$OUTPUT" "$CASE_ROOT/out/first.swift"
+cp "$OUTPUT" "$TMP/live-generated.swift"
 emit
 cmp "$CASE_ROOT/out/first.swift" "$OUTPUT" >/dev/null || fail 'two emits were not byte-identical'
 check
@@ -102,8 +113,17 @@ stale_hash="$(shasum -a 256 "$OUTPUT" | awk '{print $1}')"
 expect_rejected stale-output stale check
 [[ "$(shasum -a 256 "$OUTPUT" | awk '{print $1}')" == "$stale_hash" ]] || fail '--check repaired stale output'
 
-# The exact canonical row order is authoritative; shuffled input is rejected.
+# Once the full snapshot is retired, the checked manifest and fixed hashes still
+# produce the exact same Swift source without claiming to reread deleted files.
+new_case retired
+rm -rf "$CASE_ROOT/LegacyParity"
+emit
+cmp "$TMP/live-generated.swift" "$OUTPUT" >/dev/null || fail 'retired output differs from live-evidence output'
+check
+
+# The retired path still enforces the exact canonical row set and order.
 new_case noncanonical-order
+rm -rf "$CASE_ROOT/LegacyParity"
 {
   sed -n '1p' "$MAP"
   sed -n '3p' "$MAP"
@@ -114,6 +134,7 @@ mv "$CASE_ROOT/map.new" "$MAP"
 expect_rejected noncanonical-order 'canonical row order' emit
 
 new_case duplicate
+rm -rf "$CASE_ROOT/LegacyParity"
 {
   sed -n '1p' "$MAP"
   sed -n '2p' "$MAP"
@@ -124,20 +145,39 @@ mv "$CASE_ROOT/map.new" "$MAP"
 expect_rejected duplicate 'duplicate mappings are not allowed' emit
 
 new_case unknown-key
+rm -rf "$CASE_ROOT/LegacyParity"
 awk 'BEGIN { FS = OFS = "\t" } NR == 5 { $2 = "shadowApiKey" } { print }' "$MAP" > "$CASE_ROOT/map.new"
 mv "$CASE_ROOT/map.new" "$MAP"
 expect_rejected unknown-key 'unknown legacy key or pattern' emit
 
 # Every cited/imported artifact needs complete provenance rights and evidence.
 new_case incomplete-rights
+rm -rf "$CASE_ROOT/LegacyParity"
 awk 'BEGIN { FS = OFS = "\t" } $2 == "LegacyParity/Sources/FlowType/Core/LLMProviderProfiles.swift" { $6 = "" } { print }' \
   "$CASE_ROOT/docs/provenance/legacy-source-import.tsv" > "$CASE_ROOT/manifest.new"
 mv "$CASE_ROOT/manifest.new" "$CASE_ROOT/docs/provenance/legacy-source-import.tsv"
 expect_rejected incomplete-rights 'incomplete import rights' emit
 
-new_case missing-support-evidence
+new_case retired-direct-hash-drift
+rm -rf "$CASE_ROOT/LegacyParity"
+replace_manifest_hash 'LegacyParity/Sources/FlowType/Core/LLMProviderProfiles.swift' 0000000000000000000000000000000000000000000000000000000000000000
+expect_rejected retired-direct-hash-drift 'fixed direct-key authority' emit
+
+new_case retired-support-hash-drift
+rm -rf "$CASE_ROOT/LegacyParity"
+replace_manifest_hash 'LegacyParity/Packaging/Info.plist' 0000000000000000000000000000000000000000000000000000000000000000
+expect_rejected retired-support-hash-drift 'fixed packaging authority' emit
+
+# Any extant snapshot path selects live validation. A partial tree must fail
+# instead of silently falling back to retired-manifest validation.
+new_case partial-snapshot
 rm "$CASE_ROOT/LegacyParity/Packaging/Info.plist"
-expect_rejected missing-support-evidence 'missing evidence artifact' emit
+expect_rejected partial-snapshot 'missing evidence artifact' emit
+
+new_case snapshot-root-symlink
+rm -rf "$CASE_ROOT/LegacyParity"
+ln -s missing-snapshot "$CASE_ROOT/LegacyParity"
+expect_rejected snapshot-root-symlink 'symlink evidence path' emit
 
 new_case evidence-hash-drift
 printf '\n// drift\n' >> "$CASE_ROOT/LegacyParity/Sources/FlowType/Core/LLMProviderProfiles.swift"

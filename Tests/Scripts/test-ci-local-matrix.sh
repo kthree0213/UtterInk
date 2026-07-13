@@ -37,13 +37,13 @@ new_repository() {
     "$repository/Scripts" \
     "$repository/Tests/Scripts" \
     "$repository/App/Supporting" \
-    "$repository/LegacyParity" \
     "$repository/Packages/UtterInkKit" \
     "$repository/bin"
   cp "$CI_LOCAL" "$repository/Scripts/ci-local.sh"
   chmod +x "$repository/Scripts/ci-local.sh"
 
   for relative_path in \
+    Scripts/check-parity-replacement.sh \
     Scripts/check-repo-hygiene.sh \
     Scripts/scan-public-history.sh \
     Tests/Scripts/test-generate-import-manifest.sh \
@@ -51,6 +51,7 @@ new_repository() {
     Tests/Scripts/test-import-legacy-parity.sh \
     Tests/Scripts/test-check-repo-hygiene.sh \
     Tests/Scripts/test-generate-legacy-defaults-map.sh \
+    Tests/Scripts/test-check-parity-replacement.sh \
     Tests/Scripts/test-ats-policy.sh \
     Tests/Scripts/test-ui-testing-release-boundary.sh; do
     write_local_spy "$repository" "$relative_path"
@@ -86,9 +87,27 @@ assert_once() {
   fi
 }
 
+assert_zero() {
+  local log="$1"
+  local command="$2"
+  local fragment="$3"
+  local description="$4"
+  local actual
+  actual="$(matching_count "$log" "$command" "$fragment")"
+  if [[ "$actual" -ne 0 ]]; then
+    printf '%s executed %s times, expected zero\n' "$description" "$actual" >&2
+    sed 's/^/  /' "$log" >&2
+    exit 1
+  fi
+}
+
 assert_required_gates() {
   local log="$1"
-  assert_once "$log" swift 'test --package-path LegacyParity ' 'LegacyParity package tests'
+  assert_zero "$log" swift 'test --package-path LegacyParity ' 'LegacyParity package tests'
+  assert_once "$log" local:Tests/Scripts/test-generate-legacy-defaults-map.sh '' 'legacy defaults generator tests'
+  assert_once "$log" local:Tests/Scripts/test-check-parity-replacement.sh '' 'parity replacement checker tests'
+  assert_once "$log" swift 'Scripts/generate-legacy-defaults-map.swift --check ' 'legacy defaults generated-source check'
+  assert_once "$log" local:Scripts/check-parity-replacement.sh '' 'parity replacement evidence checker'
   assert_once "$log" swift 'test --package-path Packages/UtterInkKit ' 'UtterInkKit package tests'
   assert_once "$log" xcodebuild 'CODE_SIGNING_ALLOWED=NO test -only-testing:UtterInkAppTests' 'App unit tests'
   assert_once "$log" xcodebuild 'CODE_SIGNING_ALLOWED=NO test -only-testing:UtterInkUITests/' 'UI smoke tests'
@@ -168,6 +187,30 @@ if [[ -s "$unknown_log" ]]; then
 fi
 if ! grep -F 'unknown ci-local argument: --skip-ui' "$unknown_repository/ci.stderr" >/dev/null; then
   printf 'unknown argument failure did not explain the rejected argument\n' >&2
+  exit 1
+fi
+
+legacy_repository="$(new_repository retired-snapshot-reintroduced)"
+legacy_log="$legacy_repository/commands.log"
+: > "$legacy_log"
+mkdir -p "$legacy_repository/LegacyParity"
+if (
+  cd "$legacy_repository"
+  PATH="$legacy_repository/bin:/usr/bin:/bin" \
+  UTTERINK_MATRIX_LOG="$legacy_log" \
+    ./Scripts/ci-local.sh \
+    >"$legacy_repository/ci.stdout" \
+    2>"$legacy_repository/ci.stderr"
+); then
+  printf 'reintroduced LegacyParity snapshot was accepted\n' >&2
+  exit 1
+fi
+if [[ -s "$legacy_log" ]]; then
+  printf 'reintroduced LegacyParity snapshot executed CI commands before failing\n' >&2
+  exit 1
+fi
+if ! grep -F 'retired LegacyParity snapshot must remain absent' "$legacy_repository/ci.stderr" >/dev/null; then
+  printf 'reintroduced LegacyParity failure did not explain the retired boundary\n' >&2
   exit 1
 fi
 

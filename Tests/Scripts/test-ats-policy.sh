@@ -10,7 +10,7 @@ SOURCE_PACKAGES=""
 
 cleanup_generated_repository_caches() {
   local package_root
-  for package_root in "$ROOT/LegacyParity" "$ROOT/Packages/UtterInkKit"; do
+  for package_root in "$ROOT/Packages/UtterInkKit"; do
     rmdir -- "$package_root/.swiftpm/xcode" 2>/dev/null || :
     rmdir -- "$package_root/.swiftpm/configuration" 2>/dev/null || :
     rmdir -- "$package_root/.swiftpm" 2>/dev/null || :

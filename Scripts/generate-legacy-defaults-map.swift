@@ -178,7 +178,18 @@ private func parseTable(data: Data, header: [String], label: String) throws -> [
     }
 }
 
-private func validatedEvidenceURL(path: String, root: URL) throws -> URL {
+private func filesystemEntryExists(at url: URL) -> Bool {
+    var metadata = stat()
+    return lstat(url.path, &metadata) == 0
+}
+
+private func filesystemEntryIsSymbolicLink(at url: URL) -> Bool {
+    var metadata = stat()
+    guard lstat(url.path, &metadata) == 0 else { return false }
+    return (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFLNK)
+}
+
+private func evidenceURL(path: String, root: URL) throws -> URL {
     guard !path.isEmpty,
           !path.hasPrefix("/"),
           !path.contains("\\"),
@@ -194,14 +205,17 @@ private func validatedEvidenceURL(path: String, root: URL) throws -> URL {
         try fail("evidence_path must be a normal repository-relative evidence path")
     }
 
+    return candidate
+}
+
+private func validatedEvidenceURL(path: String, root: URL) throws -> URL {
+    let candidate = try evidenceURL(path: path, root: root)
+
     var componentURL = root
     for component in path.split(separator: "/").map(String.init) {
         componentURL.appendPathComponent(component)
-        if FileManager.default.fileExists(atPath: componentURL.path) {
-            let values = try componentURL.resourceValues(forKeys: [.isSymbolicLinkKey])
-            if values.isSymbolicLink == true {
-                try fail("symlink evidence path is not allowed")
-            }
+        if filesystemEntryIsSymbolicLink(at: componentURL) {
+            try fail("symlink evidence path is not allowed")
         }
     }
 
@@ -212,7 +226,7 @@ private func validatedEvidenceURL(path: String, root: URL) throws -> URL {
     return candidate
 }
 
-private func parseMap(data: Data, root: URL) throws -> [MapEntry] {
+private func parseMap(data: Data, root: URL, requireEvidenceFiles: Bool) throws -> [MapEntry] {
     let fields = try parseTable(data: data, header: expectedHeader, label: "legacy defaults map")
     guard fields.count == canonicalEntries.count else {
         try fail("legacy defaults map must contain exactly four canonical rows")
@@ -234,7 +248,11 @@ private func parseMap(data: Data, root: URL) throws -> [MapEntry] {
 
     var result: [MapEntry] = []
     for (index, row) in fields.enumerated() {
-        _ = try validatedEvidenceURL(path: row[8], root: root)
+        if requireEvidenceFiles {
+            _ = try validatedEvidenceURL(path: row[8], root: root)
+        } else {
+            _ = try evidenceURL(path: row[8], root: root)
+        }
         let expected = canonicalEntries[index]
         guard row[0] == legacyDomain,
               row[1] == expected.key,
@@ -564,7 +582,13 @@ private func fileURL(path: String, root: URL) -> URL {
 private func generate(inputPath: String, root: URL) throws -> Data {
     let inputURL = fileURL(path: inputPath, root: root)
     let inputData = try readData(inputURL, missingMessage: "missing legacy defaults map")
-    let entries = try parseMap(data: inputData, root: root)
+    let legacyRoot = root.appendingPathComponent("LegacyParity", isDirectory: true)
+    let hasLiveEvidence = filesystemEntryExists(at: legacyRoot)
+    let entries = try parseMap(
+        data: inputData,
+        root: root,
+        requireEvidenceFiles: hasLiveEvidence
+    )
 
     let manifestURL = root.appendingPathComponent("docs/provenance/legacy-source-import.tsv")
     let manifestData = try readData(manifestURL, missingMessage: "missing legacy source import manifest")
@@ -587,34 +611,42 @@ private func generate(inputPath: String, root: URL) throws -> Data {
         requiredRows.append((artifact, row))
     }
 
-    let directURL = try validatedEvidenceURL(path: directEvidencePath, root: root)
-    let directData = try readData(directURL, missingMessage: "missing evidence artifact")
-    let actualDirectHash = sha256(directData)
-    guard directRow.hash == actualDirectHash,
-          entries.allSatisfy({ $0.evidenceHash == actualDirectHash })
-    else {
-        try fail("evidence hash drift")
+    var supportHashes = requiredRows.map { artifact, row in
+        (artifact.destinationPath, row.hash)
     }
 
-    var supportData: [String: Data] = [:]
-    var supportHashes: [(String, String)] = []
-    for (artifact, row) in requiredRows {
-        let url = try validatedEvidenceURL(path: artifact.destinationPath, root: root)
-        let data = try readData(url, missingMessage: "missing evidence artifact")
-        let actualHash = sha256(data)
-        guard row.hash == actualHash else {
+    if hasLiveEvidence {
+        let directURL = try validatedEvidenceURL(path: directEvidencePath, root: root)
+        let directData = try readData(directURL, missingMessage: "missing evidence artifact")
+        let actualDirectHash = sha256(directData)
+        guard directRow.hash == actualDirectHash,
+              entries.allSatisfy({ $0.evidenceHash == actualDirectHash })
+        else {
             try fail("evidence hash drift")
         }
-        supportData[artifact.destinationPath] = data
-        supportHashes.append((artifact.destinationPath, actualHash))
+
+        var supportData: [String: Data] = [:]
+        supportHashes = []
+        for (artifact, row) in requiredRows {
+            let url = try validatedEvidenceURL(path: artifact.destinationPath, root: root)
+            let data = try readData(url, missingMessage: "missing evidence artifact")
+            let actualHash = sha256(data)
+            guard row.hash == actualHash else {
+                try fail("evidence hash drift")
+            }
+            supportData[artifact.destinationPath] = data
+            supportHashes.append((artifact.destinationPath, actualHash))
+        }
+
+        try validateSecretLookingLiterals(directData)
+        try validateInfoPlist(supportData["LegacyParity/Packaging/Info.plist"] ?? Data())
+        try validateEntitlements(supportData["LegacyParity/Packaging/FlowType.entitlements"] ?? Data())
+        try validateSigningScript(supportData["LegacyParity/Scripts/package-dmg.sh"] ?? Data())
     }
 
-    try validateSecretLookingLiterals(directData)
-    try validateInfoPlist(supportData["LegacyParity/Packaging/Info.plist"] ?? Data())
-    try validateEntitlements(supportData["LegacyParity/Packaging/FlowType.entitlements"] ?? Data())
-    try validateSigningScript(supportData["LegacyParity/Scripts/package-dmg.sh"] ?? Data())
-
-    guard actualDirectHash == directEvidenceHash else {
+    guard directRow.hash == directEvidenceHash,
+          entries.allSatisfy({ $0.evidenceHash == directEvidenceHash })
+    else {
         try fail("evidence hash drift from fixed direct-key authority")
     }
     for (artifact, row) in requiredRows {

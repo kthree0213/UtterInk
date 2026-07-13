@@ -46,7 +46,7 @@ exercised; it does not substitute for a run on the exact Release candidate.
   roles, values, actions, identifiers, and state text in the Debug accessibility
   tree. No spoken VoiceOver announcement/order log was captured.
 - **A1 — App tests:** 94 of 94 passed in
-  `/private/tmp/utterink-task8-019f55fc/DerivedData/Logs/Test/Test-UtterInk-2026.07.14_01-52-47-+0800.xcresult` after the fixture correction.
+  `/private/tmp/utterink-task8-019f55fc/DerivedData/Logs/Test/Test-UtterInk-2026.07.14_02-17-39-+0800.xcresult` after the fixture correction.
 - **U1 — deterministic idle/Settings UI test:** the idle Settings test passed in
   `~/Library/Developer/Xcode/DerivedData/UtterInk-aklhzpjvlornbrgvpweptpmwkqry/Logs/Test/Test-UtterInk-2026.07.13_22-16-47-+0800.xcresult`.
 - **U2 — latest partial UI result:** History passed; the new active-History

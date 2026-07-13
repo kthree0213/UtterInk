@@ -9,6 +9,11 @@ if [[ "$#" -ne 0 ]]; then
   exit 64
 fi
 
+if [[ -e LegacyParity || -L LegacyParity ]]; then
+  printf 'retired LegacyParity snapshot must remain absent\n' >&2
+  exit 1
+fi
+
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/utterink-ci.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 case "$TMP" in
@@ -42,7 +47,6 @@ assert_foundation_outputs_unchanged() {
     App/Supporting/Info.plist \
     App/Supporting/UtterInk.entitlements \
     Tests/ATSPolicyProbe/Info.plist \
-    LegacyParity/Package.resolved \
     Packages/UtterInkKit/Package.resolved
   generated_status="$(git status --short --untracked-files=all -- \
     UtterInk.xcodeproj \
@@ -70,7 +74,7 @@ assert_no_repository_build_cache() {
 
 cleanup_generated_repository_caches() {
   local package_root
-  for package_root in "$ROOT/LegacyParity" "$ROOT/Packages/UtterInkKit"; do
+  for package_root in "$ROOT/Packages/UtterInkKit"; do
     # Xcode can create these empty local-package state directories even when
     # DerivedData and cloned packages are redirected. rmdir intentionally
     # preserves any nonempty directory or user data for the residue gate.
@@ -104,16 +108,13 @@ bash Tests/Scripts/test-scan-public-history.sh
 bash Tests/Scripts/test-import-legacy-parity.sh
 bash Tests/Scripts/test-check-repo-hygiene.sh
 bash Tests/Scripts/test-generate-legacy-defaults-map.sh
+bash Tests/Scripts/test-check-parity-replacement.sh
 swift Scripts/generate-legacy-defaults-map.swift \
   --check \
   --input docs/provenance/legacy-defaults-map.tsv \
   --swift-output Packages/UtterInkKit/Sources/UtterInkServices/Generated/LegacyDefaultsMap.generated.swift
+./Scripts/check-parity-replacement.sh
 
-swift test \
-  --package-path LegacyParity \
-  --scratch-path "$TMP/LegacyParity-build" \
-  --disable-sandbox \
-  --force-resolved-versions
 swift test \
   --package-path Packages/UtterInkKit \
   --scratch-path "$TMP/UtterInkKit-build" \
