@@ -84,17 +84,34 @@ package final class SecureRedirectDelegate: NSObject {
         guard let lhsScheme = lhs.scheme?.lowercased(),
               let rhsScheme = rhs.scheme?.lowercased(),
               let lhsHost = normalizedHost(lhs.host),
-              let rhsHost = normalizedHost(rhs.host) else {
+              let rhsHost = normalizedHost(rhs.host),
+              let lhsPort = effectivePort(lhs),
+              let rhsPort = effectivePort(rhs) else {
             return false
         }
         return lhsScheme == rhsScheme
             && lhsHost == rhsHost
-            && effectivePort(lhs) == effectivePort(rhs)
+            && lhsPort == rhsPort
     }
 
-    private static func effectivePort(_ components: URLComponents) -> Int {
-        if let port = components.port { return port }
+    private static func effectivePort(_ components: URLComponents) -> Int? {
+        if hasExplicitPort(components) {
+            guard let port = components.port,
+                  (1...65_535).contains(port) else {
+                return nil
+            }
+            return port
+        }
         return components.scheme?.lowercased() == "https" ? 443 : 80
+    }
+
+    private static func hasExplicitPort(_ components: URLComponents) -> Bool {
+        guard let serialized = components.string,
+              let hostRange = components.rangeOfHost,
+              hostRange.upperBound < serialized.endIndex else {
+            return false
+        }
+        return serialized[hostRange.upperBound] == ":"
     }
 
     private static func normalizedHost(_ value: String?) -> String? {

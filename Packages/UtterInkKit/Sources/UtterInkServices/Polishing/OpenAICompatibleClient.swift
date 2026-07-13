@@ -226,10 +226,7 @@ public actor OpenAICompatibleClient: PolishingService, ProviderValidationService
 
     private func cleanedContent(from data: Data) throws -> String {
         let response = try JSONDecoder().decode(ChatResponse.self, from: data)
-        guard let first = response.choices.first else {
-            throw DiagnosticCode.polishInvalidResponse
-        }
-        var value = first.message.content.value
+        var value = response.choiceZero.message.content.value
             .trimmingCharacters(in: .whitespacesAndNewlines)
         value = stripOuterFence(value)
         value = try stripReasoningBlocks(value)
@@ -243,13 +240,16 @@ public actor OpenAICompatibleClient: PolishingService, ProviderValidationService
 
     private func stripOuterFence(_ value: String) -> String {
         let lines = value.split(separator: "\n", omittingEmptySubsequences: false)
-        guard lines.count >= 3 else { return value }
+        guard lines.count >= 2 else { return value }
         let opening = String(lines[0]).trimmingCharacters(in: .whitespaces)
-        let marker: String
-        if opening.hasPrefix("```") { marker = "```" }
-        else if opening.hasPrefix("~~~") { marker = "~~~" }
-        else { return value }
-        guard !opening.dropFirst(marker.count).contains(marker.first!),
+        guard let markerCharacter = opening.first,
+              markerCharacter == "`" || markerCharacter == "~" else {
+            return value
+        }
+        let markerLength = opening.prefix { $0 == markerCharacter }.count
+        guard markerLength >= 3 else { return value }
+        let marker = String(repeating: String(markerCharacter), count: markerLength)
+        guard !opening.dropFirst(markerLength).contains(markerCharacter),
               String(lines[lines.count - 1]).trimmingCharacters(in: .whitespaces) == marker else {
             return value
         }
@@ -304,7 +304,17 @@ private struct Message: Codable {
 }
 
 private struct ChatResponse: Decodable {
-    let choices: [Choice]
+    let choiceZero: Choice
+
+    private enum CodingKeys: String, CodingKey {
+        case choices
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        var choices = try container.nestedUnkeyedContainer(forKey: .choices)
+        choiceZero = try choices.decode(Choice.self)
+    }
 
     struct Choice: Decodable {
         let message: ResponseMessage

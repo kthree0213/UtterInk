@@ -462,6 +462,25 @@ final class OpenAICompatibleClientTests: XCTestCase {
         }
     }
 
+    func testStripsMatchingFourOrMoreCharacterOuterFences() async throws {
+        let secret = SessionSecret(utf8: "secret")
+        defer { secret.clear() }
+        let cases: [(String, String)] = [
+            ("````markdown\nfour-backtick result\n````", "four-backtick result"),
+            ("~~~~text\nfour-tilde result\n~~~~", "four-tilde result"),
+            ("`````\nfive-backtick result\n`````", "five-backtick result")
+        ]
+        for (content, expected) in cases {
+            StubURLProtocol.install { $0.succeed(json: Self.chatResponse(content)) }
+            let output = try await makeClient().polish(
+                rawText: "raw",
+                snapshot: snapshot(baseURL: remoteURL, policy: .remoteHTTPS, credential: secret),
+                token: token
+            )
+            XCTAssertEqual(output, expected)
+        }
+    }
+
     func testRejectsMalformedEmptyStructuredAndResidualReasoningOutput() async {
         let secret = SessionSecret(utf8: "secret")
         defer { secret.clear() }
@@ -471,6 +490,8 @@ final class OpenAICompatibleClientTests: XCTestCase {
             Self.chatResponse("   \n"),
             Self.chatResponse("{}"),
             Self.chatResponse("[\"not text\"]"),
+            Self.chatResponse("```\n```"),
+            Self.chatResponse("~~~\n~~~"),
             Self.chatResponse("<think>unclosed"),
             Self.chatResponse("residual </analysis>"),
             Self.chatResponse("<reasoning>only hidden</reasoning>")
@@ -508,6 +529,23 @@ final class OpenAICompatibleClientTests: XCTestCase {
         }
     }
 
+    func testValidChoiceZeroIgnoresMalformedUnusedLaterChoice() async throws {
+        let secret = SessionSecret(utf8: "secret")
+        defer { secret.clear() }
+        let body = Data(
+            #"{"choices":[{"message":{"content":"selected result"}},{"message":{"content":9}}]}"#.utf8
+        )
+        StubURLProtocol.install { $0.succeed(json: body) }
+
+        let output = try await makeClient().polish(
+            rawText: "raw",
+            snapshot: snapshot(baseURL: remoteURL, policy: .remoteHTTPS, credential: secret),
+            token: token
+        )
+
+        XCTAssertEqual(output, "selected result")
+    }
+
     func testRedirectPolicyAllowsOnlySameOriginHTTPSAndNeverForwardsRejectedAuthorization() throws {
         var original = URLRequest(url: URL(string: "https://api.example.com:443/v1/chat/completions")!)
         original.setValue("Bearer \(secretCanary)", forHTTPHeaderField: "Authorization")
@@ -537,6 +575,51 @@ final class OpenAICompatibleClientTests: XCTestCase {
         httpOriginal.setValue("Bearer \(secretCanary)", forHTTPHeaderField: "Authorization")
         let httpProposed = URLRequest(url: URL(string: "http://127.0.0.1:11434/next")!)
         XCTAssertNil(SecureRedirectDelegate.redirectedRequest(from: httpOriginal, to: httpProposed))
+    }
+
+    func testRedirectPolicyRejectsMalformedExplicitPortsWithoutRestoringAuthorization() throws {
+        var original = URLRequest(url: URL(string: "https://api.example.com/v1/chat/completions")!)
+        original.setValue("Bearer \(secretCanary)", forHTTPHeaderField: "Authorization")
+
+        for target in [
+            "https://api.example.com:/redirected",
+            "https://api.example.com:999999999999999999999/redirected"
+        ] {
+            let url = try XCTUnwrap(URL(string: target))
+            var proposed = URLRequest(url: url)
+            proposed.setValue("Bearer PROPOSED-CANARY", forHTTPHeaderField: "Authorization")
+
+            XCTAssertNil(
+                SecureRedirectDelegate.redirectedRequest(from: original, to: proposed),
+                target
+            )
+        }
+    }
+
+    func testTransportRejectsMalformedExplicitPortRedirectsBeforeSecondRequest() async {
+        let secret = SessionSecret(utf8: secretCanary)
+        defer { secret.clear() }
+
+        for target in [
+            "https://api.example.com:/redirected",
+            "https://api.example.com:999999999999999999999/redirected"
+        ] {
+            let url = URL(string: target)!
+            StubURLProtocol.install {
+                $0.redirect(to: url, strippingAuthorization: false)
+            }
+            let code = await captureDiagnostic {
+                try await makeClient().polish(
+                    rawText: transcriptCanary,
+                    snapshot: snapshot(baseURL: remoteURL, policy: .remoteHTTPS, credential: secret),
+                    token: token
+                )
+            }
+
+            XCTAssertEqual(code, .polishTransport, target)
+            XCTAssertEqual(StubURLProtocol.requestCount, 1, target)
+            assertSanitized(code, forbidden: [target, secretCanary, transcriptCanary])
+        }
     }
 
     func testTransportActuallyFollowsSameOriginHTTPSRedirectWithAuthorization() async throws {
