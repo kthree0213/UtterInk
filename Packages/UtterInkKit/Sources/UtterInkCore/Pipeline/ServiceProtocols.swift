@@ -108,3 +108,38 @@ public protocol PermissionService: Sendable {
 public protocol DiagnosticsSink: Sendable {
     func record(stage: PipelineStage, code: DiagnosticCode?) async
 }
+
+public enum StartContext: Equatable, Sendable {
+    case focusedExternal
+    case onboardingTest
+}
+
+public enum UserIntent: Equatable, Sendable {
+    case start(StartContext)
+    case stop
+    case cancel
+    case acknowledge
+    case copyResult(SessionID)
+    case pasteAgain(SessionID)
+    case retryPolishing(SessionID)
+    case deleteResult(SessionID)
+    case setHistoryEnabled(Bool)
+    case clearHistory
+}
+
+@MainActor
+public protocol DictationControlling: AnyObject {
+    var state: PipelineState { get }
+    var speechModelState: SpeechModelState { get }
+    var volatileResults: [DictationResult] { get }
+    var historyRecords: [HistoryRecord] { get }
+    var recordingTelemetry: RecordingTelemetry? { get }
+    var sessionPresentation: SessionPresentationContext? { get }
+    var speechModelCatalog: [SpeechModelDescriptor] { get }
+
+    func bootstrap() async
+    func send(_ intent: UserIntent)
+    func prepareSpeechModel(_ modelID: String)
+    func cancelSpeechModelPreparation()
+    func deleteCachedSpeechModel(_ modelID: String)
+}

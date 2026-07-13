@@ -23,6 +23,10 @@ let package = Package(
             ]
         ),
         .testTarget(name: "UtterInkCoreTests", dependencies: ["UtterInkCore"]),
-        .testTarget(name: "UtterInkServicesTests", dependencies: ["UtterInkCore", "UtterInkServices"])
+        .testTarget(name: "UtterInkServicesTests", dependencies: ["UtterInkCore", "UtterInkServices"]),
+        .testTarget(
+            name: "UtterInkExternalConsumerTests",
+            dependencies: ["UtterInkCore", "UtterInkServices"]
+        )
     ]
 )
