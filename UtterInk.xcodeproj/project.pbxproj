@@ -8,19 +8,33 @@
 
 /* Begin PBXBuildFile section */
 		349C1B0F770375BDD8F28842 /* UtterInkServices in Frameworks */ = {isa = PBXBuildFile; productRef = 5A4BEEB3487789DBD48B4F72 /* UtterInkServices */; };
+		72F82199A11CF780CE79E2DC /* UtterInkCore in Frameworks */ = {isa = PBXBuildFile; productRef = 81B69EA66450AA1E413B991D /* UtterInkCore */; };
+		7E85E4543BF986EB2E17FE14 /* UtterInkServices in Frameworks */ = {isa = PBXBuildFile; productRef = 6F0C53D16DB5E93F2743AD4E /* UtterInkServices */; };
+		82C9CC8C2A01136207D53948 /* ATSPolicyProbeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32E26E60E6A5DEA5DBAA6C10 /* ATSPolicyProbeApp.swift */; };
 		885436C25493662D4CF7723A /* UtterInkApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 579124F6FE0A0EBD4FD6AFA4 /* UtterInkApp.swift */; };
 		8A0C974FAF8354D2972D9C27 /* UtterInkCore in Frameworks */ = {isa = PBXBuildFile; productRef = 36950818E6668CD9756F0083 /* UtterInkCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		32E26E60E6A5DEA5DBAA6C10 /* ATSPolicyProbeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ATSPolicyProbeApp.swift; sourceTree = "<group>"; };
 		579124F6FE0A0EBD4FD6AFA4 /* UtterInkApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UtterInkApp.swift; sourceTree = "<group>"; };
 		57E906AE6303DB7884EF7539 /* UtterInk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = UtterInk.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		59D0F8E4521B9084A0E47556 /* ATSPolicyProbe.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ATSPolicyProbe.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6B59AC7610A4B669532FBE11 /* UtterInk.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = UtterInk.entitlements; sourceTree = "<group>"; };
 		9DADA0B685CAE1A236A6CF01 /* UtterInkKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = UtterInkKit; path = Packages/UtterInkKit; sourceTree = SOURCE_ROOT; };
 		EE4551F49BDBC9887EDB42F4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		5B37E2E7C22DB71F0C0A534B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				72F82199A11CF780CE79E2DC /* UtterInkCore in Frameworks */,
+				7E85E4543BF986EB2E17FE14 /* UtterInkServices in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B55F350EB983E9790972DE7C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -42,9 +56,18 @@
 			path = Supporting;
 			sourceTree = "<group>";
 		};
+		595F8C7B1A000FC725DED6ED /* ATSPolicyProbe */ = {
+			isa = PBXGroup;
+			children = (
+				32E26E60E6A5DEA5DBAA6C10 /* ATSPolicyProbeApp.swift */,
+			);
+			path = ATSPolicyProbe;
+			sourceTree = "<group>";
+		};
 		88543F2ABB51400CD0C27834 /* Products */ = {
 			isa = PBXGroup;
 			children = (
+				59D0F8E4521B9084A0E47556 /* ATSPolicyProbe.app */,
 				57E906AE6303DB7884EF7539 /* UtterInk.app */,
 			);
 			name = Products;
@@ -64,6 +87,7 @@
 			children = (
 				A0F68DD837A42BA3A8C83670 /* App */,
 				C7EC2B54F7C20F132F876E54 /* Packages */,
+				E4AEF50AD36167CAF3B42C7D /* Tests */,
 				88543F2ABB51400CD0C27834 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -74,6 +98,14 @@
 				9DADA0B685CAE1A236A6CF01 /* UtterInkKit */,
 			);
 			path = Packages;
+			sourceTree = "<group>";
+		};
+		E4AEF50AD36167CAF3B42C7D /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				595F8C7B1A000FC725DED6ED /* ATSPolicyProbe */,
+			);
+			path = Tests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -99,6 +131,26 @@
 			productReference = 57E906AE6303DB7884EF7539 /* UtterInk.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A70D63CA0DD3A5A7A843CFE6 /* ATSPolicyProbe */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CD2E01B50A1160918EFCFF9B /* Build configuration list for PBXNativeTarget "ATSPolicyProbe" */;
+			buildPhases = (
+				40618EE99374B59788F06408 /* Sources */,
+				5B37E2E7C22DB71F0C0A534B /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ATSPolicyProbe;
+			packageProductDependencies = (
+				81B69EA66450AA1E413B991D /* UtterInkCore */,
+				6F0C53D16DB5E93F2743AD4E /* UtterInkServices */,
+			);
+			productName = ATSPolicyProbe;
+			productReference = 59D0F8E4521B9084A0E47556 /* ATSPolicyProbe.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -110,6 +162,9 @@
 				TargetAttributes = {
 					675146D8A9E81872F5343486 = {
 						ProvisioningStyle = Automatic;
+					};
+					A70D63CA0DD3A5A7A843CFE6 = {
+						ProvisioningStyle = Manual;
 					};
 				};
 			};
@@ -130,12 +185,21 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				A70D63CA0DD3A5A7A843CFE6 /* ATSPolicyProbe */,
 				675146D8A9E81872F5343486 /* UtterInk */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXSourcesBuildPhase section */
+		40618EE99374B59788F06408 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				82C9CC8C2A01136207D53948 /* ATSPolicyProbeApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		6B8E46C1B8DF64F252D7E3EF /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -210,6 +274,30 @@
 			};
 			name = Debug;
 		};
+		6AB2100A00E76E83AE079A1D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Tests/ATSPolicyProbe/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.utterink.ATSPolicyProbe;
+				PRODUCT_NAME = ATSPolicyProbe;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 		7737FD61AA82E4A23ECB4990 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -259,6 +347,30 @@
 				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
+		};
+		97067FB589472F267DD8BF15 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Tests/ATSPolicyProbe/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.utterink.ATSPolicyProbe;
+				PRODUCT_NAME = ATSPolicyProbe;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
 		};
 		C9B705CBF983B7B7A430A2A9 /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -328,6 +440,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		CD2E01B50A1160918EFCFF9B /* Build configuration list for PBXNativeTarget "ATSPolicyProbe" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				97067FB589472F267DD8BF15 /* Debug */,
+				6AB2100A00E76E83AE079A1D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		ECC9595E574F8760963B72C8 /* Build configuration list for PBXProject "UtterInk" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -354,6 +475,14 @@
 		5A4BEEB3487789DBD48B4F72 /* UtterInkServices */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = UtterInkServices;
+		};
+		6F0C53D16DB5E93F2743AD4E /* UtterInkServices */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = UtterInkServices;
+		};
+		81B69EA66450AA1E413B991D /* UtterInkCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = UtterInkCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

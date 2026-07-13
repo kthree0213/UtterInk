@@ -31,16 +31,19 @@ scan_public_history() {
 }
 
 assert_foundation_outputs_unchanged() {
-  local project_status
+  local generated_status
   git diff --exit-code -- \
     UtterInk.xcodeproj \
     App/Supporting/Info.plist \
     App/Supporting/UtterInk.entitlements \
+    Tests/ATSPolicyProbe/Info.plist \
     LegacyParity/Package.resolved \
     Packages/UtterInkKit/Package.resolved
-  project_status="$(git status --short --untracked-files=all -- UtterInk.xcodeproj)"
-  if [[ -n "$project_status" ]]; then
-    printf 'generated Xcode project has untracked output:\n%s\n' "$project_status" >&2
+  generated_status="$(git status --short --untracked-files=all -- \
+    UtterInk.xcodeproj \
+    Tests/ATSPolicyProbe/Info.plist)"
+  if [[ -n "$generated_status" ]]; then
+    printf 'generated Xcode output has untracked output:\n%s\n' "$generated_status" >&2
     return 1
   fi
 }
@@ -132,6 +135,9 @@ xcodebuild \
   -clonedSourcePackagesDirPath "$TMP/SourcePackages" \
   CODE_SIGNING_ALLOWED=NO \
   build
+
+UTTERINK_CLONED_SOURCE_PACKAGES_DIR="$TMP/SourcePackages" \
+  bash Tests/Scripts/test-ats-policy.sh
 
 if /usr/libexec/PlistBuddy \
   -c 'Print :NSAppTransportSecurity:NSAllowsArbitraryLoads' \
