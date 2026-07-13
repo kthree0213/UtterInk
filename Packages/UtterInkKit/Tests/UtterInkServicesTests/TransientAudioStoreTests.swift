@@ -47,13 +47,17 @@ final class TransientAudioStoreTests: XCTestCase {
         try Data([5]).write(to: outside)
         let link = root.appendingPathComponent("44444444-4444-4444-8444-444444444444.caf")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        let linkIdentity = try fileIdentity(link)
 
         let store = try TransientAudioStore(root: root, clock: AudioTestClock())
         XCTAssertFalse(FileManager.default.fileExists(atPath: staleAtLaunch.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: uppercaseSuffix.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: nestedCAF.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: link.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: link.path))
+        let preservedLink = try XCTUnwrap(try directChild(with: linkIdentity, in: root))
+        XCTAssertFalse(isCanonicalCAFNameForTest(preservedLink.lastPathComponent))
+        XCTAssertEqual(try symlinkDestination(preservedLink), outside.path)
         XCTAssertEqual(try Data(contentsOf: outside), Data([5]))
 
         let owned = try await store.makeCaptureFile()
@@ -203,7 +207,7 @@ final class TransientAudioStoreTests: XCTestCase {
         withExtendedLifetime(first) {}
     }
 
-    func testVerifyAndDeleteRejectRegularAndSymlinkSubstitutionWithoutDeletingTargets() async throws {
+    func testVerifyRejectsRegularAndSymlinkSubstitutionWithoutFollowingTargets() async throws {
         let parent = temporaryAudioDirectory()
         defer { try? FileManager.default.removeItem(at: parent) }
         let root = parent.appendingPathComponent("TransientAudio", isDirectory: true)
@@ -220,7 +224,6 @@ final class TransientAudioStoreTests: XCTestCase {
         XCTAssertEqual(try posixMode(regular), 0o600)
         XCTAssertEqual(try Data(contentsOf: regular).count, 0)
         await XCTAssertThrowsAudioStoreError { try await store.verifyForRecording(regular) }
-        await XCTAssertThrowsAudioStoreError { try await store.delete(regular) }
         XCTAssertEqual(try fileIdentity(regular), replacementIdentity)
         try FileManager.default.removeItem(at: regular)
         try await store.delete(regular)
@@ -231,9 +234,204 @@ final class TransientAudioStoreTests: XCTestCase {
         try FileManager.default.removeItem(at: link)
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
         await XCTAssertThrowsAudioStoreError { try await store.verifyForRecording(link) }
-        await XCTAssertThrowsAudioStoreError { try await store.delete(link) }
         XCTAssertTrue(try link.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink == true)
         XCTAssertEqual(try Data(contentsOf: outside), Data([0x22]))
+        try FileManager.default.removeItem(at: link)
+        try await store.delete(link)
+    }
+
+    func testIssuedRegularSubstituteIsQuarantinedRetiredAndSurvivesRelaunch() async throws {
+        let parent = temporaryAudioDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = parent.appendingPathComponent("TransientAudio", isDirectory: true)
+        let hooks = TransientAudioStoreTestHooks()
+        var store: TransientAudioStore? = try TransientAudioStore(
+            root: root,
+            clock: AudioTestClock(),
+            testHooks: hooks
+        )
+        let issued = try await store!.makeCaptureFile()
+        let issuedIdentity = try fileIdentity(issued)
+        let substitute = root.appendingPathComponent("same-shape-substitute.tmp")
+        try Data().write(to: substitute)
+        XCTAssertEqual(chmod(substitute.path, 0o600), 0)
+        let substituteIdentity = try fileIdentity(substitute)
+        XCTAssertNotEqual(substituteIdentity, issuedIdentity)
+        let swap = EntrySwapHook(
+            expectedName: issued.lastPathComponent,
+            prepared: substitute,
+            destination: issued
+        )
+        hooks.beforeQuarantine = { name in swap.run(for: name) }
+
+        await XCTAssertThrowsAudioStoreError { try await store!.delete(issued) }
+        XCTAssertEqual(swap.result, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: issued.path))
+        let preserved = try XCTUnwrap(
+            try directChild(with: substituteIdentity, in: root)
+        )
+        XCTAssertFalse(isCanonicalCAFNameForTest(preserved.lastPathComponent))
+        XCTAssertEqual(try posixMode(preserved), 0o600)
+        XCTAssertEqual(try Data(contentsOf: preserved), Data())
+        try await store!.delete(issued)
+
+        store = nil
+        let reopened = try TransientAudioStore(root: root, clock: AudioTestClock())
+        XCTAssertEqual(try fileIdentity(preserved), substituteIdentity)
+        try await reopened.sweep()
+        XCTAssertEqual(try fileIdentity(preserved), substituteIdentity)
+    }
+
+    func testIssuedSymlinkSubstituteIsQuarantinedRetiredAndSurvivesRelaunch() async throws {
+        let parent = temporaryAudioDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = parent.appendingPathComponent("TransientAudio", isDirectory: true)
+        let hooks = TransientAudioStoreTestHooks()
+        var store: TransientAudioStore? = try TransientAudioStore(
+            root: root,
+            clock: AudioTestClock(),
+            testHooks: hooks
+        )
+        let issued = try await store!.makeCaptureFile()
+        let outside = parent.appendingPathComponent("outside-marker")
+        let marker = Data([0xA5, 0x5A])
+        try marker.write(to: outside)
+        let substitute = root.appendingPathComponent("symlink-substitute.tmp")
+        try FileManager.default.createSymbolicLink(at: substitute, withDestinationURL: outside)
+        let substituteIdentity = try fileIdentity(substitute)
+        let swap = EntrySwapHook(
+            expectedName: issued.lastPathComponent,
+            prepared: substitute,
+            destination: issued
+        )
+        hooks.beforeQuarantine = { name in swap.run(for: name) }
+
+        await XCTAssertThrowsAudioStoreError { try await store!.delete(issued) }
+        XCTAssertEqual(swap.result, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: issued.path))
+        let preserved = try XCTUnwrap(
+            try directChild(with: substituteIdentity, in: root)
+        )
+        XCTAssertFalse(isCanonicalCAFNameForTest(preserved.lastPathComponent))
+        XCTAssertEqual(try symlinkDestination(preserved), outside.path)
+        XCTAssertEqual(try Data(contentsOf: outside), marker)
+        try await store!.delete(issued)
+
+        store = nil
+        let reopened = try TransientAudioStore(root: root, clock: AudioTestClock())
+        XCTAssertEqual(try fileIdentity(preserved), substituteIdentity)
+        try await reopened.sweep()
+        XCTAssertEqual(try fileIdentity(preserved), substituteIdentity)
+        XCTAssertEqual(try Data(contentsOf: outside), marker)
+    }
+
+    func testManualSweepQuarantinesCompromisedIssuedEntryBeforeRelaunch() async throws {
+        let parent = temporaryAudioDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = parent.appendingPathComponent("TransientAudio", isDirectory: true)
+        var store: TransientAudioStore? = try TransientAudioStore(
+            root: root,
+            clock: AudioTestClock()
+        )
+        let issued = try await store!.makeCaptureFile()
+        let originalIdentity = try fileIdentity(issued)
+        let substitute = root.appendingPathComponent("sweep-substitute.tmp")
+        try Data().write(to: substitute)
+        XCTAssertEqual(chmod(substitute.path, 0o600), 0)
+        let substituteIdentity = try fileIdentity(substitute)
+        XCTAssertNotEqual(originalIdentity, substituteIdentity)
+        XCTAssertEqual(rename(substitute.path, issued.path), 0)
+
+        await XCTAssertThrowsAudioStoreError { try await store!.sweep() }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: issued.path))
+        let preserved = try XCTUnwrap(try directChild(with: substituteIdentity, in: root))
+        XCTAssertFalse(isCanonicalCAFNameForTest(preserved.lastPathComponent))
+        try await store!.delete(issued)
+
+        store = nil
+        let reopened = try TransientAudioStore(root: root, clock: AudioTestClock())
+        try await reopened.sweep()
+        XCTAssertEqual(try fileIdentity(preserved), substituteIdentity)
+    }
+
+    func testPinnedRootBackupExclusionSeedNeverMutatesPublicPathReplacement() throws {
+        let parent = temporaryAudioDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = parent.appendingPathComponent("TransientAudio", isDirectory: true)
+        let moved = parent.appendingPathComponent("PinnedTransientAudio", isDirectory: true)
+        let replacementCanary = Data("replacement-xattr-canary".utf8)
+        let hook = PinnedRootReplacementHook(
+            root: root,
+            moved: moved,
+            replacementCanary: replacementCanary
+        )
+        let hooks = TransientAudioStoreTestHooks()
+        hooks.afterRootPinned = { hook.run() }
+
+        XCTAssertThrowsError(
+            try TransientAudioStore(
+                root: root,
+                clock: AudioTestClock(),
+                testHooks: hooks
+            )
+        ) {
+            assertSanitized($0, canaries: [root.path, moved.path])
+        }
+
+        XCTAssertNil(hook.error)
+        XCTAssertEqual(try backupExclusionXattr(root), replacementCanary)
+        XCTAssertEqual(try backupExclusionXattr(moved), try expectedBackupExclusionXattr())
+    }
+
+    func testEnumerationFailsClosedOnReadAndUnexpectedStatErrorsButAcceptsCleanEOFAndENOENT() async throws {
+        let parent = temporaryAudioDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = parent.appendingPathComponent("TransientAudio", isDirectory: true)
+        let hooks = TransientAudioStoreTestHooks()
+        let store = try TransientAudioStore(
+            root: root,
+            clock: AudioTestClock(),
+            testHooks: hooks
+        )
+
+        hooks.forcedDirectoryReadErrno = EIO
+        await XCTAssertThrowsAudioStoreError { try await store.sweep() }
+        hooks.forcedDirectoryReadErrno = nil
+        try await store.sweep()
+
+        let statFailure = root.appendingPathComponent("99999999-9999-4999-8999-999999999999.caf")
+        try Data([0x42]).write(to: statFailure)
+        let statFailureIdentity = try fileIdentity(statFailure)
+        hooks.forcedQuarantinedEntryStatErrno = { name in
+            name == statFailure.lastPathComponent ? EIO : nil
+        }
+        await XCTAssertThrowsAudioStoreError { try await store.sweep() }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: statFailure.path))
+        let preservedStatFailure = try XCTUnwrap(
+            try directChild(with: statFailureIdentity, in: root)
+        )
+        XCTAssertFalse(isCanonicalCAFNameForTest(preservedStatFailure.lastPathComponent))
+        XCTAssertEqual(try Data(contentsOf: preservedStatFailure), Data([0x42]))
+
+        let disappeared = root.appendingPathComponent("88888888-8888-4888-8888-888888888888.caf")
+        try Data([0x24]).write(to: disappeared)
+        let disappearedIdentity = try fileIdentity(disappeared)
+        hooks.forcedQuarantinedEntryStatErrno = { name in
+            name == disappeared.lastPathComponent ? ENOENT : nil
+        }
+        try await store.sweep()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: disappeared.path))
+        let preservedDisappeared = try XCTUnwrap(
+            try directChild(with: disappearedIdentity, in: root)
+        )
+        XCTAssertFalse(isCanonicalCAFNameForTest(preservedDisappeared.lastPathComponent))
+        XCTAssertEqual(try Data(contentsOf: preservedDisappeared), Data([0x24]))
+
+        hooks.forcedQuarantinedEntryStatErrno = nil
+        let stale = root.appendingPathComponent("77777777-7777-4777-8777-777777777777.caf")
+        try Data([0x66]).write(to: stale)
+        try await store.sweep()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
     }
 
     func testRootRenameAndReplacementFailClosedButDescriptorRelativeCleanupStillWorks() async throws {
@@ -306,12 +504,93 @@ private struct TestFileIdentity: Equatable {
     let inode: ino_t
 }
 
+private final class EntrySwapHook: @unchecked Sendable {
+    private let lock = NSLock()
+    private let expectedName: String
+    private let prepared: URL
+    private let destination: URL
+    private var storedResult: Int32?
+
+    init(expectedName: String, prepared: URL, destination: URL) {
+        self.expectedName = expectedName
+        self.prepared = prepared
+        self.destination = destination
+    }
+
+    var result: Int32? { lock.withLock { storedResult } }
+
+    func run(for name: String) {
+        lock.withLock {
+            guard name == expectedName, storedResult == nil else { return }
+            let status = rename(prepared.path, destination.path)
+            storedResult = status == 0 ? 0 : errno
+        }
+    }
+}
+
+private final class PinnedRootReplacementHook: @unchecked Sendable {
+    private let lock = NSLock()
+    private let root: URL
+    private let moved: URL
+    private let replacementCanary: Data
+    private var storedError: Error?
+    private var ran = false
+
+    init(root: URL, moved: URL, replacementCanary: Data) {
+        self.root = root
+        self.moved = moved
+        self.replacementCanary = replacementCanary
+    }
+
+    var error: Error? { lock.withLock { storedError } }
+
+    func run() {
+        lock.withLock {
+            guard !ran else { return }
+            ran = true
+            do {
+                try FileManager.default.moveItem(at: root, to: moved)
+                try FileManager.default.createDirectory(
+                    at: root,
+                    withIntermediateDirectories: false,
+                    attributes: [.posixPermissions: NSNumber(value: 0o700)]
+                )
+                try setBackupExclusionXattr(replacementCanary, on: root)
+            } catch {
+                storedError = error
+            }
+        }
+    }
+}
+
 private func fileIdentity(_ url: URL) throws -> TestFileIdentity {
     var info = stat()
     guard lstat(url.path, &info) == 0 else {
         throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
     }
     return TestFileIdentity(device: info.st_dev, inode: info.st_ino)
+}
+
+private func directChild(
+    with identity: TestFileIdentity,
+    in root: URL
+) throws -> URL? {
+    try FileManager.default.contentsOfDirectory(
+        at: root,
+        includingPropertiesForKeys: nil,
+        options: []
+    ).first { try fileIdentity($0) == identity }
+}
+
+private func symlinkDestination(_ url: URL) throws -> String {
+    try FileManager.default.destinationOfSymbolicLink(atPath: url.path)
+}
+
+private func isCanonicalCAFNameForTest(_ name: String) -> Bool {
+    guard name.hasSuffix(".caf") else { return false }
+    let basename = String(name.dropLast(4))
+    guard let uuid = UUID(uuidString: basename) else { return false }
+    return basename == uuid.uuidString.lowercased()
 }
 
 private func driftRoot(_ root: URL) throws {
@@ -376,6 +655,14 @@ private func backupExclusionXattr(_ url: URL) throws -> Data {
         throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
     }
     return Data(bytes)
+}
+
+private func expectedBackupExclusionXattr() throws -> Data {
+    try PropertyListSerialization.data(
+        fromPropertyList: "com.apple.backupd",
+        format: .binary,
+        options: 0
+    )
 }
 
 private func assertSanitized(

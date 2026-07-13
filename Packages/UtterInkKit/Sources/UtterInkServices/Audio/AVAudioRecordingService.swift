@@ -109,6 +109,8 @@ public actor AVAudioRecordingService: AudioRecordingService {
             let captureURL = try await store.makeCaptureFile()
             url = captureURL
             try Task.checkCancellation()
+            try await store.verifyForRecording(captureURL)
+            try Task.checkCancellation()
 
             let captureSession = try await factory.makeSession(for: captureURL, levels: levels)
             session = captureSession
@@ -276,26 +278,58 @@ private struct AVFoundationRecordingSessionFactory: RecordingSessionFactory {
 /// already reserved an invocation slot. User code is never called under the
 /// condition lock.
 final class SynchronousLevelPublisher: @unchecked Sendable {
+    final class Invocation: @unchecked Sendable {
+        private let lock = NSLock()
+        private var body: (@Sendable () -> Void)?
+
+        init(body: @escaping @Sendable () -> Void) {
+            self.body = body
+        }
+
+        func invoke() {
+            let invocation = lock.withLock { () -> (@Sendable () -> Void)? in
+                defer { body = nil }
+                return body
+            }
+            invocation?()
+        }
+    }
+
     private let condition = NSCondition()
     private var callback: (@Sendable (Float) -> Void)?
+    private let beforeReservation: (@Sendable () -> Void)?
     private var inFlight = 0
     private var closed = false
 
-    init(_ callback: @escaping @Sendable (Float) -> Void) {
+    init(
+        _ callback: @escaping @Sendable (Float) -> Void,
+        beforeReservation: (@Sendable () -> Void)? = nil
+    ) {
         self.callback = callback
+        self.beforeReservation = beforeReservation
     }
 
     func publish(_ level: Float) {
+        beforeReservation?()
+        reserve(level)?.invoke()
+    }
+
+    func reserve(_ level: Float) -> Invocation? {
         condition.lock()
         guard !closed, let callback else {
             condition.unlock()
-            return
+            return nil
         }
         inFlight += 1
         condition.unlock()
 
-        callback(level)
+        return Invocation { [self] in
+            callback(level)
+            finishInvocation()
+        }
+    }
 
+    private func finishInvocation() {
         condition.lock()
         inFlight -= 1
         if inFlight == 0 {
@@ -304,14 +338,24 @@ final class SynchronousLevelPublisher: @unchecked Sendable {
         condition.unlock()
     }
 
-    func close() {
+    func beginClose() {
         condition.lock()
         closed = true
         callback = nil
+        condition.unlock()
+    }
+
+    func waitForDrain() {
+        condition.lock()
         while inFlight > 0 {
             condition.wait()
         }
         condition.unlock()
+    }
+
+    func close() {
+        beginClose()
+        waitForDrain()
     }
 }
 
@@ -376,8 +420,7 @@ private final class AVFoundationRecordingSession: RecordingSession, @unchecked S
 
     private func consume(_ buffer: AVAudioPCMBuffer) {
         let rawLevel = Self.meterLevel(for: buffer)
-        var shouldPublish = false
-        var publishedLevel: Float = 0
+        var invocation: SynchronousLevelPublisher.Invocation?
 
         lock.withLock {
             guard !closed else { return }
@@ -393,26 +436,27 @@ private final class AVFoundationRecordingSession: RecordingSession, @unchecked S
             let now = ProcessInfo.processInfo.systemUptime
             if now - lastLevelEmission >= 0.025 {
                 lastLevelEmission = now
-                shouldPublish = true
-                publishedLevel = min(1, max(0, smoothedLevel))
+                invocation = levelPublisher.reserve(min(1, max(0, smoothedLevel)))
             }
         }
-        if shouldPublish {
-            levelPublisher.publish(publishedLevel)
-        }
+        invocation?.invoke()
     }
 
     private func close() -> Error? {
         let result = lock.withLock { () -> (shouldClose: Bool, error: Error?) in
             guard !closed else { return (false, firstWriteError) }
             closed = true
+            levelPublisher.beginClose()
             file = nil
             return (true, firstWriteError)
         }
-        guard result.shouldClose else { return result.error }
+        guard result.shouldClose else {
+            levelPublisher.waitForDrain()
+            return result.error
+        }
         input.removeTap(onBus: 0)
         engine.stop()
-        levelPublisher.close()
+        levelPublisher.waitForDrain()
         return result.error
     }
 

@@ -117,6 +117,35 @@ final class AVAudioRecordingServiceTests: XCTestCase {
         XCTAssertTrue(try startFailure.cafFiles().isEmpty)
     }
 
+    func testStartVerifiesIssuedIdentityBeforeFactoryCanOpenSubstitutedSymlink() async throws {
+        let fixture = try RecordingFixture()
+        let outside = fixture.parent.appendingPathComponent("outside-marker")
+        let marker = Data([0xCA, 0xFE])
+        try marker.write(to: outside)
+        let substitutingStore = PreFactorySubstitutionStore(
+            base: fixture.store,
+            outside: outside
+        )
+        fixture.factory.onMake = { url in
+            try Data([0xDE, 0xAD]).write(to: url)
+        }
+        let service = AVAudioRecordingService(
+            store: substitutingStore,
+            permission: fixture.permission,
+            factory: fixture.factory
+        )
+
+        await XCTAssertDiagnostic(.audioStart) {
+            _ = try await service.start { _ in }
+        }
+
+        XCTAssertEqual(fixture.factory.makeCount, 0)
+        XCTAssertEqual(fixture.session.startCount, 0)
+        XCTAssertEqual(try Data(contentsOf: outside), marker)
+        let substituted = try XCTUnwrap(substitutingStore.substitutedURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: substituted.path))
+    }
+
     func testStartVerifiesIssuedIdentityAfterFactoryOpensAndBeforeSessionStarts() async throws {
         let fixture = try RecordingFixture()
         fixture.factory.onMake = { url in
@@ -129,7 +158,15 @@ final class AVAudioRecordingServiceTests: XCTestCase {
         }
         XCTAssertEqual(fixture.session.startCount, 0)
         let substituted = try XCTUnwrap(fixture.session.urls.first)
-        XCTAssertEqual(try Data(contentsOf: substituted), Data([0x77]))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: substituted.path))
+        let preserved = try XCTUnwrap(
+            try FileManager.default.contentsOfDirectory(
+                at: substituted.deletingLastPathComponent(),
+                includingPropertiesForKeys: nil,
+                options: []
+            ).first { (try? Data(contentsOf: $0)) == Data([0x77]) }
+        )
+        XCTAssertFalse(preserved.lastPathComponent.hasSuffix(".caf"))
     }
 
     func testStopRequiresExactHandleStopsOnceAndRepeatReturnsSameURL() async throws {
@@ -309,8 +346,8 @@ final class AVAudioRecordingServiceTests: XCTestCase {
             let handle = try await service.start { _ in }
             XCTAssertGreaterThanOrEqual(controlled.deleteCount, 2)
             XCTAssertEqual(
-                Array(events.values.prefix(5)),
-                ["delete", "make", "factory", "verify", "start"]
+                Array(events.values.prefix(6)),
+                ["delete", "make", "verify", "factory", "verify", "start"]
             )
             await service.cancel(handle)
             XCTAssertTrue(try fixture.cafFiles().isEmpty)
@@ -373,8 +410,7 @@ final class AVAudioRecordingServiceTests: XCTestCase {
         let callbackEntered = DispatchSemaphore(value: 0)
         let callbackRelease = DispatchSemaphore(value: 0)
         let callbackReturned = DispatchSemaphore(value: 0)
-        let closeStarted = DispatchSemaphore(value: 0)
-        let closeReturned = DispatchSemaphore(value: 0)
+        let drainReturned = DispatchSemaphore(value: 0)
         let recorder = LevelRecorder()
         let publisher = SynchronousLevelPublisher { value in
             callbackEntered.signal()
@@ -385,19 +421,42 @@ final class AVAudioRecordingServiceTests: XCTestCase {
 
         DispatchQueue.global().async { publisher.publish(0.4) }
         XCTAssertEqual(callbackEntered.wait(timeout: .now() + 2), .success)
+        publisher.beginClose()
         DispatchQueue.global().async {
-            closeStarted.signal()
-            publisher.close()
-            closeReturned.signal()
+            publisher.waitForDrain()
+            drainReturned.signal()
         }
-        XCTAssertEqual(closeStarted.wait(timeout: .now() + 2), .success)
-        XCTAssertEqual(closeReturned.wait(timeout: .now() + 0.05), .timedOut)
+        XCTAssertEqual(drainReturned.wait(timeout: .now() + 0.05), .timedOut)
         callbackRelease.signal()
         XCTAssertEqual(callbackReturned.wait(timeout: .now() + 2), .success)
-        XCTAssertEqual(closeReturned.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(drainReturned.wait(timeout: .now() + 2), .success)
 
         publisher.publish(0.8)
         XCTAssertEqual(recorder.values, [0.4])
+    }
+
+    func testLevelPublishPoisedBeforeReservationIsDroppedWhenCloseBegins() {
+        let reservationGate = OneShotSynchronousGate()
+        let publishReturned = DispatchSemaphore(value: 0)
+        let recorder = LevelRecorder()
+        let publisher = SynchronousLevelPublisher(
+            { recorder.append($0) },
+            beforeReservation: { reservationGate.pause() }
+        )
+
+        DispatchQueue.global().async {
+            publisher.publish(0.6)
+            publishReturned.signal()
+        }
+        XCTAssertEqual(reservationGate.entered.wait(timeout: .now() + 2), .success)
+
+        publisher.beginClose()
+        reservationGate.release.signal()
+        XCTAssertEqual(publishReturned.wait(timeout: .now() + 2), .success)
+        publisher.waitForDrain()
+        publisher.publish(0.9)
+
+        XCTAssertTrue(recorder.values.isEmpty)
     }
 
     func testLevelMeterUsesAllChannelsLegacyMappingAndAttackReleaseSmoothing() {
@@ -675,6 +734,40 @@ private final class ControlledStore: TransientAudioFileStore, @unchecked Sendabl
     }
 }
 
+private final class PreFactorySubstitutionStore: TransientAudioFileStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private let base: TransientAudioStore
+    private let outside: URL
+    private var capturedURL: URL?
+
+    init(base: TransientAudioStore, outside: URL) {
+        self.base = base
+        self.outside = outside
+    }
+
+    var substitutedURL: URL? { lock.withLock { capturedURL } }
+
+    func makeCaptureFile() async throws -> URL {
+        let url = try await base.makeCaptureFile()
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.createSymbolicLink(at: url, withDestinationURL: outside)
+        lock.withLock { capturedURL = url }
+        return url
+    }
+
+    func verifyForRecording(_ url: URL) async throws {
+        try await base.verifyForRecording(url)
+    }
+
+    func seal(_ url: URL) async throws {
+        try await base.seal(url)
+    }
+
+    func delete(_ url: URL) async throws {
+        try await base.delete(url)
+    }
+}
+
 private final class EventRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: [String] = []
@@ -689,6 +782,24 @@ private final class LevelRecorder: @unchecked Sendable {
     private var stored: [Float] = []
     var values: [Float] { lock.withLock { stored } }
     func append(_ value: Float) { lock.withLock { stored.append(value) } }
+}
+
+private final class OneShotSynchronousGate: @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var used = false
+
+    func pause() {
+        let shouldPause = lock.withLock { () -> Bool in
+            guard !used else { return false }
+            used = true
+            return true
+        }
+        guard shouldPause else { return }
+        entered.signal()
+        release.wait()
+    }
 }
 
 private final class RecordingFixture {

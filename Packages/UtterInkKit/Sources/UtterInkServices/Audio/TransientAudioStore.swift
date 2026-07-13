@@ -29,6 +29,36 @@ protocol TransientAudioFileStore: Sendable {
     func delete(_ url: URL) async throws
 }
 
+final class TransientAudioStoreTestHooks: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedAfterRootPinned: (@Sendable () -> Void)?
+    private var storedBeforeQuarantine: (@Sendable (String) -> Void)?
+    private var storedForcedDirectoryReadErrno: Int32?
+    private var storedForcedQuarantinedEntryStatErrno: (@Sendable (String) -> Int32?)?
+
+    var afterRootPinned: (@Sendable () -> Void)? {
+        get { lock.withLock { storedAfterRootPinned } }
+        set { lock.withLock { storedAfterRootPinned = newValue } }
+    }
+
+    var beforeQuarantine: (@Sendable (String) -> Void)? {
+        get { lock.withLock { storedBeforeQuarantine } }
+        set { lock.withLock { storedBeforeQuarantine = newValue } }
+    }
+
+    var forcedDirectoryReadErrno: Int32? {
+        get { lock.withLock { storedForcedDirectoryReadErrno } }
+        set { lock.withLock { storedForcedDirectoryReadErrno = newValue } }
+    }
+
+    /// Injects the result of inspecting an entry only after its exclusive
+    /// descriptor-relative move to quarantine.
+    var forcedQuarantinedEntryStatErrno: (@Sendable (String) -> Int32?)? {
+        get { lock.withLock { storedForcedQuarantinedEntryStatErrno } }
+        set { lock.withLock { storedForcedQuarantinedEntryStatErrno = newValue } }
+    }
+}
+
 /// Owns short-lived CAF files used by a single application process.
 ///
 /// Removal is best-effort cleanup. Normal APFS deletion is not guaranteed
@@ -62,7 +92,9 @@ public actor TransientAudioStore: TransientAudioFileStore {
     private let lockIdentity: FileIdentity
     private let backupExclusion: Data
     private let clock: any AppClock
+    private let testHooks: TransientAudioStoreTestHooks?
     private var issued: [String: FileIdentity] = [:]
+    private var quarantinedIssued: [String: String] = [:]
     private var cleanedNames: Set<String> = []
 
     public init(root: URL, clock: any AppClock) throws {
@@ -70,7 +102,7 @@ public actor TransientAudioStore: TransientAudioFileStore {
             throw TransientAudioStoreError.unsafeRoot
         }
         let normalized = root.standardizedFileURL
-        let prepared = try Self.prepareRoot(normalized)
+        let prepared = try Self.prepareRoot(normalized, testHooks: nil)
         self.root = normalized
         rootDescriptor = prepared.descriptor
         lockDescriptor = prepared.lockDescriptor
@@ -78,6 +110,27 @@ public actor TransientAudioStore: TransientAudioFileStore {
         lockIdentity = prepared.lockIdentity
         backupExclusion = prepared.backupExclusion
         self.clock = clock
+        testHooks = nil
+    }
+
+    init(
+        root: URL,
+        clock: any AppClock,
+        testHooks: TransientAudioStoreTestHooks
+    ) throws {
+        guard root.isFileURL, !root.path.isEmpty else {
+            throw TransientAudioStoreError.unsafeRoot
+        }
+        let normalized = root.standardizedFileURL
+        let prepared = try Self.prepareRoot(normalized, testHooks: testHooks)
+        self.root = normalized
+        rootDescriptor = prepared.descriptor
+        lockDescriptor = prepared.lockDescriptor
+        identity = prepared.identity
+        lockIdentity = prepared.lockIdentity
+        backupExclusion = prepared.backupExclusion
+        self.clock = clock
+        self.testHooks = testHooks
     }
 
     deinit {
@@ -90,8 +143,18 @@ public actor TransientAudioStore: TransientAudioFileStore {
     public func sweep() async throws {
         try validateMutation(requirePublicRoot: true)
         do {
-            try Self.sweepFiles(rootDescriptor: rootDescriptor, protected: issued)
+            let compromised = try Self.sweepFiles(
+                rootDescriptor: rootDescriptor,
+                protected: issued,
+                testHooks: testHooks
+            )
+            for name in compromised {
+                retireIssued(name)
+            }
             try validateMutation(requirePublicRoot: true)
+            if !compromised.isEmpty {
+                throw TransientAudioStoreError.invalidCapture
+            }
         } catch let error as TransientAudioStoreError {
             throw error
         } catch {
@@ -114,7 +177,9 @@ public actor TransientAudioStore: TransientAudioFileStore {
             )
             if descriptor >= 0 {
                 var info = stat()
-                let valid = fstat(descriptor, &info) == 0
+                let hasIdentity = fstat(descriptor, &info) == 0
+                let fileIdentity = hasIdentity ? FileIdentity(info) : nil
+                let valid = hasIdentity
                     && Self.isRegular(info)
                     && info.st_nlink == 1
                     && fchmod(descriptor, 0o600) == 0
@@ -124,22 +189,27 @@ public actor TransientAudioStore: TransientAudioFileStore {
                     && (info.st_mode & 0o777) == 0o600
                 _ = close(descriptor)
                 guard valid else {
-                    _ = unlinkat(rootDescriptor, name, 0)
+                    try? Self.cleanupUnissuedCapture(
+                        name: name,
+                        expected: fileIdentity,
+                        rootDescriptor: rootDescriptor,
+                        testHooks: testHooks
+                    )
                     throw TransientAudioStoreError.fileOperation
                 }
-                let fileIdentity = FileIdentity(info)
+                let verifiedIdentity = FileIdentity(info)
                 do {
                     try validateMutation(requirePublicRoot: true)
                 } catch {
-                    var current = stat()
-                    if fstatat(rootDescriptor, name, &current, AT_SYMLINK_NOFOLLOW) == 0,
-                       Self.isRegular(current),
-                       FileIdentity(current) == fileIdentity {
-                        _ = unlinkat(rootDescriptor, name, 0)
-                    }
+                    try? Self.cleanupUnissuedCapture(
+                        name: name,
+                        expected: verifiedIdentity,
+                        rootDescriptor: rootDescriptor,
+                        testHooks: testHooks
+                    )
                     throw error
                 }
-                issued[name] = fileIdentity
+                issued[name] = verifiedIdentity
                 cleanedNames.remove(name)
                 return root.appendingPathComponent(name, isDirectory: false)
             }
@@ -206,24 +276,44 @@ public actor TransientAudioStore: TransientAudioFileStore {
         guard let expected = issued[name] else {
             throw TransientAudioStoreError.invalidCapture
         }
+        let quarantine: String
+        if let existing = quarantinedIssued[name] {
+            quarantine = existing
+        } else {
+            guard let moved = try Self.moveToQuarantine(
+                name: name,
+                rootDescriptor: rootDescriptor,
+                testHooks: testHooks
+            ) else {
+                retireIssued(name)
+                return
+            }
+            quarantinedIssued[name] = moved
+            quarantine = moved
+        }
 
         var info = stat()
-        if fstatat(rootDescriptor, name, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+        if fstatat(rootDescriptor, quarantine, &info, AT_SYMLINK_NOFOLLOW) != 0 {
             guard errno == ENOENT else {
                 throw TransientAudioStoreError.fileOperation
             }
-            issued.removeValue(forKey: name)
-            cleanedNames.insert(name)
+            retireIssued(name)
             return
         }
         guard Self.isRegular(info),
               info.st_nlink == 1,
               FileIdentity(info) == expected else {
+            retireIssued(name)
             throw TransientAudioStoreError.invalidCapture
         }
-        guard unlinkat(rootDescriptor, name, 0) == 0 || errno == ENOENT else {
+        guard unlinkat(rootDescriptor, quarantine, 0) == 0 || errno == ENOENT else {
             throw TransientAudioStoreError.fileOperation
         }
+        retireIssued(name)
+    }
+
+    private func retireIssued(_ name: String) {
+        quarantinedIssued.removeValue(forKey: name)
         issued.removeValue(forKey: name)
         cleanedNames.insert(name)
     }
@@ -285,7 +375,10 @@ public actor TransientAudioStore: TransientAudioFileStore {
         return name
     }
 
-    private static func prepareRoot(_ root: URL) throws -> PreparedRoot {
+    private static func prepareRoot(
+        _ root: URL,
+        testHooks: TransientAudioStoreTestHooks?
+    ) throws -> PreparedRoot {
         try createRootIfNeeded(root)
 
         let rootDescriptor = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
@@ -309,21 +402,20 @@ public actor TransientAudioStore: TransientAudioFileStore {
               fchmod(rootDescriptor, 0o700) == 0 else {
             throw TransientAudioStoreError.rootUnavailable
         }
+        testHooks?.afterRootPinned?()
 
+        let backupExclusion: Data
         do {
-            var values = URLResourceValues()
-            values.isExcludedFromBackup = true
-            var mutableRoot = root
-            try mutableRoot.setResourceValues(values)
+            backupExclusion = try backupExclusionValue()
         } catch {
             throw TransientAudioStoreError.rootUnavailable
         }
-        try requirePublicRoot(root, identity: identity)
-        guard let backupExclusion = readXattr(descriptor: rootDescriptor),
-              !backupExclusion.isEmpty,
-              writeXattr(backupExclusion, descriptor: rootDescriptor) else {
+        guard !backupExclusion.isEmpty,
+              writeXattr(backupExclusion, descriptor: rootDescriptor),
+              readXattr(descriptor: rootDescriptor) == backupExclusion else {
             throw TransientAudioStoreError.rootUnavailable
         }
+        try requirePublicRoot(root, identity: identity)
 
         lockDescriptor = openat(
             rootDescriptor,
@@ -355,7 +447,14 @@ public actor TransientAudioStore: TransientAudioFileStore {
             throw TransientAudioStoreError.unsafeRoot
         }
         try requirePublicRoot(root, identity: identity)
-        try sweepFiles(rootDescriptor: rootDescriptor, protected: [:])
+        let compromised = try sweepFiles(
+            rootDescriptor: rootDescriptor,
+            protected: [:],
+            testHooks: testHooks
+        )
+        guard compromised.isEmpty else {
+            throw TransientAudioStoreError.unsafeRoot
+        }
         try requirePublicRoot(root, identity: identity)
         guard fstat(rootDescriptor, &info) == 0,
               isDirectory(info),
@@ -417,6 +516,14 @@ public actor TransientAudioStore: TransientAudioFileStore {
         return Data(bytes)
     }
 
+    private static func backupExclusionValue() throws -> Data {
+        try PropertyListSerialization.data(
+            fromPropertyList: "com.apple.backupd",
+            format: .binary,
+            options: 0
+        )
+    }
+
     private static func writeXattr(_ value: Data, descriptor: Int32) -> Bool {
         value.withUnsafeBytes { bytes in
             fsetxattr(
@@ -432,8 +539,9 @@ public actor TransientAudioStore: TransientAudioFileStore {
 
     private static func sweepFiles(
         rootDescriptor: Int32,
-        protected: [String: FileIdentity]
-    ) throws {
+        protected: [String: FileIdentity],
+        testHooks: TransientAudioStoreTestHooks?
+    ) throws -> [String] {
         let enumerationDescriptor = openat(
             rootDescriptor,
             ".",
@@ -444,8 +552,17 @@ public actor TransientAudioStore: TransientAudioFileStore {
             throw TransientAudioStoreError.fileOperation
         }
         defer { _ = closedir(directory) }
+        var compromised: [String] = []
 
-        while let entry = readdir(directory) {
+        while true {
+            errno = 0
+            guard let entry = readdir(directory) else {
+                let readError = testHooks?.forcedDirectoryReadErrno ?? errno
+                guard readError == 0 else {
+                    throw TransientAudioStoreError.fileOperation
+                }
+                break
+            }
             let name = withUnsafePointer(to: &entry.pointee.d_name) { pointer in
                 pointer.withMemoryRebound(to: CChar.self, capacity: Int(NAME_MAX) + 1) {
                     String(cString: $0)
@@ -453,22 +570,119 @@ public actor TransientAudioStore: TransientAudioFileStore {
             }
             guard isCanonicalCAFName(name) else { continue }
 
-            var info = stat()
-            guard fstatat(rootDescriptor, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
-                  isRegular(info),
-                  info.st_nlink == 1 else {
+            if let expected = protected[name] {
+                var info = stat()
+                if fstatat(rootDescriptor, name, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+                    guard errno == ENOENT else {
+                        throw TransientAudioStoreError.fileOperation
+                    }
+                    compromised.append(name)
+                    continue
+                }
+                if isRegular(info),
+                   info.st_nlink == 1,
+                   FileIdentity(info) == expected {
+                    continue
+                }
+                _ = try moveToQuarantine(
+                    name: name,
+                    rootDescriptor: rootDescriptor,
+                    testHooks: testHooks
+                )
+                compromised.append(name)
                 continue
             }
-            if let expected = protected[name] {
-                guard FileIdentity(info) == expected else {
-                    throw TransientAudioStoreError.invalidCapture
+
+            guard let quarantine = try moveToQuarantine(
+                name: name,
+                rootDescriptor: rootDescriptor,
+                testHooks: testHooks
+            ) else {
+                continue
+            }
+
+            if let injected = testHooks?.forcedQuarantinedEntryStatErrno?(name) {
+                guard injected == ENOENT else {
+                    throw TransientAudioStoreError.fileOperation
                 }
                 continue
             }
-            guard unlinkat(rootDescriptor, name, 0) == 0 || errno == ENOENT else {
+            var info = stat()
+            if fstatat(rootDescriptor, quarantine, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+                guard errno == ENOENT else {
+                    throw TransientAudioStoreError.fileOperation
+                }
+                continue
+            }
+            guard isRegular(info), info.st_nlink == 1 else {
+                continue
+            }
+            guard unlinkat(rootDescriptor, quarantine, 0) == 0 || errno == ENOENT else {
                 throw TransientAudioStoreError.fileOperation
             }
         }
+        return compromised
+    }
+
+    private static func cleanupUnissuedCapture(
+        name: String,
+        expected: FileIdentity?,
+        rootDescriptor: Int32,
+        testHooks: TransientAudioStoreTestHooks?
+    ) throws {
+        guard let quarantine = try moveToQuarantine(
+            name: name,
+            rootDescriptor: rootDescriptor,
+            testHooks: testHooks
+        ) else {
+            return
+        }
+        guard let expected else { return }
+
+        var info = stat()
+        if fstatat(rootDescriptor, quarantine, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+            guard errno == ENOENT else {
+                throw TransientAudioStoreError.fileOperation
+            }
+            return
+        }
+        guard isRegular(info),
+              info.st_nlink == 1,
+              FileIdentity(info) == expected else {
+            return
+        }
+        guard unlinkat(rootDescriptor, quarantine, 0) == 0 || errno == ENOENT else {
+            throw TransientAudioStoreError.fileOperation
+        }
+    }
+
+    private static func moveToQuarantine(
+        name: String,
+        rootDescriptor: Int32,
+        testHooks: TransientAudioStoreTestHooks?
+    ) throws -> String? {
+        testHooks?.beforeQuarantine?(name)
+        for _ in 0..<16 {
+            let quarantine = ".utterink-quarantine-" + UUID().uuidString.lowercased()
+            if renameatx_np(
+                rootDescriptor,
+                name,
+                rootDescriptor,
+                quarantine,
+                UInt32(RENAME_EXCL)
+            ) == 0 {
+                return quarantine
+            }
+            switch errno {
+            case ENOENT:
+                return nil
+            case EEXIST:
+                continue
+            default:
+                throw TransientAudioStoreError.fileOperation
+            }
+        }
+        throw TransientAudioStoreError.fileOperation
     }
 
     private static func isCanonicalCAFName(_ name: String) -> Bool {
