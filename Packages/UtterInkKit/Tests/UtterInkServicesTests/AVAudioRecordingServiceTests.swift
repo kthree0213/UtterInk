@@ -20,6 +20,34 @@ final class AVAudioRecordingServiceTests: XCTestCase {
         }
     }
 
+    func testUnknownPermissionFailsClosedWithoutRequest() async throws {
+        let permission = PermissionFake(authorization: .unknown, requestedResult: true)
+        let fixture = try RecordingFixture(permission: permission)
+
+        let result = await fixture.service.requestPermission()
+        XCTAssertEqual(result, .denied)
+        XCTAssertEqual(permission.requestCount, 0)
+    }
+
+    func testConcurrentUndeterminedPermissionRequestsCoalesceIntoOneSystemRequest() async throws {
+        let gate = FactoryGate()
+        let permission = GatedPermissionFake(gate: gate, result: true)
+        let fixture = try RecordingFixture(permissionClient: permission)
+        let service = fixture.service
+
+        let first = Task { await service.requestPermission() }
+        let second = Task { await service.requestPermission() }
+        await waitUntil { permission.requestCount >= 1 }
+        XCTAssertEqual(permission.requestCount, 1)
+        gate.open()
+
+        let firstResult = await first.value
+        let secondResult = await second.value
+        XCTAssertEqual(firstResult, .granted)
+        XCTAssertEqual(secondResult, .granted)
+        XCTAssertEqual(permission.requestCount, 1)
+    }
+
     func testPublicConstructionHasNoPermissionOrCaptureSideEffect() throws {
         let parent = temporaryRecordingDirectory()
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -55,11 +83,13 @@ final class AVAudioRecordingServiceTests: XCTestCase {
     func testReservationSurvivesActorReentrancyAndCallerCancellationCleansEverything() async throws {
         let gate = FactoryGate()
         let fixture = try RecordingFixture(factoryGate: gate)
-        let first = Task { try await fixture.service.start { _ in } }
-        await waitUntil { fixture.factory.makeCount == 1 }
+        let factory = fixture.factory
+        let service = fixture.service
+        let first = Task { try await service.start { _ in } }
+        await waitUntil { factory.makeCount == 1 }
 
         await XCTAssertDiagnostic(.audioStart) {
-            _ = try await fixture.service.start { _ in }
+            _ = try await service.start { _ in }
         }
         first.cancel()
         gate.open()
@@ -68,8 +98,8 @@ final class AVAudioRecordingServiceTests: XCTestCase {
         XCTAssertEqual(fixture.session.cancelCount, 1)
         XCTAssertTrue(try fixture.cafFiles().isEmpty)
 
-        let replacement = try await fixture.service.start { _ in }
-        await fixture.service.cancel(replacement)
+        let replacement = try await service.start { _ in }
+        await service.cancel(replacement)
     }
 
     func testFactoryAndSessionStartFailuresMapToAudioStartAndLeaveNoCAF() async throws {
@@ -85,6 +115,21 @@ final class AVAudioRecordingServiceTests: XCTestCase {
         }
         XCTAssertEqual(startFailure.session.cancelCount, 1)
         XCTAssertTrue(try startFailure.cafFiles().isEmpty)
+    }
+
+    func testStartVerifiesIssuedIdentityAfterFactoryOpensAndBeforeSessionStarts() async throws {
+        let fixture = try RecordingFixture()
+        fixture.factory.onMake = { url in
+            try FileManager.default.removeItem(at: url)
+            try Data([0x77]).write(to: url)
+        }
+
+        await XCTAssertDiagnostic(.audioStart) {
+            _ = try await fixture.service.start { _ in }
+        }
+        XCTAssertEqual(fixture.session.startCount, 0)
+        let substituted = try XCTUnwrap(fixture.session.urls.first)
+        XCTAssertEqual(try Data(contentsOf: substituted), Data([0x77]))
     }
 
     func testStopRequiresExactHandleStopsOnceAndRepeatReturnsSameURL() async throws {
@@ -160,7 +205,8 @@ final class AVAudioRecordingServiceTests: XCTestCase {
         }
 
         let cancelling = Task { await service.cancel(handle) }
-        await waitUntil { gatedStore.deleteCount >= 1 }
+        let session = fixture.session
+        await waitUntil { session.cancelCount == 1 }
         sealGate.open()
         await cancelling.value
         await XCTAssertTaskDiagnostic(.audioFinalize, stopping)
@@ -170,6 +216,188 @@ final class AVAudioRecordingServiceTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(fixture.session.cancelCount, 1)
         XCTAssertFalse(fixture.session.hasLevelCallback)
         XCTAssertTrue(try fixture.cafFiles().isEmpty)
+    }
+
+    func testDeleteBarrierBlocksNewStartUntilActiveCancelCleanupFinishes() async throws {
+        let fixture = try RecordingFixture()
+        let gate = FactoryGate()
+        let controlled = ControlledStore(base: fixture.store, deleteGate: gate)
+        let service = AVAudioRecordingService(
+            store: controlled,
+            permission: fixture.permission,
+            factory: fixture.factory
+        )
+        let handle = try await service.start { _ in }
+        let cancelling = Task { await service.cancel(handle) }
+        await waitUntil { controlled.deleteCount == 1 }
+
+        await XCTAssertDiagnostic(.audioStart) {
+            _ = try await service.start { _ in }
+        }
+        gate.open()
+        await cancelling.value
+
+        let next = try await service.start { _ in }
+        await service.cancel(next)
+        XCTAssertTrue(try fixture.cafFiles().isEmpty)
+    }
+
+    func testFailedDeleteRetainsRetryableDebtUntilRepeatCancelSucceeds() async throws {
+        let fixture = try RecordingFixture()
+        let controlled = ControlledStore(base: fixture.store, deleteFailures: 2)
+        let service = AVAudioRecordingService(
+            store: controlled,
+            permission: fixture.permission,
+            factory: fixture.factory
+        )
+        let handle = try await service.start { _ in }
+
+        await service.cancel(handle)
+        XCTAssertEqual(controlled.deleteCount, 1)
+        XCTAssertEqual(try fixture.cafFiles().count, 1)
+
+        await service.cancel(handle)
+        XCTAssertEqual(controlled.deleteCount, 2)
+        XCTAssertEqual(try fixture.cafFiles().count, 1)
+
+        await service.cancel(handle)
+        XCTAssertEqual(controlled.deleteCount, 3)
+        XCTAssertTrue(try fixture.cafFiles().isEmpty)
+        XCTAssertEqual(fixture.session.cancelCount, 1)
+    }
+
+    func testFinalizedCancelRetainsDebtUntilRepeatCancelDeletesCAF() async throws {
+        let fixture = try RecordingFixture()
+        let controlled = ControlledStore(base: fixture.store, deleteFailures: 1)
+        let service = AVAudioRecordingService(
+            store: controlled,
+            permission: fixture.permission,
+            factory: fixture.factory
+        )
+        let handle = try await service.start { _ in }
+        let url = try await service.stop(handle)
+
+        await service.cancel(handle)
+        XCTAssertEqual(controlled.deleteCount, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+
+        await service.cancel(handle)
+        XCTAssertEqual(controlled.deleteCount, 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testFactoryAndSessionStartFailureCleanupDebtDrainsBeforeNextStart() async throws {
+        do {
+            let fixture = try RecordingFixture(factoryFailureCount: 1)
+            let events = EventRecorder()
+            fixture.factory.events = events
+            fixture.session.events = events
+            let controlled = ControlledStore(
+                base: fixture.store,
+                deleteFailures: 1,
+                events: events
+            )
+            let service = AVAudioRecordingService(
+                store: controlled,
+                permission: fixture.permission,
+                factory: fixture.factory
+            )
+            await XCTAssertDiagnostic(.audioStart) { _ = try await service.start { _ in } }
+            XCTAssertEqual(try fixture.cafFiles().count, 1)
+
+            events.removeAll()
+            let handle = try await service.start { _ in }
+            XCTAssertGreaterThanOrEqual(controlled.deleteCount, 2)
+            XCTAssertEqual(
+                Array(events.values.prefix(5)),
+                ["delete", "make", "factory", "verify", "start"]
+            )
+            await service.cancel(handle)
+            XCTAssertTrue(try fixture.cafFiles().isEmpty)
+        }
+
+        do {
+            let fixture = try RecordingFixture(sessionStartFailureCount: 1)
+            let controlled = ControlledStore(base: fixture.store, deleteFailures: 1)
+            let service = AVAudioRecordingService(
+                store: controlled,
+                permission: fixture.permission,
+                factory: fixture.factory
+            )
+            await XCTAssertDiagnostic(.audioStart) { _ = try await service.start { _ in } }
+            XCTAssertEqual(try fixture.cafFiles().count, 1)
+
+            let handle = try await service.start { _ in }
+            await service.cancel(handle)
+            XCTAssertTrue(try fixture.cafFiles().isEmpty)
+        }
+    }
+
+    func testStopAndFinalizeFailureCleanupDebtDrainsBeforeNextStart() async throws {
+        do {
+            let fixture = try RecordingFixture(sessionStopFailureCount: 1)
+            let controlled = ControlledStore(base: fixture.store, deleteFailures: 1)
+            let service = AVAudioRecordingService(
+                store: controlled,
+                permission: fixture.permission,
+                factory: fixture.factory
+            )
+            let handle = try await service.start { _ in }
+            await XCTAssertDiagnostic(.audioFinalize) { _ = try await service.stop(handle) }
+            XCTAssertEqual(try fixture.cafFiles().count, 1)
+
+            let next = try await service.start { _ in }
+            await service.cancel(next)
+            XCTAssertTrue(try fixture.cafFiles().isEmpty)
+        }
+
+        do {
+            let fixture = try RecordingFixture()
+            let controlled = ControlledStore(base: fixture.store, deleteFailures: 1, sealFailures: 1)
+            let service = AVAudioRecordingService(
+                store: controlled,
+                permission: fixture.permission,
+                factory: fixture.factory
+            )
+            let handle = try await service.start { _ in }
+            await XCTAssertDiagnostic(.audioFinalize) { _ = try await service.stop(handle) }
+            XCTAssertEqual(try fixture.cafFiles().count, 1)
+
+            let next = try await service.start { _ in }
+            await service.cancel(next)
+            XCTAssertTrue(try fixture.cafFiles().isEmpty)
+        }
+    }
+
+    func testLevelCallbackBarrierWaitsForInflightCallbackAndRejectsPublishesAfterClose() async throws {
+        let callbackEntered = DispatchSemaphore(value: 0)
+        let callbackRelease = DispatchSemaphore(value: 0)
+        let callbackReturned = DispatchSemaphore(value: 0)
+        let closeStarted = DispatchSemaphore(value: 0)
+        let closeReturned = DispatchSemaphore(value: 0)
+        let recorder = LevelRecorder()
+        let publisher = SynchronousLevelPublisher { value in
+            callbackEntered.signal()
+            callbackRelease.wait()
+            recorder.append(value)
+            callbackReturned.signal()
+        }
+
+        DispatchQueue.global().async { publisher.publish(0.4) }
+        XCTAssertEqual(callbackEntered.wait(timeout: .now() + 2), .success)
+        DispatchQueue.global().async {
+            closeStarted.signal()
+            publisher.close()
+            closeReturned.signal()
+        }
+        XCTAssertEqual(closeStarted.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(closeReturned.wait(timeout: .now() + 0.05), .timedOut)
+        callbackRelease.signal()
+        XCTAssertEqual(callbackReturned.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(closeReturned.wait(timeout: .now() + 2), .success)
+
+        publisher.publish(0.8)
+        XCTAssertEqual(recorder.values, [0.4])
     }
 
     func testLevelMeterUsesAllChannelsLegacyMappingAndAttackReleaseSmoothing() {
@@ -212,19 +440,40 @@ private final class PermissionFake: RecordingPermissionClient, @unchecked Sendab
     }
 }
 
+private final class GatedPermissionFake: RecordingPermissionClient, @unchecked Sendable {
+    private let lock = NSLock()
+    private let gate: FactoryGate
+    private let result: Bool
+    private var requests = 0
+
+    init(gate: FactoryGate, result: Bool) {
+        self.gate = gate
+        self.result = result
+    }
+
+    var recordPermission: AudioRecordPermission { .undetermined }
+    var requestCount: Int { lock.withLock { requests } }
+    func requestRecordPermission() async -> Bool {
+        lock.withLock { requests += 1 }
+        await gate.wait()
+        return result
+    }
+}
+
 private final class RecordingSessionFake: RecordingSession, @unchecked Sendable {
     private let lock = NSLock()
-    private let startError: Error?
-    private let stopError: Error?
+    private var remainingStartFailures: Int
+    private var remainingStopFailures: Int
     private var starts = 0
     private var stops = 0
     private var cancels = 0
     private var storedURLs: [URL] = []
     private var levelCallback: (@Sendable (Float) -> Void)?
+    var events: EventRecorder?
 
-    init(startError: Error? = nil, stopError: Error? = nil) {
-        self.startError = startError
-        self.stopError = stopError
+    init(startError: Error? = nil, stopError: Error? = nil, startFailureCount: Int = 0, stopFailureCount: Int = 0) {
+        remainingStartFailures = startError == nil ? startFailureCount : .max
+        remainingStopFailures = stopError == nil ? stopFailureCount : .max
     }
 
     var startCount: Int { lock.withLock { starts } }
@@ -241,20 +490,26 @@ private final class RecordingSessionFake: RecordingSession, @unchecked Sendable 
     }
 
     func start() throws {
-        let callback = lock.withLock { () -> (@Sendable (Float) -> Void)? in
+        let result = lock.withLock { () -> (callback: (@Sendable (Float) -> Void)?, fails: Bool) in
             starts += 1
-            return levelCallback
+            let fails = remainingStartFailures > 0
+            if remainingStartFailures != .max, remainingStartFailures > 0 { remainingStartFailures -= 1 }
+            return (levelCallback, fails)
         }
-        if let startError { throw startError }
-        callback?(0.25)
+        events?.append("start")
+        if result.fails { throw TestRecordingError.failed }
+        result.callback?(0.25)
     }
 
     func stop() throws {
-        lock.withLock {
+        let fails = lock.withLock { () -> Bool in
             stops += 1
             levelCallback = nil
+            let fails = remainingStopFailures > 0
+            if remainingStopFailures != .max, remainingStopFailures > 0 { remainingStopFailures -= 1 }
+            return fails
         }
-        if let stopError { throw stopError }
+        if fails { throw TestRecordingError.failed }
     }
 
     func cancel() {
@@ -268,13 +523,15 @@ private final class RecordingSessionFake: RecordingSession, @unchecked Sendable 
 private final class RecordingFactoryFake: RecordingSessionFactory, @unchecked Sendable {
     private let lock = NSLock()
     private let session: RecordingSessionFake
-    private let error: Error?
+    private var remainingFailures: Int
     private let gate: FactoryGate?
     private var makes = 0
+    var onMake: (@Sendable (URL) throws -> Void)?
+    var events: EventRecorder?
 
-    init(session: RecordingSessionFake, error: Error? = nil, gate: FactoryGate? = nil) {
+    init(session: RecordingSessionFake, error: Error? = nil, gate: FactoryGate? = nil, failureCount: Int = 0) {
         self.session = session
-        self.error = error
+        remainingFailures = error == nil ? failureCount : .max
         self.gate = gate
     }
 
@@ -283,24 +540,31 @@ private final class RecordingFactoryFake: RecordingSessionFactory, @unchecked Se
         for url: URL,
         levels: @escaping @Sendable (Float) -> Void
     ) async throws -> any RecordingSession {
-        lock.withLock { makes += 1 }
+        let fails = lock.withLock { () -> Bool in
+            makes += 1
+            let fails = remainingFailures > 0
+            if remainingFailures != .max, remainingFailures > 0 { remainingFailures -= 1 }
+            return fails
+        }
         if let gate { await gate.wait() }
-        if let error { throw error }
+        if fails { throw TestRecordingError.failed }
+        events?.append("factory")
         session.configure(url: url, levels: levels)
+        try onMake?(url)
         return session
     }
 }
 
 private final class FactoryGate: @unchecked Sendable {
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<Void, Never>?
+    private var continuations: [CheckedContinuation<Void, Never>] = []
     private var opened = false
 
     func wait() async {
         await withCheckedContinuation { continuation in
             let shouldResume = lock.withLock { () -> Bool in
                 if opened { return true }
-                self.continuation = continuation
+                continuations.append(continuation)
                 return false
             }
             if shouldResume { continuation.resume() }
@@ -308,12 +572,12 @@ private final class FactoryGate: @unchecked Sendable {
     }
 
     func open() {
-        let pending = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+        let pending = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
             opened = true
-            defer { continuation = nil }
-            return continuation
+            defer { continuations.removeAll() }
+            return continuations
         }
-        pending?.resume()
+        for continuation in pending { continuation.resume() }
     }
 }
 
@@ -336,6 +600,10 @@ private final class SealGateStore: TransientAudioFileStore, @unchecked Sendable 
         try await base.makeCaptureFile()
     }
 
+    func verifyForRecording(_ url: URL) async throws {
+        try await base.verifyForRecording(url)
+    }
+
     func seal(_ url: URL) async throws {
         lock.withLock { seals += 1 }
         await gate.wait()
@@ -346,6 +614,74 @@ private final class SealGateStore: TransientAudioFileStore, @unchecked Sendable 
         lock.withLock { deletes += 1 }
         try await base.delete(url)
     }
+}
+
+private final class ControlledStore: TransientAudioFileStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private let base: TransientAudioStore
+    private let deleteGate: FactoryGate?
+    private var remainingDeleteFailures: Int
+    private var remainingSealFailures: Int
+    private var deletes = 0
+    private let events: EventRecorder?
+
+    init(
+        base: TransientAudioStore,
+        deleteGate: FactoryGate? = nil,
+        deleteFailures: Int = 0,
+        sealFailures: Int = 0,
+        events: EventRecorder? = nil
+    ) {
+        self.base = base
+        self.deleteGate = deleteGate
+        remainingDeleteFailures = deleteFailures
+        remainingSealFailures = sealFailures
+        self.events = events
+    }
+
+    var deleteCount: Int { lock.withLock { deletes } }
+
+    func makeCaptureFile() async throws -> URL {
+        events?.append("make")
+        return try await base.makeCaptureFile()
+    }
+
+    func verifyForRecording(_ url: URL) async throws {
+        events?.append("verify")
+        try await base.verifyForRecording(url)
+    }
+
+    func seal(_ url: URL) async throws {
+        let fails = lock.withLock { () -> Bool in
+            guard remainingSealFailures > 0 else { return false }
+            remainingSealFailures -= 1
+            return true
+        }
+        if fails { throw TestRecordingError.failed }
+        try await base.seal(url)
+    }
+
+    func delete(_ url: URL) async throws {
+        events?.append("delete")
+        let fails = lock.withLock { () -> Bool in
+            deletes += 1
+            guard remainingDeleteFailures > 0 else { return false }
+            remainingDeleteFailures -= 1
+            return true
+        }
+        if let deleteGate { await deleteGate.wait() }
+        if fails { throw TestRecordingError.failed }
+        try await base.delete(url)
+    }
+}
+
+private final class EventRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+
+    var values: [String] { lock.withLock { stored } }
+    func append(_ event: String) { lock.withLock { stored.append(event) } }
+    func removeAll() { lock.withLock { stored.removeAll() } }
 }
 
 private final class LevelRecorder: @unchecked Sendable {
@@ -365,10 +701,14 @@ private final class RecordingFixture {
 
     init(
         permission: PermissionFake = PermissionFake(),
+        permissionClient: (any RecordingPermissionClient)? = nil,
         factoryGate: FactoryGate? = nil,
         factoryError: Error? = nil,
+        factoryFailureCount: Int = 0,
         sessionStartError: Error? = nil,
-        sessionStopError: Error? = nil
+        sessionStopError: Error? = nil,
+        sessionStartFailureCount: Int = 0,
+        sessionStopFailureCount: Int = 0
     ) throws {
         parent = temporaryRecordingDirectory()
         store = try TransientAudioStore(
@@ -376,9 +716,23 @@ private final class RecordingFixture {
             clock: RecordingTestClock()
         )
         self.permission = permission
-        session = RecordingSessionFake(startError: sessionStartError, stopError: sessionStopError)
-        factory = RecordingFactoryFake(session: session, error: factoryError, gate: factoryGate)
-        service = AVAudioRecordingService(store: store, permission: permission, factory: factory)
+        session = RecordingSessionFake(
+            startError: sessionStartError,
+            stopError: sessionStopError,
+            startFailureCount: sessionStartFailureCount,
+            stopFailureCount: sessionStopFailureCount
+        )
+        factory = RecordingFactoryFake(
+            session: session,
+            error: factoryError,
+            gate: factoryGate,
+            failureCount: factoryFailureCount
+        )
+        service = AVAudioRecordingService(
+            store: store,
+            permission: permissionClient ?? permission,
+            factory: factory
+        )
     }
 
     deinit {

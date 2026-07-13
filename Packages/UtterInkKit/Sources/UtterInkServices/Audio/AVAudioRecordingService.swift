@@ -6,6 +6,7 @@ enum AudioRecordPermission: Sendable {
     case undetermined
     case denied
     case granted
+    case unknown
 }
 
 protocol RecordingPermissionClient: Sendable {
@@ -41,6 +42,11 @@ public actor AVAudioRecordingService: AudioRecordingService {
     private var finalizing: ActiveCapture?
     private var cleanupRequested: Set<RecordingHandle> = []
     private var finalized: [RecordingHandle: URL] = [:]
+    private var cleanupDebt: [RecordingHandle: URL] = [:]
+    private var cleanupInFlight: Set<RecordingHandle> = []
+    private var cancelledSessions: Set<RecordingHandle> = []
+    private var permissionRequestGeneration: UInt64 = 0
+    private var permissionRequest: (generation: UInt64, task: Task<Bool, Never>)?
 
     public init(store: TransientAudioStore) {
         self.store = store
@@ -64,8 +70,22 @@ public actor AVAudioRecordingService: AudioRecordingService {
             return .granted
         case .denied:
             return .denied
+        case .unknown:
+            return .denied
         case .undetermined:
-            return await permission.requestRecordPermission() ? .granted : .denied
+            if let request = permissionRequest {
+                return await request.task.value ? .granted : .denied
+            }
+            permissionRequestGeneration &+= 1
+            let generation = permissionRequestGeneration
+            let permission = self.permission
+            let task = Task { await permission.requestRecordPermission() }
+            permissionRequest = (generation, task)
+            let granted = await task.value
+            if permissionRequest?.generation == generation {
+                permissionRequest = nil
+            }
+            return granted ? .granted : .denied
         }
     }
 
@@ -82,6 +102,9 @@ public actor AVAudioRecordingService: AudioRecordingService {
         var session: (any RecordingSession)?
 
         do {
+            guard await drainCleanupDebt() else {
+                throw DiagnosticCode.audioStart
+            }
             try Task.checkCancellation()
             let captureURL = try await store.makeCaptureFile()
             url = captureURL
@@ -89,6 +112,8 @@ public actor AVAudioRecordingService: AudioRecordingService {
 
             let captureSession = try await factory.makeSession(for: captureURL, levels: levels)
             session = captureSession
+            try Task.checkCancellation()
+            try await store.verifyForRecording(captureURL)
             try Task.checkCancellation()
             try captureSession.start()
             try Task.checkCancellation()
@@ -100,9 +125,12 @@ public actor AVAudioRecordingService: AudioRecordingService {
             reservation = nil
             return handle
         } catch {
-            session?.cancel()
+            if let session {
+                cancelSessionIfNeeded(session, handle: handle)
+            }
             if let url {
-                try? await store.delete(url)
+                cleanupDebt[handle] = url
+                _ = await attemptCleanup(handle)
             }
             if reservation == handle {
                 reservation = nil
@@ -127,41 +155,85 @@ public actor AVAudioRecordingService: AudioRecordingService {
         do {
             try capture.session.stop()
             try await store.seal(capture.url)
-            if cleanupRequested.remove(handle) != nil {
-                try? await store.delete(capture.url)
-                finalizing = nil
-                throw DiagnosticCode.audioFinalize
-            }
-            finalizing = nil
-            finalized[handle] = capture.url
-            return capture.url
         } catch {
-            capture.session.cancel()
-            try? await store.delete(capture.url)
+            cancelSessionIfNeeded(capture.session, handle: handle)
             if finalizing?.handle == handle {
                 finalizing = nil
             }
             cleanupRequested.remove(handle)
             finalized.removeValue(forKey: handle)
+            cleanupDebt[handle] = capture.url
+            _ = await attemptCleanup(handle)
             throw DiagnosticCode.audioFinalize
         }
+
+        if cleanupRequested.remove(handle) != nil {
+            if finalizing?.handle == handle {
+                finalizing = nil
+            }
+            cleanupDebt[handle] = capture.url
+            _ = await attemptCleanup(handle)
+            throw DiagnosticCode.audioFinalize
+        }
+        finalizing = nil
+        finalized[handle] = capture.url
+        return capture.url
     }
 
     public func cancel(_ handle: RecordingHandle) async {
         if let capture = active, capture.handle == handle {
             active = nil
-            capture.session.cancel()
-            try? await store.delete(capture.url)
+            cancelSessionIfNeeded(capture.session, handle: handle)
+            cleanupDebt[handle] = capture.url
+            _ = await attemptCleanup(handle)
             return
         }
         if let capture = finalizing, capture.handle == handle {
             cleanupRequested.insert(handle)
-            capture.session.cancel()
-            try? await store.delete(capture.url)
+            cancelSessionIfNeeded(capture.session, handle: handle)
             return
         }
-        if let url = finalized.removeValue(forKey: handle) {
-            try? await store.delete(url)
+        if let url = finalized[handle] {
+            cleanupDebt[handle] = url
+            finalized.removeValue(forKey: handle)
+            _ = await attemptCleanup(handle)
+            return
+        }
+        if cleanupDebt[handle] != nil {
+            _ = await attemptCleanup(handle)
+        }
+    }
+
+    private func cancelSessionIfNeeded(
+        _ session: any RecordingSession,
+        handle: RecordingHandle
+    ) {
+        guard cancelledSessions.insert(handle).inserted else { return }
+        session.cancel()
+    }
+
+    private func drainCleanupDebt() async -> Bool {
+        guard cleanupInFlight.isEmpty else { return false }
+        for handle in Array(cleanupDebt.keys) {
+            guard await attemptCleanup(handle) else { return false }
+        }
+        return cleanupDebt.isEmpty
+    }
+
+    private func attemptCleanup(_ handle: RecordingHandle) async -> Bool {
+        guard let url = cleanupDebt[handle] else { return true }
+        guard cleanupInFlight.insert(handle).inserted else { return false }
+        do {
+            try await store.delete(url)
+            cleanupInFlight.remove(handle)
+            if cleanupDebt[handle] == url {
+                cleanupDebt.removeValue(forKey: handle)
+            }
+            cancelledSessions.remove(handle)
+            return true
+        } catch {
+            cleanupInFlight.remove(handle)
+            return false
         }
     }
 }
@@ -176,7 +248,7 @@ private struct SystemRecordingPermissionClient: RecordingPermissionClient {
         case .undetermined:
             return .undetermined
         @unknown default:
-            return .undetermined
+            return .unknown
         }
     }
 
@@ -198,12 +270,57 @@ private struct AVFoundationRecordingSessionFactory: RecordingSessionFactory {
     }
 }
 
+/// Synchronous terminal barrier for level callbacks.
+///
+/// `close()` prevents new callback reservations and waits for callbacks that
+/// already reserved an invocation slot. User code is never called under the
+/// condition lock.
+final class SynchronousLevelPublisher: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var callback: (@Sendable (Float) -> Void)?
+    private var inFlight = 0
+    private var closed = false
+
+    init(_ callback: @escaping @Sendable (Float) -> Void) {
+        self.callback = callback
+    }
+
+    func publish(_ level: Float) {
+        condition.lock()
+        guard !closed, let callback else {
+            condition.unlock()
+            return
+        }
+        inFlight += 1
+        condition.unlock()
+
+        callback(level)
+
+        condition.lock()
+        inFlight -= 1
+        if inFlight == 0 {
+            condition.broadcast()
+        }
+        condition.unlock()
+    }
+
+    func close() {
+        condition.lock()
+        closed = true
+        callback = nil
+        while inFlight > 0 {
+            condition.wait()
+        }
+        condition.unlock()
+    }
+}
+
 private final class AVFoundationRecordingSession: RecordingSession, @unchecked Sendable {
     private let lock = NSLock()
     private let engine: AVAudioEngine
     private let input: AVAudioInputNode
     private var file: AVAudioFile?
-    private var levelCallback: (@Sendable (Float) -> Void)?
+    private let levelPublisher: SynchronousLevelPublisher
     private var firstWriteError: Error?
     private var lastLevelEmission: TimeInterval = -.infinity
     private var smoothedLevel: Float = 0
@@ -222,7 +339,7 @@ private final class AVFoundationRecordingSession: RecordingSession, @unchecked S
         self.engine = engine
         self.input = input
         self.file = file
-        levelCallback = levels
+        levelPublisher = SynchronousLevelPublisher(levels)
         input.installTap(onBus: 0, bufferSize: 4_096, format: format) { [weak self] buffer, _ in
             self?.consume(buffer)
         }
@@ -259,7 +376,7 @@ private final class AVFoundationRecordingSession: RecordingSession, @unchecked S
 
     private func consume(_ buffer: AVAudioPCMBuffer) {
         let rawLevel = Self.meterLevel(for: buffer)
-        var callback: (@Sendable (Float) -> Void)?
+        var shouldPublish = false
         var publishedLevel: Float = 0
 
         lock.withLock {
@@ -276,24 +393,26 @@ private final class AVFoundationRecordingSession: RecordingSession, @unchecked S
             let now = ProcessInfo.processInfo.systemUptime
             if now - lastLevelEmission >= 0.025 {
                 lastLevelEmission = now
-                callback = levelCallback
+                shouldPublish = true
                 publishedLevel = min(1, max(0, smoothedLevel))
             }
         }
-        callback?(publishedLevel)
+        if shouldPublish {
+            levelPublisher.publish(publishedLevel)
+        }
     }
 
     private func close() -> Error? {
         let result = lock.withLock { () -> (shouldClose: Bool, error: Error?) in
             guard !closed else { return (false, firstWriteError) }
             closed = true
-            levelCallback = nil
             file = nil
             return (true, firstWriteError)
         }
         guard result.shouldClose else { return result.error }
         input.removeTap(onBus: 0)
         engine.stop()
+        levelPublisher.close()
         return result.error
     }
 

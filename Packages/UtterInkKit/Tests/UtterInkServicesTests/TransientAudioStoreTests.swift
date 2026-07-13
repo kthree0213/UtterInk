@@ -155,6 +155,191 @@ final class TransientAudioStoreTests: XCTestCase {
             try await store.seal(issued)
         }
     }
+
+    func testSecondLiveStoreFailsClosedWithoutSweepingFirstStoresCapture() async throws {
+        let parent = temporaryAudioDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = parent.appendingPathComponent("TransientAudio", isDirectory: true)
+        let first = try TransientAudioStore(root: root, clock: AudioTestClock())
+        let active = try await first.makeCaptureFile()
+        try Data([0xCA, 0xFE]).write(to: active)
+
+        let lockProbe = Process()
+        lockProbe.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        lockProbe.arguments = [
+            "-c",
+            "import fcntl,os,sys; fd=os.open(sys.argv[1],os.O_RDWR); "
+                + "\ntry: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB); sys.exit(0)"
+                + "\nexcept BlockingIOError: sys.exit(73)",
+            root.appendingPathComponent(".utterink-transient-audio.lock").path
+        ]
+        try lockProbe.run()
+        lockProbe.waitUntilExit()
+        XCTAssertEqual(lockProbe.terminationStatus, 73)
+
+        XCTAssertThrowsError(try TransientAudioStore(root: root, clock: AudioTestClock())) {
+            assertSanitized($0, canaries: [root.path, active.lastPathComponent])
+        }
+        XCTAssertEqual(try Data(contentsOf: active), Data([0xCA, 0xFE]))
+        withExtendedLifetime(first) {}
+    }
+
+    func testRenamedLockFileCannotLetSecondStoreAcquireOwnershipOrSweepActiveCapture() async throws {
+        let parent = temporaryAudioDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = parent.appendingPathComponent("TransientAudio", isDirectory: true)
+        let first = try TransientAudioStore(root: root, clock: AudioTestClock())
+        let active = try await first.makeCaptureFile()
+        try Data([0xAA, 0x55]).write(to: active)
+
+        let lock = root.appendingPathComponent(".utterink-transient-audio.lock")
+        let renamedLock = root.appendingPathComponent("renamed-lock")
+        XCTAssertEqual(rename(lock.path, renamedLock.path), 0)
+        try Data().write(to: lock)
+        XCTAssertEqual(chmod(lock.path, 0o600), 0)
+
+        XCTAssertThrowsError(try TransientAudioStore(root: root, clock: AudioTestClock()))
+        XCTAssertEqual(try Data(contentsOf: active), Data([0xAA, 0x55]))
+        withExtendedLifetime(first) {}
+    }
+
+    func testVerifyAndDeleteRejectRegularAndSymlinkSubstitutionWithoutDeletingTargets() async throws {
+        let parent = temporaryAudioDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = parent.appendingPathComponent("TransientAudio", isDirectory: true)
+        let store = try TransientAudioStore(root: root, clock: AudioTestClock())
+
+        let regular = try await store.makeCaptureFile()
+        let issuedIdentity = try fileIdentity(regular)
+        let replacement = root.appendingPathComponent("replacement.tmp")
+        try Data().write(to: replacement)
+        XCTAssertEqual(chmod(replacement.path, 0o600), 0)
+        let replacementIdentity = try fileIdentity(replacement)
+        XCTAssertNotEqual(issuedIdentity, replacementIdentity)
+        XCTAssertEqual(rename(replacement.path, regular.path), 0)
+        XCTAssertEqual(try posixMode(regular), 0o600)
+        XCTAssertEqual(try Data(contentsOf: regular).count, 0)
+        await XCTAssertThrowsAudioStoreError { try await store.verifyForRecording(regular) }
+        await XCTAssertThrowsAudioStoreError { try await store.delete(regular) }
+        XCTAssertEqual(try fileIdentity(regular), replacementIdentity)
+        try FileManager.default.removeItem(at: regular)
+        try await store.delete(regular)
+
+        let link = try await store.makeCaptureFile()
+        let outside = parent.appendingPathComponent("outside-target")
+        try Data([0x22]).write(to: outside)
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        await XCTAssertThrowsAudioStoreError { try await store.verifyForRecording(link) }
+        await XCTAssertThrowsAudioStoreError { try await store.delete(link) }
+        XCTAssertTrue(try link.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink == true)
+        XCTAssertEqual(try Data(contentsOf: outside), Data([0x22]))
+    }
+
+    func testRootRenameAndReplacementFailClosedButDescriptorRelativeCleanupStillWorks() async throws {
+        let parent = temporaryAudioDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = parent.appendingPathComponent("TransientAudio", isDirectory: true)
+        let moved = parent.appendingPathComponent("PinnedTransientAudio", isDirectory: true)
+        let store = try TransientAudioStore(root: root, clock: AudioTestClock())
+        let issued = try await store.makeCaptureFile()
+        let name = issued.lastPathComponent
+
+        try FileManager.default.moveItem(at: root, to: moved)
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: NSNumber(value: 0o700)]
+        )
+        try setBackupExclusionXattr(try backupExclusionXattr(moved), on: root)
+        let replacementLock = root.appendingPathComponent(".utterink-transient-audio.lock")
+        try Data().write(to: replacementLock)
+        XCTAssertEqual(chmod(replacementLock.path, 0o600), 0)
+        let replacement = root.appendingPathComponent(name)
+        try Data([0x33]).write(to: replacement)
+
+        await XCTAssertThrowsAudioStoreError { try await store.sweep() }
+        await XCTAssertThrowsAudioStoreError { _ = try await store.makeCaptureFile() }
+        await XCTAssertThrowsAudioStoreError { try await store.seal(issued) }
+
+        try await store.delete(issued)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: moved.appendingPathComponent(name).path))
+        XCTAssertEqual(try Data(contentsOf: replacement), Data([0x33]))
+    }
+
+    func testEveryMutationRepairsPinnedRootModeAndExactBackupExclusionXattr() async throws {
+        let parent = temporaryAudioDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = parent.appendingPathComponent("TransientAudio", isDirectory: true)
+        let store = try TransientAudioStore(root: root, clock: AudioTestClock())
+        let expectedXattr = try backupExclusionXattr(root)
+        XCTAssertFalse(expectedXattr.isEmpty)
+
+        let first = try await store.makeCaptureFile()
+
+        try driftRoot(root)
+        try await store.sweep()
+        try assertRepairedRoot(root, expectedXattr: expectedXattr)
+
+        try driftRoot(root)
+        let second = try await store.makeCaptureFile()
+        try assertRepairedRoot(root, expectedXattr: expectedXattr)
+
+        try driftRoot(root)
+        try await store.verifyForRecording(first)
+        try assertRepairedRoot(root, expectedXattr: expectedXattr)
+
+        try driftRoot(root)
+        try await store.seal(first)
+        try assertRepairedRoot(root, expectedXattr: expectedXattr)
+
+        try driftRoot(root)
+        try await store.delete(first)
+        try assertRepairedRoot(root, expectedXattr: expectedXattr)
+
+        try await store.delete(second)
+    }
+}
+
+private struct TestFileIdentity: Equatable {
+    let device: dev_t
+    let inode: ino_t
+}
+
+private func fileIdentity(_ url: URL) throws -> TestFileIdentity {
+    var info = stat()
+    guard lstat(url.path, &info) == 0 else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+    return TestFileIdentity(device: info.st_dev, inode: info.st_ino)
+}
+
+private func driftRoot(_ root: URL) throws {
+    guard chmod(root.path, 0o777) == 0 else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+    try setBackupExclusionXattr(Data("drift-canary".utf8), on: root)
+}
+
+private func assertRepairedRoot(_ root: URL, expectedXattr: Data) throws {
+    XCTAssertEqual(try posixMode(root), 0o700)
+    XCTAssertEqual(try backupExclusionXattr(root), expectedXattr)
+}
+
+private func setBackupExclusionXattr(_ data: Data, on url: URL) throws {
+    let result = data.withUnsafeBytes { bytes in
+        setxattr(
+            url.path,
+            "com.apple.metadata:com_apple_backup_excludeItem",
+            bytes.baseAddress,
+            bytes.count,
+            0,
+            0
+        )
+    }
+    guard result == 0 else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
 }
 
 private struct AudioTestClock: AppClock {
@@ -175,6 +360,22 @@ private func posixMode(_ url: URL) throws -> mode_t {
         throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
     }
     return info.st_mode & 0o777
+}
+
+private func backupExclusionXattr(_ url: URL) throws -> Data {
+    let name = "com.apple.metadata:com_apple_backup_excludeItem"
+    let size = getxattr(url.path, name, nil, 0, 0, 0)
+    guard size > 0 else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+    var bytes = [UInt8](repeating: 0, count: size)
+    let read = bytes.withUnsafeMutableBytes { buffer in
+        getxattr(url.path, name, buffer.baseAddress, buffer.count, 0, 0)
+    }
+    guard read == size else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+    return Data(bytes)
 }
 
 private func assertSanitized(
