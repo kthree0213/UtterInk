@@ -31,6 +31,13 @@ protocol LaunchAtLoginManaging: AnyObject {
 @MainActor
 protocol HotkeyProbing: AnyObject {
     func arm() async -> AsyncStream<Void>
+    func armProbeOnly() async -> AsyncStream<Void>
+}
+
+extension HotkeyProbing {
+    func armProbeOnly() async -> AsyncStream<Void> {
+        await arm()
+    }
 }
 
 @MainActor
@@ -104,6 +111,16 @@ final class LazyHotkeyService: HotkeyProbing, HotkeyConfiguring {
     }
 
     func arm() async -> AsyncStream<Void> {
+        let service = await ensureService()
+        return service?.probeEvents() ?? Self.finishedStream()
+    }
+
+    func armProbeOnly() async -> AsyncStream<Void> {
+        let service = await ensureService()
+        return service?.probeEvents(suppressingCommand: true) ?? Self.finishedStream()
+    }
+
+    private func ensureService() async -> KeyboardShortcutsHotkeyService? {
         if service == nil {
             currentMode = (try? await settings.current().shortcutMode) ?? .toggle
             let service = KeyboardShortcutsHotkeyService(
@@ -116,7 +133,7 @@ final class LazyHotkeyService: HotkeyProbing, HotkeyConfiguring {
             self.service = service
             hasConflict = service.hasConflict
         }
-        return service?.probeEvents() ?? Self.finishedStream()
+        return service
     }
 
     func reset() {

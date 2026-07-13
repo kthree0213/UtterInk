@@ -2,12 +2,21 @@ import UtterInkCore
 
 actor AppBootstrapGate {
     private var isOpen = false
+    private var hasEntered = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
     func wait() async {
+        hasEntered = true
         if isOpen { return }
         await withCheckedContinuation { continuation in
             waiters.append(continuation)
+        }
+    }
+
+    func waitUntilEntered() async {
+        for _ in 0..<2_000 {
+            if hasEntered { return }
+            await Task.yield()
         }
     }
 
@@ -39,6 +48,8 @@ final class RecordingIntentControllerSpy: DictationControlling {
     var rejectPreparation = false
     var bootstrapCount = 0
     var bootstrapGate: AppBootstrapGate?
+    var historyChangeHandler: (@MainActor (Bool) async -> Bool)?
+    private var historyControlRevision: UInt64 = 0
 
     func bootstrap() async {
         bootstrapCount += 1
@@ -48,7 +59,17 @@ final class RecordingIntentControllerSpy: DictationControlling {
         intents.append(intent)
         switch intent {
         case let .setHistoryEnabled(enabled):
-            historyControlStatus = .settled(enabled: enabled)
+            historyControlRevision &+= 1
+            let revision = historyControlRevision
+            historyControlStatus = .applying(enabled: enabled)
+            let handler = historyChangeHandler
+            Task { @MainActor [weak self] in
+                let succeeded = await handler?(enabled) ?? true
+                guard let self, self.historyControlRevision == revision else { return }
+                self.historyControlStatus = succeeded
+                    ? .settled(enabled: enabled)
+                    : .failed(enabled: enabled, failure: .preferenceSaveFailed)
+            }
         case .clearHistory:
             historyControlStatus = .settled(enabled: historyControlStatus.enabled)
         default:

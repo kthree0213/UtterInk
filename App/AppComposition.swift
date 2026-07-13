@@ -23,24 +23,40 @@ final class AppComposition {
     let features: AppFeatureDependencies
     let floatingWindowController: FloatingWindowController?
     let settingsModel: SettingsRootModel
+    let onboardingModel: OnboardingViewModel
 
     private var hotkeyListenerTask: Task<Void, Never>?
     private var hotkeyArmTask: Task<AsyncStream<Void>, Never>?
+    private var didEvaluateAutomaticOnboarding = false
+    private let automaticallyShowsOnboarding: Bool
+    private lazy var onboardingWindowController = OnboardingWindowController(
+        model: onboardingModel
+    )
 
     init(
         model: AppModel,
         features: AppFeatureDependencies,
-        floatingWindowController: FloatingWindowController? = nil
+        floatingWindowController: FloatingWindowController? = nil,
+        automaticallyShowsOnboarding: Bool = false
     ) {
         self.model = model
         self.features = features
         self.floatingWindowController = floatingWindowController
+        self.automaticallyShowsOnboarding = automaticallyShowsOnboarding
         self.settingsModel = SettingsRootModel(
             dependencies: features,
             controller: model.controller,
             setFloatingRecorderEnabled: { [weak floatingWindowController] enabled in
                 floatingWindowController?.setEnabled(enabled)
             }
+        )
+        self.onboardingModel = OnboardingViewModel(
+            settings: features.settings,
+            controller: model.controller,
+            permissions: features.permissions,
+            hotkeyProbe: features.hotkeyProbe,
+            onboardingSink: features.onboardingSink,
+            systemSettings: features.systemSettings
         )
     }
 
@@ -151,7 +167,8 @@ final class AppComposition {
         return AppComposition(
             model: model,
             features: features,
-            floatingWindowController: FloatingWindowController(model: model, clock: clock)
+            floatingWindowController: FloatingWindowController(model: model, clock: clock),
+            automaticallyShowsOnboarding: true
         )
     }
 
@@ -163,6 +180,11 @@ final class AppComposition {
             let showFloatingRecorder = (try? await features.settings.current())?
                 .showFloatingRecorder ?? false
             floatingWindowController.start(isEnabled: showFloatingRecorder)
+        }
+
+        if automaticallyShowsOnboarding, !didEvaluateAutomaticOnboarding {
+            didEvaluateAutomaticOnboarding = true
+            await onboardingWindowController.showIfNeeded()
         }
         if hotkeyListenerTask != nil { return }
 
@@ -185,6 +207,10 @@ final class AppComposition {
                 guard !Task.isCancelled else { return }
             }
         }
+    }
+
+    func showOnboarding() {
+        onboardingWindowController.show()
     }
 
     private static func applicationSupportRoot() throws -> URL {

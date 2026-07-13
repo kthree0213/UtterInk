@@ -51,7 +51,10 @@ struct UtterInkApp: App {
         MenuBarExtra(ProductIdentity.name, systemImage: "text.cursor") {
             MenuBarRootView(
                 model: model,
-                settingsStore: composition?.features.settings
+                settingsStore: composition?.features.settings,
+                openOnboarding: composition.map { composition in
+                    { composition.showOnboarding() }
+                }
             )
         }
 

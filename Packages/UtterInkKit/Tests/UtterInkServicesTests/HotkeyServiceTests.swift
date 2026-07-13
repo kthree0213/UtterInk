@@ -128,6 +128,61 @@ final class HotkeyServiceTests: XCTestCase {
         XCTAssertEqual(events, [.startRequested, .stopRequested])
     }
 
+    func testProbeOnlySuppressesOneToggleCommandWithoutAdvancingLatch() async {
+        let backend = HotkeyBackendFake()
+        var events: [KeyboardShortcutsHotkeyService.Event] = []
+        let service = KeyboardShortcutsHotkeyService(
+            mode: .toggle,
+            onEvent: { events.append($0) },
+            backend: backend
+        )
+        let stream = service.probeEvents(suppressingCommand: true)
+        let probeCount = Task { () -> Int in
+            var count = 0
+            for await _ in stream { count += 1 }
+            return count
+        }
+
+        backend.sendKeyDown()
+        backend.sendKeyUp()
+        let count = await probeCount.value
+        XCTAssertEqual(count, 1)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(events, [])
+
+        backend.sendKeyDown()
+        backend.sendKeyUp()
+        await waitUntil { events == [.startRequested] }
+        service.teardown()
+    }
+
+    func testProbeOnlySuppressesEntireHoldToTalkPress() async {
+        let backend = HotkeyBackendFake()
+        var events: [KeyboardShortcutsHotkeyService.Event] = []
+        let service = KeyboardShortcutsHotkeyService(
+            mode: .holdToTalk,
+            onEvent: { events.append($0) },
+            backend: backend
+        )
+        let stream = service.probeEvents(suppressingCommand: true)
+        let observed = Task {
+            for await _ in stream { return true }
+            return false
+        }
+
+        backend.sendKeyDown()
+        backend.sendKeyUp()
+        let didObserve = await observed.value
+        XCTAssertTrue(didObserve)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(events, [])
+
+        backend.sendKeyDown()
+        backend.sendKeyUp()
+        await waitUntil { events == [.startRequested, .stopRequested] }
+        service.teardown()
+    }
+
     func testTeardownIsIdempotentRemovesFixedHandlersAndPreventsFutureCallbacks() async {
         let backend = HotkeyBackendFake()
         var events: [KeyboardShortcutsHotkeyService.Event] = []

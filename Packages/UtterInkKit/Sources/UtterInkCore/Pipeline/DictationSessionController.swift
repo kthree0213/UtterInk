@@ -311,11 +311,22 @@ public final class DictationSessionController: DictationControlling {
             try Task.checkCancellation()
             guard startupGeneration == startup else { return }
 
-            let output = selectedSettings.outputModes.first {
-                $0.id == selectedSettings.selectedOutputModeID
-            } ?? .raw
-            let providerProfile = selectedSettings.providerProfiles.first {
-                $0.id == selectedSettings.selectedProviderProfileID
+            // The onboarding recorder is a local, Raw-only proving ground. It
+            // must not inherit a previously selected polishing mode or provider
+            // when onboarding is reopened after advanced setup.
+            let output: OutputMode
+            let providerProfile: ProviderProfile?
+            switch context {
+            case .focusedExternal:
+                output = selectedSettings.outputModes.first {
+                    $0.id == selectedSettings.selectedOutputModeID
+                } ?? .raw
+                providerProfile = selectedSettings.providerProfiles.first {
+                    $0.id == selectedSettings.selectedProviderProfileID
+                }
+            case .onboardingTest:
+                output = .raw
+                providerProfile = nil
             }
             let provider = providerProfile.map {
                 ProviderSelection(

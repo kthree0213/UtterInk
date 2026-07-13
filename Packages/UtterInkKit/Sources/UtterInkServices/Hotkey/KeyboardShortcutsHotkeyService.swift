@@ -36,11 +36,17 @@ public final class KeyboardShortcutsHotkeyService: @unchecked Sendable {
     private let backend: any HotkeyEventBackend
     private let lock = NSLock()
     private var keyIsDown = false
+    private var currentPressIsSuppressed = false
     private var nextToggleEvent = Event.startRequested
     private var tornDown = false
     private var pendingEvents: [Event] = []
     private var deliveryScheduled = false
-    private var probeContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
+    private struct ProbeSubscription {
+        let continuation: AsyncStream<Void>.Continuation
+        let suppressesCommand: Bool
+    }
+
+    private var probeSubscriptions: [UUID: ProbeSubscription] = [:]
 
     public convenience init(
         mode: ShortcutMode,
@@ -72,12 +78,17 @@ public final class KeyboardShortcutsHotkeyService: @unchecked Sendable {
         teardown()
     }
 
-    public func probeEvents() -> AsyncStream<Void> {
+    public func probeEvents(
+        suppressingCommand: Bool = false
+    ) -> AsyncStream<Void> {
         AsyncStream { continuation in
             let id = UUID()
             let shouldFinish = lock.withLock {
                 guard !tornDown else { return true }
-                probeContinuations[id] = continuation
+                probeSubscriptions[id] = ProbeSubscription(
+                    continuation: continuation,
+                    suppressesCommand: suppressingCommand
+                )
                 return false
             }
             continuation.onTermination = { [weak self] _ in
@@ -94,10 +105,11 @@ public final class KeyboardShortcutsHotkeyService: @unchecked Sendable {
             guard !tornDown else { return nil }
             tornDown = true
             keyIsDown = false
+            currentPressIsSuppressed = false
             pendingEvents.removeAll()
             deliveryScheduled = false
-            let values = Array(probeContinuations.values)
-            probeContinuations.removeAll()
+            let values = probeSubscriptions.values.map(\.continuation)
+            probeSubscriptions.removeAll()
             return values
         }
         guard let continuations else { return }
@@ -117,10 +129,31 @@ public final class KeyboardShortcutsHotkeyService: @unchecked Sendable {
     private func handleKeyDown() {
         let accepted: (
             probes: [AsyncStream<Void>.Continuation],
+            oneShotProbes: [AsyncStream<Void>.Continuation],
             shouldScheduleDelivery: Bool
         )? = lock.withLock {
             guard !tornDown, !keyIsDown else { return nil }
             keyIsDown = true
+
+            let subscriptions = Array(probeSubscriptions)
+            let suppressesCommand = subscriptions.contains {
+                $0.value.suppressesCommand
+            }
+            currentPressIsSuppressed = suppressesCommand
+            let oneShotIDs = subscriptions.compactMap { entry in
+                entry.value.suppressesCommand ? entry.key : nil
+            }
+            let oneShotProbes = oneShotIDs.compactMap {
+                probeSubscriptions.removeValue(forKey: $0)?.continuation
+            }
+
+            guard !suppressesCommand else {
+                return (
+                    subscriptions.map { $0.value.continuation },
+                    oneShotProbes,
+                    false
+                )
+            }
 
             let event: Event
             switch mode {
@@ -139,11 +172,16 @@ public final class KeyboardShortcutsHotkeyService: @unchecked Sendable {
             pendingEvents.append(event)
             let shouldSchedule = !deliveryScheduled
             deliveryScheduled = true
-            return (Array(probeContinuations.values), shouldSchedule)
+            return (
+                subscriptions.map { $0.value.continuation },
+                oneShotProbes,
+                shouldSchedule
+            )
         }
         guard let accepted else { return }
 
         accepted.probes.forEach { $0.yield(()) }
+        accepted.oneShotProbes.forEach { $0.finish() }
         if accepted.shouldScheduleDelivery {
             scheduleEventDelivery()
         }
@@ -153,6 +191,9 @@ public final class KeyboardShortcutsHotkeyService: @unchecked Sendable {
         let shouldScheduleDelivery: Bool? = lock.withLock {
             guard !tornDown, keyIsDown else { return nil }
             keyIsDown = false
+            let wasSuppressed = currentPressIsSuppressed
+            currentPressIsSuppressed = false
+            guard !wasSuppressed else { return false }
             guard mode == .holdToTalk else { return false }
 
             pendingEvents.append(.stopRequested)
@@ -189,7 +230,7 @@ public final class KeyboardShortcutsHotkeyService: @unchecked Sendable {
 
     private func removeProbe(id: UUID) {
         lock.withLock {
-            probeContinuations[id] = nil
+            probeSubscriptions[id] = nil
         }
     }
 }

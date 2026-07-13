@@ -247,6 +247,30 @@ final class DictationSessionControllerTests: XCTestCase {
         XCTAssertEqual(harness.controller.state.result?.delivery, .deliveredToOnboardingTest)
     }
 
+    func testOnboardingSessionForcesRawWithoutChangingSavedPolishingChoice() async {
+        let configured = polishedSettingsWithProvider()
+        let harness = Harness(
+            settings: configured,
+            target: .external(DeliveryTargetID())
+        )
+        await harness.bootstrapWithVolatileProbe()
+
+        harness.controller.send(.start(.onboardingTest))
+        await waitUntil { harness.controller.state.stage == .recording }
+        harness.controller.send(.stop)
+        await waitUntil { harness.controller.state.stage == .completed }
+
+        let polishingCallCount = await harness.polishing.callCount()
+        let calls = await harness.delivery.deliveryCalls()
+        let savedSettings = await harness.settings.value()
+        XCTAssertEqual(polishingCallCount, 0)
+        XCTAssertEqual(calls.map(\.target), [.onboardingTest])
+        XCTAssertEqual(calls.map(\.text), ["raw transcript"])
+        XCTAssertEqual(harness.controller.state.result?.source, .raw)
+        XCTAssertEqual(harness.controller.state.result?.finalText, "raw transcript")
+        XCTAssertEqual(savedSettings.selectedOutputModeID, configured.selectedOutputModeID)
+    }
+
     func testCancelAwaitsInFlightEffectBeforeCleanupAndPersistsCancelledOutcome() async {
         let gate = AsyncGate()
         let polishing = PolishingFake(gate: gate)
