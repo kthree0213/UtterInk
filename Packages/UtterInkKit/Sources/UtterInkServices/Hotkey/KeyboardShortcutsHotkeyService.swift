@@ -1,6 +1,7 @@
 import Carbon.HIToolbox
 import Foundation
 import KeyboardShortcuts
+import SwiftUI
 import UtterInkCore
 
 protocol HotkeyEventBackend: Sendable {
@@ -19,6 +20,14 @@ public final class KeyboardShortcutsHotkeyService: @unchecked Sendable {
     }
 
     public static let shortcutName = KeyboardShortcuts.Name("utterink.dictation")
+
+    public static var hasConfiguredShortcut: Bool {
+        KeyboardShortcuts.getShortcut(for: shortcutName) != nil
+    }
+
+    public static func resetShortcut() {
+        KeyboardShortcuts.reset(shortcutName)
+    }
 
     public let hasConflict: Bool
 
@@ -182,6 +191,21 @@ public final class KeyboardShortcutsHotkeyService: @unchecked Sendable {
         lock.withLock {
             probeContinuations[id] = nil
         }
+    }
+}
+
+public struct DictationShortcutRecorder: View {
+    private let onChange: (Bool) -> Void
+
+    public init(onChange: @escaping (Bool) -> Void = { _ in }) {
+        self.onChange = onChange
+    }
+
+    public var body: some View {
+        KeyboardShortcuts.Recorder(
+            for: KeyboardShortcutsHotkeyService.shortcutName,
+            onChange: { onChange($0 != nil) }
+        )
     }
 }
 

@@ -25,6 +25,7 @@ final class RecordingIntentControllerSpy: DictationControlling {
     var speechModelState: SpeechModelState = .ready(modelID: "small")
     var volatileResults: [DictationResult] = []
     var historyRecords: [HistoryRecord] = []
+    var historyControlStatus: HistoryControlStatus = .settled(enabled: true)
     var recordingTelemetry: RecordingTelemetry?
     var sessionPresentation: SessionPresentationContext?
     var speechModelCatalog: [SpeechModelDescriptor] = []
@@ -36,7 +37,17 @@ final class RecordingIntentControllerSpy: DictationControlling {
         bootstrapCount += 1
         await bootstrapGate?.wait()
     }
-    func send(_ intent: UserIntent) { intents.append(intent) }
+    func send(_ intent: UserIntent) {
+        intents.append(intent)
+        switch intent {
+        case let .setHistoryEnabled(enabled):
+            historyControlStatus = .settled(enabled: enabled)
+        case .clearHistory:
+            historyControlStatus = .settled(enabled: historyControlStatus.enabled)
+        default:
+            break
+        }
+    }
     func prepareSpeechModel(_ modelID: String) {}
     func cancelSpeechModelPreparation() {}
     func deleteCachedSpeechModel(_ modelID: String) {}

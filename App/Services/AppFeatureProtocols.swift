@@ -18,6 +18,7 @@ enum LaunchAtLoginState: Equatable, Sendable {
     case enabled
     case requiresApproval
     case unavailable
+    case failed
 }
 
 @MainActor
@@ -36,6 +37,8 @@ protocol HotkeyProbing: AnyObject {
 protocol HotkeyConfiguring: AnyObject {
     var currentMode: ShortcutMode { get }
     var hasConflict: Bool { get }
+    var hasConfiguredShortcut: Bool { get }
+    func reconfigure(mode: ShortcutMode)
     func reset()
 }
 
@@ -88,6 +91,10 @@ final class LazyHotkeyService: HotkeyProbing, HotkeyConfiguring {
     private(set) var currentMode: ShortcutMode = .toggle
     private(set) var hasConflict = false
 
+    var hasConfiguredShortcut: Bool {
+        KeyboardShortcutsHotkeyService.hasConfiguredShortcut
+    }
+
     init(
         settings: any SettingsStore,
         eventHandler: @escaping EventHandler
@@ -113,10 +120,29 @@ final class LazyHotkeyService: HotkeyProbing, HotkeyConfiguring {
     }
 
     func reset() {
+        KeyboardShortcutsHotkeyService.resetShortcut()
         service?.teardown()
-        service = nil
-        currentMode = .toggle
-        hasConflict = false
+        let service = makeService(mode: currentMode)
+        self.service = service
+        hasConflict = service.hasConflict
+    }
+
+    func reconfigure(mode: ShortcutMode) {
+        service?.teardown()
+        currentMode = mode
+        let service = makeService(mode: mode)
+        self.service = service
+        hasConflict = service.hasConflict
+    }
+
+    private func makeService(mode: ShortcutMode) -> KeyboardShortcutsHotkeyService {
+        KeyboardShortcutsHotkeyService(
+            mode: mode,
+            onEvent: { [weak self] event in
+                guard let self else { return }
+                self.eventHandler(self.currentMode, event)
+            }
+        )
     }
 
     private static func finishedStream() -> AsyncStream<Void> {

@@ -43,6 +43,23 @@ public actor UserDefaultsSettingsStore: SettingsStore {
     }
 
     public func current() async throws -> UserSettings {
+        try loadCurrent()
+    }
+
+    public func save(_ settings: UserSettings) async throws {
+        try persist(settings)
+    }
+
+    public func update(
+        _ mutation: @escaping @Sendable (inout UserSettings) -> Void
+    ) async throws -> UserSettings {
+        var value = try loadCurrent()
+        mutation(&value)
+        try persist(value)
+        return value
+    }
+
+    private func loadCurrent() throws -> UserSettings {
         if let object = defaults.object(forKey: Self.storageKey) {
             guard let stored = object as? Data else {
                 throw UserDefaultsSettingsStoreError.corruptStoredSettings
@@ -58,11 +75,11 @@ public actor UserDefaultsSettingsStore: SettingsStore {
         } catch {
             throw UserDefaultsSettingsStoreError.legacyInaccessible
         }
-        try await save(migrated)
+        try persist(migrated)
         return migrated
     }
 
-    public func save(_ settings: UserSettings) async throws {
+    private func persist(_ settings: UserSettings) throws {
         guard Self.isValid(settings) else {
             throw UserDefaultsSettingsStoreError.invalidSettings
         }

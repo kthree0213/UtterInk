@@ -72,16 +72,15 @@ struct UtterInkApp: App {
         .defaultSize(width: 760, height: 620)
 
         Settings {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("UtterInk Settings")
-                    .font(.headline)
-                Text(
-                    model.readiness == .failed
-                        ? "Pipeline: Unavailable"
-                        : "Pipeline: \(model.pipeline.stage.rawValue)"
+            if let settingsModel = composition?.settingsModel {
+                SettingsRootView(model: settingsModel)
+            } else {
+                ContentUnavailableView(
+                    "Settings Unavailable",
+                    systemImage: "exclamationmark.triangle.fill",
+                    description: Text("Quit and reopen UtterInk to try again.")
                 )
             }
-            .padding(24)
         }
     }
 }
@@ -92,6 +91,7 @@ private final class InertAppController: DictationControlling {
     var speechModelState: SpeechModelState = .missing(modelID: "small")
     var volatileResults: [DictationResult] = []
     var historyRecords: [HistoryRecord] = []
+    var historyControlStatus: HistoryControlStatus = .settled(enabled: true)
     var recordingTelemetry: RecordingTelemetry?
     var sessionPresentation: SessionPresentationContext?
     var speechModelCatalog: [SpeechModelDescriptor] = []

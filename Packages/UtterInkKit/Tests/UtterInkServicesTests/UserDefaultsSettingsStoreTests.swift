@@ -61,6 +61,27 @@ final class UserDefaultsSettingsStoreTests: XCTestCase {
         XCTAssertEqual(defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix("utterink.") }, ["utterink.user-settings.v1"])
     }
 
+    func testConcurrentAtomicUpdatesPreserveBothMutations() async throws {
+        let store = try UserDefaultsSettingsStore(
+            defaults: makeDefaults(),
+            legacy: SettingsFakeLegacy(values: [:]),
+            legacyMap: .bundled
+        )
+        _ = try await store.current()
+
+        async let delivery = store.update {
+            $0.deliveryPreference = .copyOnly
+        }
+        async let floating = store.update {
+            $0.showFloatingRecorder = false
+        }
+        _ = try await (delivery, floating)
+
+        let final = try await store.current()
+        XCTAssertEqual(final.deliveryPreference, .copyOnly)
+        XCTAssertFalse(final.showFloatingRecorder)
+    }
+
     func testMigratesAllSupportedNonSecretLegacyValues() async throws {
         let defaults = makeDefaults()
         let profileID = UUID()

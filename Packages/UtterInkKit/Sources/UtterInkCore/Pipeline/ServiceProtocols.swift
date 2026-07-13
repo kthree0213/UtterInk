@@ -3,6 +3,9 @@ import Foundation
 public protocol SettingsStore: Sendable {
     func current() async throws -> UserSettings
     func save(_ settings: UserSettings) async throws
+    func update(
+        _ mutation: @escaping @Sendable (inout UserSettings) -> Void
+    ) async throws -> UserSettings
 }
 
 public protocol HistoryStore: Sendable {
@@ -127,12 +130,43 @@ public enum UserIntent: Equatable, Sendable {
     case clearHistory
 }
 
+public enum HistoryControlFailure: Equatable, Sendable {
+    case applyFailed
+    case preferenceSaveFailed
+    case clearFailed
+}
+
+public enum HistoryControlStatus: Equatable, Sendable {
+    case settled(enabled: Bool)
+    case applying(enabled: Bool)
+    case clearing(enabled: Bool)
+    case failed(enabled: Bool, failure: HistoryControlFailure)
+
+    public var enabled: Bool {
+        switch self {
+        case let .settled(enabled),
+             let .applying(enabled),
+             let .clearing(enabled),
+             let .failed(enabled, _):
+            return enabled
+        }
+    }
+
+    public var isPending: Bool {
+        switch self {
+        case .applying, .clearing: return true
+        case .settled, .failed: return false
+        }
+    }
+}
+
 @MainActor
 public protocol DictationControlling: AnyObject {
     var state: PipelineState { get }
     var speechModelState: SpeechModelState { get }
     var volatileResults: [DictationResult] { get }
     var historyRecords: [HistoryRecord] { get }
+    var historyControlStatus: HistoryControlStatus { get }
     var recordingTelemetry: RecordingTelemetry? { get }
     var sessionPresentation: SessionPresentationContext? { get }
     var speechModelCatalog: [SpeechModelDescriptor] { get }

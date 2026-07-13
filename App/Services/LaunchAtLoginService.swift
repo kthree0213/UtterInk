@@ -34,7 +34,7 @@ final class LaunchAtLoginService: LaunchAtLoginManaging {
             }
             refresh()
         } catch {
-            state = .unavailable
+            state = .failed
         }
     }
 }

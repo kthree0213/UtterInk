@@ -4,8 +4,11 @@ import UtterInkServices
 @testable import UtterInk
 
 actor AppSettingsFake: SettingsStore {
+    enum Failure: Error { case requested }
+
     private var value: UserSettings
     private var calls: [String] = []
+    private var saveFailureEnabled = false
 
     init(value: UserSettings = .p0Default) {
         self.value = value
@@ -18,10 +21,21 @@ actor AppSettingsFake: SettingsStore {
 
     func save(_ settings: UserSettings) async throws {
         calls.append("settings.save")
+        if saveFailureEnabled { throw Failure.requested }
         value = settings
     }
 
+    func update(
+        _ mutation: @escaping @Sendable (inout UserSettings) -> Void
+    ) async throws -> UserSettings {
+        calls.append("settings.update")
+        if saveFailureEnabled { throw Failure.requested }
+        mutation(&value)
+        return value
+    }
+
     func recordedCalls() -> [String] { calls }
+    func setSaveFailureEnabled(_ enabled: Bool) { saveFailureEnabled = enabled }
 }
 
 actor AppPermissionFake: PermissionService {
@@ -54,6 +68,7 @@ final class AppSystemSettingsFake: SystemSettingsNavigating {
 @MainActor
 final class AppLaunchAtLoginFake: LaunchAtLoginManaging {
     var state: LaunchAtLoginState = .disabled
+    var nextStateAfterEnable: LaunchAtLoginState = .enabled
     private(set) var calls: [String] = []
 
     func refresh() {
@@ -62,7 +77,7 @@ final class AppLaunchAtLoginFake: LaunchAtLoginManaging {
 
     func setEnabled(_ enabled: Bool) async {
         calls.append("launchAtLogin.set.\(enabled)")
-        state = enabled ? .enabled : .disabled
+        state = enabled ? nextStateAfterEnable : .disabled
     }
 }
 
@@ -70,6 +85,7 @@ final class AppLaunchAtLoginFake: LaunchAtLoginManaging {
 final class AppHotkeyFake: HotkeyProbing, HotkeyConfiguring {
     var currentMode: ShortcutMode = .toggle
     var hasConflict = false
+    var hasConfiguredShortcut = true
     var armGate: AppBootstrapGate?
     private(set) var calls: [String] = []
 
@@ -81,8 +97,13 @@ final class AppHotkeyFake: HotkeyProbing, HotkeyConfiguring {
 
     func reset() {
         calls.append("hotkey.reset")
-        currentMode = .toggle
+        hasConfiguredShortcut = false
         hasConflict = false
+    }
+
+    func reconfigure(mode: ShortcutMode) {
+        calls.append("hotkey.reconfigure.\(mode.rawValue)")
+        currentMode = mode
     }
 }
 

@@ -22,6 +22,7 @@ final class AppComposition {
     let model: AppModel
     let features: AppFeatureDependencies
     let floatingWindowController: FloatingWindowController?
+    let settingsModel: SettingsRootModel
 
     private var hotkeyListenerTask: Task<Void, Never>?
     private var hotkeyArmTask: Task<AsyncStream<Void>, Never>?
@@ -34,6 +35,13 @@ final class AppComposition {
         self.model = model
         self.features = features
         self.floatingWindowController = floatingWindowController
+        self.settingsModel = SettingsRootModel(
+            dependencies: features,
+            controller: model.controller,
+            setFloatingRecorderEnabled: { [weak floatingWindowController] enabled in
+                floatingWindowController?.setEnabled(enabled)
+            }
+        )
     }
 
     static func live() throws -> AppComposition {

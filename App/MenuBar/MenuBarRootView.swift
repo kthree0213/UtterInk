@@ -273,15 +273,14 @@ struct MenuBarRootView: View {
         guard let settingsStore,
               !isSavingOutputMode,
               rawFirstOutputModes.contains(where: { $0.id == id }) else { return }
-        var updated = settings
-        updated.selectedOutputModeID = id
         isSavingOutputMode = true
         outputSaveWarning = nil
         Task { @MainActor in
             defer { isSavingOutputMode = false }
             do {
-                try await settingsStore.save(updated)
-                settings = updated
+                settings = try await settingsStore.update {
+                    $0.selectedOutputModeID = id
+                }
             } catch {
                 outputSaveWarning = EnglishCopy.outputSaveFailed
             }

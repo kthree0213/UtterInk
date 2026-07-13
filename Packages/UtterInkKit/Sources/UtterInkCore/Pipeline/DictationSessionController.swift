@@ -8,6 +8,9 @@ public final class DictationSessionController: DictationControlling {
     public private(set) var speechModelState: SpeechModelState
     public private(set) var volatileResults: [DictationResult] = []
     public private(set) var historyRecords: [HistoryRecord] = []
+    public private(set) var historyControlStatus: HistoryControlStatus = .settled(
+        enabled: UserSettings.p0Default.historyEnabled
+    )
     public private(set) var recordingTelemetry: RecordingTelemetry?
     public private(set) var sessionPresentation: SessionPresentationContext?
     public let speechModelCatalog: [SpeechModelDescriptor]
@@ -29,6 +32,8 @@ public final class DictationSessionController: DictationControlling {
     @ObservationIgnored private var bootstrapInProgress = false
     @ObservationIgnored private var currentSettings: UserSettings?
     @ObservationIgnored private var currentHistoryGeneration: UInt64 = 0
+    @ObservationIgnored private var runtimeHistoryEnabled = UserSettings.p0Default.historyEnabled
+    @ObservationIgnored private var effectiveHistoryEnabled = UserSettings.p0Default.historyEnabled
     @ObservationIgnored private var currentSnapshot: SessionSnapshot?
     @ObservationIgnored private var currentToken: EffectToken?
     @ObservationIgnored private var currentRecording: RecordingHandle?
@@ -51,6 +56,7 @@ public final class DictationSessionController: DictationControlling {
     @ObservationIgnored private var actionTasks: [SessionID: Task<Void, Never>] = [:]
     @ObservationIgnored private var tombstones: Set<SessionID> = []
     @ObservationIgnored private var historyControlTask: Task<Void, Never>?
+    @ObservationIgnored private var historyControlRevision: UInt64 = 0
 
     public init(
         settings: any SettingsStore,
@@ -118,6 +124,9 @@ public final class DictationSessionController: DictationControlling {
         async let accessibility = permissions.accessibilityState()
         _ = await (microphone, accessibility)
         currentSettings = loadedSettings
+        runtimeHistoryEnabled = loadedSettings.historyEnabled
+        effectiveHistoryEnabled = loadedSettings.historyEnabled
+        historyControlStatus = .settled(enabled: loadedSettings.historyEnabled)
         historyRecords = loadedHistory.filter { !tombstones.contains($0.sessionID) }
         currentHistoryGeneration = generation
         speechModelState = sanitizeModelState(modelState, expectedModelID: loadedSettings.speechModelID)
@@ -264,7 +273,8 @@ public final class DictationSessionController: DictationControlling {
             }
         }
         do {
-            let selectedSettings = try await settings.current()
+            var selectedSettings = try await settings.current()
+            selectedSettings.historyEnabled = runtimeHistoryEnabled
             try Task.checkCancellation()
             guard startupGeneration == startup else { return }
 
@@ -773,50 +783,95 @@ public final class DictationSessionController: DictationControlling {
     }
 
     private func setHistoryEnabled(_ enabled: Bool) {
-        historyControlTask?.cancel()
         if !enabled {
             invalidateAllActions()
+            runtimeHistoryEnabled = false
         }
+        historyControlRevision &+= 1
+        let revision = historyControlRevision
+        historyControlStatus = .applying(enabled: enabled)
+        let predecessor = historyControlTask
         historyControlTask = Task { [weak self] in
+            await predecessor?.value
             guard let self else { return }
+            let generation: UInt64
             do {
-                let generation = try await self.history.setEnabled(enabled)
-                guard !Task.isCancelled else { return }
-                self.currentHistoryGeneration = generation
-                var value = try await self.settings.current()
-                value.historyEnabled = enabled
-                try await self.settings.save(value)
-                guard !Task.isCancelled else { return }
-                self.currentSettings = value
-                if enabled {
-                    await self.refreshHistory()
-                } else {
-                    self.volatileResults = self.volatileResults.map {
-                        self.rebuild($0, persistence: .volatile)
-                    }
+                generation = try await self.history.setEnabled(enabled)
+            } catch {
+                if self.historyControlRevision == revision {
+                    self.runtimeHistoryEnabled = self.effectiveHistoryEnabled
+                    self.historyControlStatus = .failed(
+                        enabled: self.effectiveHistoryEnabled,
+                        failure: .applyFailed
+                    )
+                }
+                await self.diagnostics.record(stage: self.state.stage, code: .historyWrite)
+                return
+            }
+            self.effectiveHistoryEnabled = enabled
+            if self.historyControlRevision == revision {
+                self.runtimeHistoryEnabled = enabled
+            }
+            self.currentHistoryGeneration = generation
+            self.currentSettings?.historyEnabled = enabled
+            let value: UserSettings
+            do {
+                value = try await self.settings.update {
+                    $0.historyEnabled = enabled
                 }
             } catch {
+                if self.historyControlRevision == revision {
+                    self.historyControlStatus = .failed(
+                        enabled: enabled,
+                        failure: .preferenceSaveFailed
+                    )
+                }
                 await self.diagnostics.record(stage: self.state.stage, code: .historyWrite)
+                return
             }
+            self.currentSettings = value
+            guard self.historyControlRevision == revision else { return }
+            if enabled {
+                await self.refreshHistory(expectedHistoryControlRevision: revision)
+            } else {
+                self.volatileResults = self.volatileResults.map {
+                    self.rebuild($0, persistence: .volatile)
+                }
+            }
+            guard self.historyControlRevision == revision else { return }
+            self.historyControlStatus = .settled(enabled: enabled)
         }
     }
 
     private func clearHistory() {
         cancelSession()
         invalidateAllActions()
+        historyControlRevision &+= 1
+        let revision = historyControlRevision
+        historyControlStatus = .clearing(enabled: effectiveHistoryEnabled)
         tombstones.formUnion(volatileResults.map(\.sessionID))
         tombstones.formUnion(historyRecords.map(\.sessionID))
         volatileResults = []
         historyRecords = []
-        historyControlTask?.cancel()
+        let predecessor = historyControlTask
         historyControlTask = Task { [weak self] in
+            await predecessor?.value
             guard let self else { return }
+            let enabled = self.effectiveHistoryEnabled
             do {
-                self.currentHistoryGeneration = try await self.history.clear()
-                guard !Task.isCancelled else { return }
+                let generation = try await self.history.clear()
+                guard self.historyControlRevision == revision else { return }
+                self.currentHistoryGeneration = generation
                 self.historyRecords = []
                 self.volatileResults = []
+                self.historyControlStatus = .settled(enabled: enabled)
             } catch {
+                if self.historyControlRevision == revision {
+                    self.historyControlStatus = .failed(
+                        enabled: enabled,
+                        failure: .clearFailed
+                    )
+                }
                 await self.diagnostics.record(stage: self.state.stage, code: .historyWrite)
             }
         }
@@ -917,9 +972,13 @@ public final class DictationSessionController: DictationControlling {
         }
     }
 
-    private func refreshHistory() async {
+    private func refreshHistory(expectedHistoryControlRevision: UInt64? = nil) async {
         do {
             let loaded = try await history.load()
+            if let expectedHistoryControlRevision,
+               historyControlRevision != expectedHistoryControlRevision {
+                return
+            }
             historyRecords = loaded.filter { !tombstones.contains($0.sessionID) }
         } catch {
             await diagnostics.record(stage: state.stage, code: .historyCorrupt)

@@ -46,6 +46,52 @@ final class DictationSessionControllerTests: XCTestCase {
         XCTAssertEqual(releaseCount, 1)
     }
 
+    func testActiveSnapshotKeepsLanguageModelOutputProviderAndDeliveryImmutable() async throws {
+        let initial = polishedSettingsWithProvider()
+        let harness = Harness(settings: initial)
+        let profileID = try XCTUnwrap(initial.selectedProviderProfileID)
+        try await harness.credentials.write(
+            SessionSecret(utf8: "fixture-key"),
+            profileID: profileID
+        )
+        await harness.bootstrapWithVolatileProbe()
+
+        harness.controller.send(.start(.focusedExternal))
+        await waitUntil { harness.controller.state.stage == .recording }
+
+        var future = initial
+        future.recognition = .automatic
+        future.speechModelID = "base"
+        future.selectedOutputModeID = OutputMode.rawID
+        future.providerProfiles = []
+        future.selectedProviderProfileID = nil
+        future.deliveryPreference = .copyOnly
+        await harness.settings.replace(with: future)
+
+        harness.controller.send(.stop)
+        await waitUntil { harness.controller.state.stage == .completed }
+
+        let receivedSnapshots = await harness.polishing.receivedSnapshots()
+        let captured = try XCTUnwrap(receivedSnapshots.first)
+        let expectedOutput = try XCTUnwrap(
+            initial.outputModes.first { $0.id == initial.selectedOutputModeID }
+        )
+        let expectedProfile = try XCTUnwrap(initial.providerProfiles.first)
+        XCTAssertEqual(captured.recognition, initial.recognition)
+        XCTAssertEqual(captured.speechModelID, initial.speechModelID)
+        XCTAssertEqual(captured.outputMode, expectedOutput)
+        XCTAssertEqual(
+            captured.provider,
+            ProviderSelection(
+                profileID: expectedProfile.id,
+                baseURL: expectedProfile.baseURL,
+                modelID: expectedProfile.modelID,
+                policy: expectedProfile.policy
+            )
+        )
+        XCTAssertEqual(captured.deliveryPreference, initial.deliveryPreference)
+    }
+
     func testDuplicateStartDoesNotCreateSecondSession() async {
         let harness = Harness(settings: rawSettings(), target: .external(DeliveryTargetID()))
         await harness.bootstrapWithVolatileProbe()
@@ -425,6 +471,197 @@ final class DictationSessionControllerTests: XCTestCase {
         XCTAssertTrue(harness.controller.volatileResults.isEmpty)
     }
 
+    func testRapidHistoryDisableThenEnableExecutesInIntentOrder() async {
+        let gate = AsyncGate()
+        let history = HistoryFake(setEnabledGate: gate)
+        let harness = Harness(settings: rawSettings(), history: history)
+        await harness.bootstrapWithVolatileProbe()
+
+        harness.controller.send(.setHistoryEnabled(false))
+        await gate.waitUntilEntered()
+        harness.controller.send(.setHistoryEnabled(true))
+        await settle()
+
+        let callsWhileDisabledIsBlocked = await history.setEnabledCalls()
+        XCTAssertEqual(callsWhileDisabledIsBlocked, [false])
+
+        await gate.open()
+        await waitUntil {
+            let calls = await history.setEnabledCalls()
+            let settings = await harness.settings.value()
+            return calls == [false, true] && settings.historyEnabled
+        }
+
+        let finalSettings = await harness.settings.value()
+        let finalHistoryEnabled = await history.isEnabled()
+        let finalGeneration = await history.generation()
+        XCTAssertTrue(finalSettings.historyEnabled)
+        XCTAssertTrue(finalHistoryEnabled)
+        XCTAssertEqual(finalGeneration, 3)
+        XCTAssertEqual(harness.controller.historyControlStatus, .settled(enabled: true))
+    }
+
+    func testRapidHistoryEnableThenDisableExecutesInIntentOrder() async {
+        let gate = AsyncGate()
+        let history = HistoryFake(enabled: false, setEnabledGate: gate)
+        let harness = Harness(
+            settings: rawSettings(historyEnabled: false),
+            history: history
+        )
+        await harness.bootstrapWithVolatileProbe()
+
+        harness.controller.send(.setHistoryEnabled(true))
+        await gate.waitUntilEntered()
+        harness.controller.send(.setHistoryEnabled(false))
+        await settle()
+        let callsWhileEnableIsBlocked = await history.setEnabledCalls()
+        XCTAssertEqual(callsWhileEnableIsBlocked, [true])
+
+        await gate.open()
+        await waitUntil {
+            let calls = await history.setEnabledCalls()
+            let settings = await harness.settings.value()
+            return calls == [true, false] && !settings.historyEnabled
+        }
+
+        let finalSettings = await harness.settings.value()
+        let finalHistoryEnabled = await history.isEnabled()
+        let finalGeneration = await history.generation()
+        XCTAssertFalse(finalSettings.historyEnabled)
+        XCTAssertFalse(finalHistoryEnabled)
+        XCTAssertEqual(finalGeneration, 3)
+        XCTAssertEqual(harness.controller.historyControlStatus, .settled(enabled: false))
+    }
+
+    func testStaleEnableCannotReenableRuntimeWhileQueuedDisableIsBlocked() async throws {
+        let disableGate = AsyncGate()
+        let history = HistoryFake(enabled: false, secondSetEnabledGate: disableGate)
+        let initial = polishedSettings()
+        var disabledInitial = initial
+        disabledInitial.historyEnabled = false
+        let harness = Harness(settings: disabledInitial, history: history)
+        await harness.bootstrapWithVolatileProbe()
+
+        harness.controller.send(.setHistoryEnabled(true))
+        harness.controller.send(.setHistoryEnabled(false))
+        await disableGate.waitUntilEntered()
+
+        harness.controller.send(.start(.focusedExternal))
+        await waitUntil { harness.controller.state.stage == .recording }
+        XCTAssertEqual(harness.controller.historyControlStatus, .applying(enabled: false))
+
+        await disableGate.open()
+        await waitUntil {
+            let settings = await harness.settings.value()
+            return !settings.historyEnabled
+                && harness.controller.historyControlStatus == .settled(enabled: false)
+        }
+
+        harness.controller.send(.stop)
+        await waitUntil { !(await harness.polishing.receivedSnapshots()).isEmpty }
+
+        let snapshots = await harness.polishing.receivedSnapshots()
+        let captured = try XCTUnwrap(snapshots.first)
+        XCTAssertFalse(captured.historyEnabled)
+    }
+
+    func testClearSuppressesStaleQueuedEnableRefresh() async {
+        let gate = AsyncGate()
+        let record = historyRecord(id: SessionID(), final: "saved")
+        let history = HistoryFake(
+            records: [record],
+            enabled: false,
+            setEnabledGate: gate
+        )
+        let harness = Harness(
+            settings: rawSettings(historyEnabled: false),
+            history: history
+        )
+        await harness.bootstrapWithVolatileProbe()
+
+        harness.controller.send(.setHistoryEnabled(true))
+        await gate.waitUntilEntered()
+        harness.controller.send(.clearHistory)
+        XCTAssertTrue(harness.controller.historyRecords.isEmpty)
+
+        await gate.open()
+        await waitUntil {
+            let generation = await history.generation()
+            let records = await history.records()
+            return generation == 3 && records.isEmpty
+        }
+
+        let loadCalls = await history.loadCallCount()
+        XCTAssertEqual(loadCalls, 1, "stale enable must not reload after Clear")
+        XCTAssertTrue(harness.controller.historyRecords.isEmpty)
+    }
+
+    func testHistoryControlReportsApplyPreferenceAndClearFailuresHonestly() async {
+        let applyHistory = HistoryFake()
+        await applyHistory.setFailSetEnabled(true)
+        let applyHarness = Harness(settings: rawSettings(), history: applyHistory)
+        await applyHarness.bootstrapWithVolatileProbe()
+        applyHarness.controller.send(.setHistoryEnabled(false))
+        await waitUntil {
+            applyHarness.controller.historyControlStatus
+                == .failed(enabled: true, failure: .applyFailed)
+        }
+
+        let preferenceHistory = HistoryFake()
+        let preferenceHarness = Harness(settings: rawSettings(), history: preferenceHistory)
+        await preferenceHarness.bootstrapWithVolatileProbe()
+        await preferenceHarness.settings.setFailUpdate(true)
+        preferenceHarness.controller.send(.setHistoryEnabled(false))
+        await waitUntil {
+            preferenceHarness.controller.historyControlStatus
+                == .failed(enabled: false, failure: .preferenceSaveFailed)
+        }
+        let preferenceRuntimeEnabled = await preferenceHistory.isEnabled()
+        XCTAssertFalse(preferenceRuntimeEnabled)
+
+        let clearHistory = HistoryFake(records: [historyRecord(id: SessionID(), final: "saved")])
+        await clearHistory.setFailClear(true)
+        let clearHarness = Harness(settings: rawSettings(), history: clearHistory)
+        await clearHarness.bootstrapWithVolatileProbe()
+        clearHarness.controller.send(.clearHistory)
+        await waitUntil {
+            clearHarness.controller.historyControlStatus
+                == .failed(enabled: true, failure: .clearFailed)
+        }
+        XCTAssertTrue(clearHarness.controller.historyRecords.isEmpty)
+    }
+
+    func testHistoryAndOrdinaryAtomicMutationsCannotOverwriteEachOther() async throws {
+        let settingsGate = AsyncGate()
+        let harness = Harness(
+            settings: rawSettings(),
+            settingsUpdateGate: settingsGate
+        )
+        await harness.bootstrapWithVolatileProbe()
+
+        harness.controller.send(.setHistoryEnabled(false))
+        await settingsGate.waitUntilEntered()
+        let ordinary = Task {
+            try await harness.settings.update {
+                $0.deliveryPreference = .copyOnly
+            }
+        }
+        await settle()
+
+        let callsWhileHistoryMutationIsBlocked = await harness.settings.updateCallCount()
+        XCTAssertEqual(callsWhileHistoryMutationIsBlocked, 1)
+
+        await settingsGate.open()
+        _ = try await ordinary.value
+        await waitUntil {
+            harness.controller.historyControlStatus == .settled(enabled: false)
+        }
+
+        let final = await harness.settings.value()
+        XCTAssertFalse(final.historyEnabled)
+        XCTAssertEqual(final.deliveryPreference, .copyOnly)
+    }
+
     func testDisableImmediatelyInvalidatesInFlightAppendAndStopsAutomation() async {
         let gate = AsyncGate()
         let existing = historyRecord(id: SessionID(), final: "existing")
@@ -486,6 +723,7 @@ private final class Harness {
 
     init(
         settings initialSettings: UserSettings,
+        settingsUpdateGate: AsyncGate? = nil,
         target initialTarget: DeliveryTarget = .external(DeliveryTargetID()),
         targetService: TargetFake? = nil,
         history: HistoryFake = HistoryFake(),
@@ -497,7 +735,7 @@ private final class Harness {
         delivery: DeliveryFake? = nil,
         log: EventLog = EventLog()
     ) {
-        self.settings = SettingsFake(initialSettings)
+        self.settings = SettingsFake(initialSettings, firstUpdateGate: settingsUpdateGate)
         self.initialTarget = initialTarget
         self.log = log
         self.target = targetService ?? TargetFake(target: initialTarget)
@@ -571,43 +809,95 @@ private actor EventLog {
 }
 
 private actor SettingsFake: SettingsStore {
+    enum Failure: Error { case requested }
+
     private var settings: UserSettings
-    init(_ settings: UserSettings) { self.settings = settings }
+    private var failUpdate = false
+    private let firstUpdateGate: AsyncGate?
+    private var updateCalls = 0
+    private var updateTail: Task<Void, Never>?
+
+    init(_ settings: UserSettings, firstUpdateGate: AsyncGate? = nil) {
+        self.settings = settings
+        self.firstUpdateGate = firstUpdateGate
+    }
     func current() async throws -> UserSettings { settings }
     func save(_ settings: UserSettings) async throws { self.settings = settings }
+    func update(
+        _ mutation: @escaping @Sendable (inout UserSettings) -> Void
+    ) async throws -> UserSettings {
+        let predecessor = updateTail
+        let operation = Task<UserSettings, Error> {
+            await predecessor?.value
+            return try await self.performUpdate(mutation)
+        }
+        updateTail = Task { _ = try? await operation.value }
+        return try await operation.value
+    }
+    private func performUpdate(
+        _ mutation: @escaping @Sendable (inout UserSettings) -> Void
+    ) async throws -> UserSettings {
+        updateCalls += 1
+        if updateCalls == 1, let firstUpdateGate {
+            await firstUpdateGate.wait()
+        }
+        if failUpdate { throw Failure.requested }
+        mutation(&settings)
+        return settings
+    }
+    func updateCallCount() -> Int { updateCalls }
+    func setFailUpdate(_ value: Bool) { failUpdate = value }
     func setDeliveryPreference(_ preference: DeliveryPreference) {
         settings.deliveryPreference = preference
     }
     func setSpeechModelID(_ id: String) { settings.speechModelID = id }
+    func replace(with settings: UserSettings) { self.settings = settings }
     func value() -> UserSettings { settings }
 }
 
 private actor HistoryFake: HistoryStore {
     private var stored: [HistoryRecord]
     private var generationValue: UInt64 = 1
-    private var enabled = true
+    private var enabled: Bool
+    private var loads = 0
     private var failAppend = false
     private var failDeliveryUpdate = false
+    private var failSetEnabled = false
+    private var failClear = false
     private let appendGate: AsyncGate?
     private let appendReturnGate: AsyncGate?
+    private let setEnabledGate: AsyncGate?
+    private let secondSetEnabledGate: AsyncGate?
+    private var enabledCalls: [Bool] = []
     private var log: EventLog?
     private var rawProbe: (@Sendable () async -> Bool)?
 
     init(
         records: [HistoryRecord] = [],
+        enabled: Bool = true,
         appendGate: AsyncGate? = nil,
-        appendReturnGate: AsyncGate? = nil
+        appendReturnGate: AsyncGate? = nil,
+        setEnabledGate: AsyncGate? = nil,
+        secondSetEnabledGate: AsyncGate? = nil
     ) {
         stored = records
+        self.enabled = enabled
         self.appendGate = appendGate
         self.appendReturnGate = appendReturnGate
+        self.setEnabledGate = setEnabledGate
+        self.secondSetEnabledGate = secondSetEnabledGate
     }
 
     func setLog(_ log: EventLog) { self.log = log }
     func setRawProbe(_ probe: @escaping @Sendable () async -> Bool) { rawProbe = probe }
     func setFailAppend(_ value: Bool) { failAppend = value }
     func setFailDeliveryUpdate(_ value: Bool) { failDeliveryUpdate = value }
+    func setFailSetEnabled(_ value: Bool) { failSetEnabled = value }
+    func setFailClear(_ value: Bool) { failClear = value }
     func records() -> [HistoryRecord] { stored }
+    func setEnabledCalls() -> [Bool] { enabledCalls }
+    func isEnabled() -> Bool { enabled }
+    func loadCallCount() -> Int { loads }
     func generation() async -> UInt64 { generationValue }
 
     func appendRaw(_ record: HistoryRecord, expectedGeneration: UInt64) async throws {
@@ -660,18 +950,30 @@ private actor HistoryFake: HistoryStore {
     }
 
     func setEnabled(_ enabled: Bool) async throws -> UInt64 {
+        enabledCalls.append(enabled)
+        if enabledCalls.count == 1, let setEnabledGate {
+            await setEnabledGate.wait()
+        }
+        if enabledCalls.count == 2, let secondSetEnabledGate {
+            await secondSetEnabledGate.wait()
+        }
+        if failSetEnabled { throw DiagnosticCode.historyWrite }
         generationValue &+= 1
         self.enabled = enabled
         return generationValue
     }
 
     func clear() async throws -> UInt64 {
+        if failClear { throw DiagnosticCode.historyWrite }
         generationValue &+= 1
         stored = []
         return generationValue
     }
 
-    func load() async throws -> [HistoryRecord] { stored }
+    func load() async throws -> [HistoryRecord] {
+        loads += 1
+        return stored
+    }
 }
 
 private actor CredentialFake: CredentialStore {
@@ -775,6 +1077,7 @@ private actor PolishingFake: PolishingService {
     private let gate: AsyncGate?
     private var log: EventLog?
     private var calls = 0
+    private var snapshots: [SessionSnapshot] = []
 
     init(failure: DiagnosticCode? = nil, gate: AsyncGate? = nil) {
         self.failure = failure
@@ -782,8 +1085,10 @@ private actor PolishingFake: PolishingService {
     }
     func setLog(_ log: EventLog) { self.log = log }
     func callCount() -> Int { calls }
+    func receivedSnapshots() -> [SessionSnapshot] { snapshots }
     func polish(rawText: String, snapshot: SessionSnapshot, token: EffectToken) async throws -> String {
         calls += 1
+        snapshots.append(snapshot)
         await log?.append("polish.request")
         if let gate { await gate.wait() }
         try Task.checkCancellation()
