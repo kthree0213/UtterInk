@@ -24,6 +24,7 @@ enum EnglishCopy {
     static let stop = "Stop Listening"
     static let starting = "Starting UtterInk"
     static let unavailable = "Unavailable"
+    static let viewLatestResult = "Open Last Result"
 
     static let failedWarning = "Dictation needs attention. Your latest text remains available."
     static let resultWarning = "Completed with a warning"

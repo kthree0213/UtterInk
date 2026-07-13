@@ -55,6 +55,22 @@ struct UtterInkApp: App {
             )
         }
 
+        Window(EnglishCopy.latestResult, id: AppWindowID.lastResult) {
+            LastResultView(
+                model: HistoryViewModel(controller: model.controller)
+            )
+            .frame(minWidth: 420, minHeight: 280)
+        }
+        .defaultSize(width: 520, height: 420)
+
+        Window(EnglishCopy.history, id: AppWindowID.history) {
+            HistoryView(
+                model: HistoryViewModel(controller: model.controller)
+            )
+            .frame(minWidth: 620, minHeight: 420)
+        }
+        .defaultSize(width: 760, height: 620)
+
         Settings {
             VStack(alignment: .leading, spacing: 8) {
                 Text("UtterInk Settings")

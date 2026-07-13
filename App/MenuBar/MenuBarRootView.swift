@@ -4,10 +4,12 @@ import UtterInkCore
 
 struct MenuBarRootView: View {
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
     @Bindable var model: AppModel
 
     private let settingsStore: (any SettingsStore)?
     private let openHistory: (() -> Void)?
+    private let openLastResult: (() -> Void)?
     private let openOnboarding: (() -> Void)?
 
     @State private var settings = UserSettings.p0Default
@@ -18,11 +20,13 @@ struct MenuBarRootView: View {
         model: AppModel,
         settingsStore: (any SettingsStore)?,
         openHistory: (() -> Void)? = nil,
+        openLastResult: (() -> Void)? = nil,
         openOnboarding: (() -> Void)? = nil
     ) {
         self.model = model
         self.settingsStore = settingsStore
         self.openHistory = openHistory
+        self.openLastResult = openLastResult
         self.openOnboarding = openOnboarding
     }
 
@@ -159,6 +163,17 @@ struct MenuBarRootView: View {
             }
             .disabled(!canRecoverResult)
             .help(EnglishCopy.pasteLatestResult)
+
+            Button {
+                if let openLastResult {
+                    openLastResult()
+                } else {
+                    openWindow(id: AppWindowID.lastResult)
+                }
+            } label: {
+                Label(EnglishCopy.viewLatestResult, systemImage: "rectangle.on.rectangle")
+            }
+            .help(EnglishCopy.viewLatestResult)
         } else {
             Text(EnglishCopy.noRecentResult)
                 .foregroundStyle(.secondary)
@@ -204,12 +219,15 @@ struct MenuBarRootView: View {
     @ViewBuilder
     private var routeContent: some View {
         Button {
-            openHistory?()
+            if let openHistory {
+                openHistory()
+            } else {
+                openWindow(id: AppWindowID.history)
+            }
         } label: {
             Label(EnglishCopy.history, systemImage: "clock.arrow.circlepath")
         }
-        .disabled(openHistory == nil)
-        .help(openHistory == nil ? EnglishCopy.historyUnavailable : EnglishCopy.history)
+        .help(EnglishCopy.history)
 
         Button {
             openOnboarding?()

@@ -30,6 +30,7 @@ struct FloatingRecorderView: View {
     let clock: any AppClock
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isShowingLastResult = false
 
     var body: some View {
         let motion = FloatingMotionPolicy(reduceMotion: reduceMotion)
@@ -61,6 +62,16 @@ struct FloatingRecorderView: View {
         )
         .onExitCommand {
             model.performEscape()
+        }
+        .onChange(of: model.pipeline.stage) { _, stage in
+            if stage != .completed, stage != .failed {
+                isShowingLastResult = false
+            }
+        }
+        .onChange(of: model.latestResult?.sessionID) { _, sessionID in
+            if sessionID == nil {
+                isShowingLastResult = false
+            }
         }
     }
 
@@ -160,6 +171,22 @@ struct FloatingRecorderView: View {
 
             if let result = model.latestResult,
                model.pipeline.stage == .completed || model.pipeline.stage == .failed {
+                Button {
+                    isShowingLastResult.toggle()
+                } label: {
+                    Label(EnglishCopy.viewLatestResult, systemImage: "rectangle.on.rectangle")
+                        .labelStyle(.iconOnly)
+                }
+                .accessibilityLabel(EnglishCopy.viewLatestResult)
+                .help(EnglishCopy.viewLatestResult)
+                .popover(isPresented: $isShowingLastResult, arrowEdge: .top) {
+                    LastResultView(
+                        model: HistoryViewModel(controller: model.controller),
+                        compact: true
+                    )
+                    .frame(width: 390, height: 280)
+                }
+
                 Button {
                     model.copyResult(result.sessionID)
                 } label: {
