@@ -87,13 +87,33 @@ targets:
         CODE_SIGN_STYLE: Manual
         ENABLE_HARDENED_RUNTIME: YES
         GENERATE_INFOPLIST_FILE: NO
+  UtterInkAppTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: UtterInkAppTests
+    dependencies:
+      - target: UtterInk
+      - package: UtterInkKit
+        product: UtterInkCore
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/UtterInk.app/Contents/MacOS/UtterInk"
+        BUNDLE_LOADER: "$(TEST_HOST)"
 schemes:
   UtterInk:
     build:
       targets:
         UtterInk: all
+        UtterInkAppTests: [test]
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - name: UtterInkAppTests
     archive:
       config: Release
   ATSPolicyProbe:
