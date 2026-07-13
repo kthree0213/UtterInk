@@ -16,6 +16,7 @@ final class RecognitionLanguageSettingsViewModel {
     private(set) var configuration = UserSettings.p0Default.recognition
     private(set) var isSaving = false
     private(set) var failureMessage: String?
+    private(set) var accessibilityEvent: UtterInkAccessibilityEvent?
     let failureSymbol = "exclamationmark.triangle.fill"
 
     @ObservationIgnored private let writer: SettingsMutationCoordinator
@@ -64,6 +65,9 @@ final class RecognitionLanguageSettingsViewModel {
         do {
             let saved = try await writer.update { $0.recognition = choice }
             configuration = saved.recognition
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Recognition language saved: \(effectiveChoice)."
+            )
         } catch {
             failureMessage = "Recognition language could not be saved. Your current choice was kept."
         }
@@ -102,15 +106,27 @@ struct RecognitionLanguageSettingsView: View {
                         Text(choice.title).tag(choice.code)
                     }
                 }
+                .accessibilityLabel("Language Detection")
+                .accessibilityIdentifier("settings.recognitionLanguage.picker")
                 Text("Current effective choice: \(model.effectiveChoice)")
                     .foregroundStyle(.secondary)
+                    .accessibilityLabel("Current recognition language")
+                    .accessibilityValue(model.effectiveChoice)
+                    .accessibilityIdentifier("settings.recognitionLanguage.current")
             }
             if let failureMessage = model.failureMessage {
                 Label(failureMessage, systemImage: model.failureSymbol)
                     .foregroundStyle(.red)
+                    .accessibilityLabel("Error")
+                    .accessibilityValue(failureMessage)
+                    .accessibilityIdentifier("settings.recognitionLanguage.error")
+                    .accessibilityAddTraits(.updatesFrequently)
             }
         }
         .formStyle(.grouped)
+        .accessibilityIdentifier("settings.recognitionLanguage")
+        .utterInkAccessibilityAnnouncement(model.failureMessage.map { "Error: \($0)" })
+        .utterInkAccessibilityAnnouncement(model.accessibilityEvent)
         .disabled(model.isSaving)
         .navigationTitle("Recognition Language")
         .task { await model.load() }

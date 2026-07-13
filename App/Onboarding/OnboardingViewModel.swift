@@ -22,6 +22,7 @@ final class OnboardingViewModel {
     private(set) var recoverableResult: DictationResult?
     private(set) var onboardingCompleted = false
     private(set) var failureMessage: String?
+    private(set) var accessibilityEvent: UtterInkAccessibilityEvent?
     var testPasteText = ""
 
     let audioPrivacyText = "Audio is processed locally on this Mac and is not retained."
@@ -167,6 +168,9 @@ final class OnboardingViewModel {
         historyEnabled = enabled
         failureMessage = nil
         isHistoryChangePending = true
+        accessibilityEvent = UtterInkAccessibilityEvent(
+            message: "Applying History setting."
+        )
         controller.send(.setHistoryEnabled(enabled))
         let applied = await waitForHistoryControl(expected: enabled)
         isHistoryChangePending = false
@@ -175,6 +179,9 @@ final class OnboardingViewModel {
             failureMessage = "History could not be changed. The test recording has not started."
             return
         }
+        accessibilityEvent = UtterInkAccessibilityEvent(
+            message: "History is now \(enabled ? "on" : "off")."
+        )
     }
 
     func setRecognition(_ configuration: RecognitionConfiguration) async {
@@ -198,6 +205,9 @@ final class OnboardingViewModel {
             selectedSpeechModelID = saved.speechModelID
             controller.prepareSpeechModel(saved.speechModelID)
             await refreshReadiness()
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Speech model selection saved."
+            )
         } catch {
             failureMessage = "The speech model choice could not be saved."
         }
@@ -215,6 +225,9 @@ final class OnboardingViewModel {
         shortcutProbeTask?.cancel()
         shortcutTestPassed = false
         isShortcutProbeArmed = true
+        accessibilityEvent = UtterInkAccessibilityEvent(
+            message: "Shortcut test armed. Press the configured shortcut now."
+        )
         let generation = UUID()
         shortcutProbeGeneration = generation
         let events = await hotkeyProbe.armProbeOnly()
@@ -229,6 +242,9 @@ final class OnboardingViewModel {
                       let self,
                       self.shortcutProbeGeneration == generation else { return }
                 self.shortcutTestPassed = true
+                self.accessibilityEvent = UtterInkAccessibilityEvent(
+                    message: "Shortcut detected."
+                )
                 return
             }
         }

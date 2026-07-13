@@ -1,3 +1,4 @@
+import Accessibility
 import SwiftUI
 import UtterInkCore
 import UtterInkServices
@@ -37,6 +38,22 @@ struct OnboardingFlow: View {
         }
         .frame(minWidth: 640, minHeight: 560)
         .background(Color(nsColor: .windowBackgroundColor))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding.flow")
+        .utterInkAccessibilityAnnouncement(model.accessibilityEvent)
+        .onChange(of: model.step) { _, step in
+            AccessibilityNotification.Announcement(
+                "Step \(step.rawValue + 1): \(step.title)"
+            ).post()
+        }
+        .onChange(of: model.failureMessage) { _, message in
+            guard let message, model.pipelineState.stage != .failed else { return }
+            AccessibilityNotification.Announcement("Error: \(message)").post()
+        }
+        .onChange(of: model.displayedRawText) { _, result in
+            guard result != nil else { return }
+            AccessibilityNotification.Announcement("Raw test result is ready.").post()
+        }
     }
 
     private var header: some View {
@@ -56,6 +73,7 @@ struct OnboardingFlow: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel("Step \(step.rawValue + 1): \(step.title)")
                     .accessibilityValue(step == model.step ? "Current" : "")
+                    .accessibilityIdentifier("onboarding.progress.\(step.rawValue)")
                 }
             }
         }
@@ -96,11 +114,15 @@ struct OnboardingFlow: View {
                 )
             )
             .disabled(model.isHistoryChangePending)
+            .accessibilityLabel("Keep text history on this Mac")
+            .accessibilityIdentifier("onboarding.historyToggle")
 
             Text("When enabled, raw and final transcript text is stored locally. Audio is never kept as history.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding.step.privacy")
     }
 
     private var readinessStep: some View {
@@ -148,6 +170,8 @@ struct OnboardingFlow: View {
                 Text("Automatic").tag("")
                 Text("English").tag("en")
             }
+            .accessibilityLabel("Recognition Language")
+            .accessibilityIdentifier("onboarding.recognition")
 
             VStack(alignment: .leading, spacing: 10) {
                 Text("Speech Model").font(.headline)
@@ -171,11 +195,15 @@ struct OnboardingFlow: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Select \(option.title) speech model")
+                    .accessibilityValue(model.selectedSpeechModelID == option.id ? "Selected" : "Not selected")
+                    .accessibilityIdentifier("onboarding.speechModel.\(option.id)")
                 }
             }
 
             modelReadiness
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding.step.readiness")
     }
 
     private var shortcutStep: some View {
@@ -185,9 +213,18 @@ struct OnboardingFlow: View {
                 detail: "Keep this window open and press the configured shortcut. The test completes here without opening Settings."
             )
 
-            GroupBox("Configured Shortcut") {
-                DictationShortcutRecorder()
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Configured Shortcut")
+                    .font(.headline)
+                DictationShortcutRecorder(accessibleName: "Configured Dictation Shortcut")
                     .padding(.vertical, 8)
+                    .accessibilityIdentifier("onboarding.shortcutRecorder")
+            }
+            .padding(12)
+            .background(.background, in: RoundedRectangle(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(.separator, lineWidth: 1)
             }
 
             Button(model.isShortcutProbeArmed ? "Waiting for Shortcut…" : "Arm Shortcut Test") {
@@ -195,11 +232,14 @@ struct OnboardingFlow: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(model.isShortcutProbeArmed)
+            .accessibilityIdentifier("onboarding.shortcutArm")
 
             if model.shortcutTestPassed {
                 Label("Shortcut detected in this window.", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                     .accessibilityLabel("Shortcut test passed")
+                    .accessibilityValue("Detected")
+                    .accessibilityIdentifier("onboarding.shortcutResult")
             } else {
                 Label(
                     model.isShortcutProbeArmed
@@ -208,8 +248,17 @@ struct OnboardingFlow: View {
                     systemImage: model.isShortcutProbeArmed ? "keyboard.badge.ellipsis" : "keyboard"
                 )
                 .foregroundStyle(.secondary)
+                .accessibilityLabel("Shortcut test status")
+                .accessibilityValue(
+                    model.isShortcutProbeArmed
+                        ? "Waiting for the configured shortcut"
+                        : "Not started"
+                )
+                .accessibilityIdentifier("onboarding.shortcutResult")
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding.step.shortcutTest")
     }
 
     private var testDictationStep: some View {
@@ -222,44 +271,77 @@ struct OnboardingFlow: View {
             dictationControls
 
             if let rawText = model.displayedRawText {
-                GroupBox("Raw Result") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Raw Result")
+                        .font(.headline)
                     VStack(alignment: .leading, spacing: 12) {
                         Text(rawText)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityLabel("Raw test result")
+                            .accessibilityValue(rawText)
+                            .accessibilityIdentifier("onboarding.testResult")
                         Button("Copy") { model.copyResult() }
                             .accessibilityLabel("Copy raw test result")
+                            .accessibilityIdentifier("onboarding.copyResult")
                     }
                     .padding(.vertical, 6)
                 }
+                .padding(12)
+                .background(.background, in: RoundedRectangle(cornerRadius: 10))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(.separator, lineWidth: 1)
+                }
 
-                GroupBox("Safe In-App Paste Test") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Safe In-App Paste Test")
+                        .font(.headline)
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Click below, then paste. This field sends no paste event to another app.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
-                        TextEditor(text: $model.testPasteText)
+                        TextField(
+                            "Paste here",
+                            text: $model.testPasteText,
+                            axis: .vertical
+                        )
                             .font(.body)
+                            .textFieldStyle(.plain)
+                            .lineLimit(4...8)
+                            .padding(8)
                             .frame(minHeight: 90)
                             .overlay {
                                 RoundedRectangle(cornerRadius: 6)
                                     .stroke(.separator, lineWidth: 1)
                             }
                             .accessibilityLabel("In-app paste test field")
+                            .accessibilityIdentifier("onboarding.pasteField")
                     }
                     .padding(.vertical, 6)
+                }
+                .padding(12)
+                .background(.background, in: RoundedRectangle(cornerRadius: 10))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(.separator, lineWidth: 1)
                 }
 
                 if model.onboardingCompleted {
                     Label("First dictation complete.", systemImage: "checkmark.seal.fill")
                         .font(.headline)
                         .foregroundStyle(.green)
+                        .accessibilityLabel("Onboarding status")
+                        .accessibilityValue("First dictation complete")
+                        .accessibilityIdentifier("onboarding.completed")
                 }
             } else {
                 Text("Your recoverable Raw result will appear here after transcription finishes.")
                     .foregroundStyle(.secondary)
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding.step.testDictation")
     }
 
     @ViewBuilder
@@ -269,15 +351,22 @@ struct OnboardingFlow: View {
             HStack {
                 Button("Stop", action: model.stopTestDictation)
                     .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("onboarding.dictationStop")
                 Button("Cancel", role: .cancel, action: model.cancelTestDictation)
+                    .accessibilityIdentifier("onboarding.dictationCancel")
             }
         case .requestingPermission, .stopping, .transcribing, .polishing, .delivering:
             HStack {
                 ProgressView()
                     .controlSize(.small)
                 Text(stageLabel)
+                    .accessibilityLabel("Test dictation status")
+                    .accessibilityValue(stageLabel)
+                    .accessibilityIdentifier("onboarding.dictationStatus")
+                    .accessibilityAddTraits(.updatesFrequently)
                 Spacer()
                 Button("Cancel", role: .cancel, action: model.cancelTestDictation)
+                    .accessibilityIdentifier("onboarding.dictationCancel")
             }
         case .idle, .completed, .failed:
             Button("Start Test Dictation") {
@@ -285,6 +374,7 @@ struct OnboardingFlow: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(!model.canStartTestDictation)
+            .accessibilityIdentifier("onboarding.dictationStart")
         }
     }
 
@@ -294,18 +384,25 @@ struct OnboardingFlow: View {
                 Label(failureMessage, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
                     .lineLimit(2)
+                    .accessibilityLabel("Error")
+                    .accessibilityValue(failureMessage)
+                    .accessibilityIdentifier("onboarding.error")
+                    .accessibilityAddTraits(.updatesFrequently)
             }
             Spacer()
             Button("Back") { model.goBack() }
                 .disabled(model.step == .privacy)
+                .accessibilityIdentifier("onboarding.back")
             if model.step != .testDictation {
                 Button("Continue") { model.advance() }
                     .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("onboarding.next")
             } else {
                 Button(model.onboardingCompleted ? "Done" : "Close") {
                     Task { await model.close() }
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("onboarding.close")
             }
         }
         .padding(20)
@@ -316,6 +413,10 @@ struct OnboardingFlow: View {
             Text(title).font(.title2.bold())
             Text(detail).foregroundStyle(.secondary)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+        .accessibilityValue(detail)
+        .accessibilityIdentifier("onboarding.step")
     }
 
     private func privacyCard(symbol: String, text: String) -> some View {
@@ -340,6 +441,7 @@ struct OnboardingFlow: View {
             Image(systemName: permissionSymbol(state))
                 .foregroundStyle(state == .granted ? .green : .orange)
                 .frame(width: 24)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 Text("\(title): \(permissionLabel(state))").font(.headline)
                 Text(detail).font(.callout).foregroundStyle(.secondary)
@@ -347,17 +449,28 @@ struct OnboardingFlow: View {
             Spacer()
             if state != .granted {
                 Button(actionTitle, action: action)
+                    .accessibilityIdentifier("onboarding.permission.\(title.lowercased()).open")
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(title) permission")
+        .accessibilityValue(permissionLabel(state))
+        .accessibilityIdentifier("onboarding.permission.\(title.lowercased())")
     }
 
     private var modelReadiness: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(modelStateLabel, systemImage: model.selectedModelIsReady ? "checkmark.circle.fill" : "internaldrive")
                 .foregroundStyle(model.selectedModelIsReady ? .green : .primary)
+                .accessibilityLabel("Speech model status")
+                .accessibilityValue(modelStateLabel)
+                .accessibilityIdentifier("onboarding.modelStatus")
+                .accessibilityAddTraits(.updatesFrequently)
             if let progress = model.modelProgress {
                 ProgressView(value: progress)
+                    .accessibilityLabel("Speech model preparation progress")
                     .accessibilityValue("\(Int((progress * 100).rounded())) percent")
+                    .accessibilityIdentifier("onboarding.modelProgress")
             }
         }
     }

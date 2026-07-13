@@ -28,6 +28,7 @@ final class ProviderPresentationTests: XCTestCase {
             instructions: "Make this concise."
         )
         XCTAssertTrue(polishAddSaved)
+        XCTAssertEqual(model.accessibilityEvent?.message, "Output mode added.")
         let saved = try await store.current()
         XCTAssertEqual(saved.outputModes.first, .raw)
         XCTAssertEqual(saved.outputModes.count, 2)
@@ -102,6 +103,7 @@ final class ProviderPresentationTests: XCTestCase {
         await model.validate(profileID: profile.id)
 
         XCTAssertEqual(model.statusText(for: profile.id), "In Use")
+        XCTAssertEqual(model.accessibilityEvent?.message, "Provider test passed.")
         let validatedProfileIDs = await validation.validatedProfileIDs()
         XCTAssertEqual(validatedProfileIDs, [profile.id])
         let clearedCredentialFlags = await validation.retainedCredentialEmptyFlags()
@@ -268,6 +270,10 @@ final class ProviderPresentationTests: XCTestCase {
             allowsLoopbackHTTP: true
         )
         XCTAssertTrue(loopbackSaved)
+        XCTAssertEqual(
+            model.accessibilityEvent?.message,
+            "Provider profile added. Test it before selecting it."
+        )
 
         let saved = try await store.current()
         XCTAssertEqual(saved.providerProfiles.count, 1)
@@ -341,6 +347,10 @@ final class ProviderPresentationTests: XCTestCase {
         let copy = model.migrationMessage(for: profile.id) ?? ""
         XCTAssertFalse(copy.contains("credential-fixture"))
         XCTAssertFalse(copy.contains("sk-"))
+        XCTAssertEqual(
+            model.accessibilityEvent?.message,
+            "Credential migration still needs attention."
+        )
     }
 
     func testDiagnosticsPreviewIsAllowlistedAndContainsNoCanarySensitiveValues() {
@@ -377,6 +387,35 @@ final class ProviderPresentationTests: XCTestCase {
         XCTAssertTrue(preview.contains("\"schemaVersion\""))
         XCTAssertTrue(preview.contains("redacted-invalid-model-id"))
         XCTAssertTrue(preview.contains("redacted-invalid-host"))
+    }
+
+    func testDiagnosticsExportResultReportsOnlySanitizedStatus() {
+        let model = DiagnosticsSettingsViewModel(exporter: SafeDiagnosticsExporter())
+
+        model.recordExportResult(
+            .failure(
+                NSError(
+                    domain: "canary-private-export-path",
+                    code: 17,
+                    userInfo: [NSLocalizedDescriptionKey: "canary-system-error"]
+                )
+            )
+        )
+
+        XCTAssertEqual(
+            model.failureMessage,
+            "Diagnostics could not be exported. No file path or system error details were retained."
+        )
+        XCTAssertNil(model.exportStatusMessage)
+        XCTAssertFalse(model.failureMessage?.contains("canary") ?? true)
+
+        model.recordExportResult(
+            .success(URL(fileURLWithPath: "/private/canary-export-location.json"))
+        )
+
+        XCTAssertNil(model.failureMessage)
+        XCTAssertEqual(model.exportStatusMessage, "Diagnostics exported.")
+        XCTAssertFalse(model.exportStatusMessage?.contains("canary") ?? true)
     }
 
     func testLiveDiagnosticsIncludesStableWarningCodeButNeverCompletedResultText() async throws {

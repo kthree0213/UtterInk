@@ -51,6 +51,7 @@ final class SpeechModelSettingsViewModel {
     private(set) var failureMessage: String?
     private(set) var pendingDeletion: SpeechModelOption?
     private(set) var preparationRejectedModelID: String?
+    private(set) var accessibilityEvent: UtterInkAccessibilityEvent?
     let failureSymbol = "exclamationmark.triangle.fill"
 
     @ObservationIgnored private let controller: any DictationControlling
@@ -188,6 +189,10 @@ final class SpeechModelSettingsViewModel {
             let saved = try await settings.update { $0.speechModelID = modelID }
             selectedModelID = saved.speechModelID
             prepareIfNeeded(modelID)
+            let title = option(for: saved.speechModelID)?.title ?? "selected model"
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Speech model selected: \(title)."
+            )
         } catch {
             let keptTitle = option(for: selectedModelID)?.title ?? selectedModelID
             failureMessage =
@@ -215,6 +220,9 @@ final class SpeechModelSettingsViewModel {
     func cancel() {
         guard presentation.canCancel else { return }
         controller.cancelSpeechModelPreparation()
+        accessibilityEvent = UtterInkAccessibilityEvent(
+            message: "Speech model preparation cancellation requested."
+        )
     }
 
     func canDelete(_ modelID: String) -> Bool {
@@ -239,6 +247,9 @@ final class SpeechModelSettingsViewModel {
         self.pendingDeletion = nil
         guard canDelete(pendingDeletion.id) else { return }
         controller.deleteCachedSpeechModel(pendingDeletion.id)
+        accessibilityEvent = UtterInkAccessibilityEvent(
+            message: "Cached speech model deletion requested."
+        )
     }
 
     var cacheActionIsPending: Bool {

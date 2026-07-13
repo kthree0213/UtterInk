@@ -94,6 +94,10 @@ struct PermissionSettingsView: View {
             )
         }
         .formStyle(.grouped)
+        .accessibilityIdentifier("settings.permissions")
+        .utterInkAccessibilityAnnouncement(
+            "Permissions updated. Microphone \(model.microphone.statusText). Accessibility \(model.accessibility.statusText)."
+        )
         .navigationTitle("Permissions")
         .task { await model.refresh() }
     }
@@ -105,8 +109,17 @@ struct PermissionSettingsView: View {
     ) -> some View {
         Section(presentation.title) {
             Label(presentation.statusText, systemImage: presentation.symbol)
+                .accessibilityLabel("\(presentation.title) permission")
+                .accessibilityValue(presentation.statusText)
+                .accessibilityIdentifier("settings.permissions.\(identifierName(for: presentation)).status")
+                .accessibilityAddTraits(.updatesFrequently)
             Text(explanation).foregroundStyle(.secondary)
             Button("Open \(presentation.title) Settings", action: action)
+                .accessibilityIdentifier("settings.permissions.\(identifierName(for: presentation)).open")
         }
+    }
+
+    private func identifierName(for presentation: PermissionRowPresentation) -> String {
+        presentation.title.lowercased()
     }
 }

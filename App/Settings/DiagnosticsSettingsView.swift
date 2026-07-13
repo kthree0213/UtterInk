@@ -13,6 +13,8 @@ final class DiagnosticsSettingsViewModel {
     private(set) var preview = ""
     private(set) var exportData: Data?
     private(set) var failureMessage: String?
+    private(set) var exportStatusMessage: String?
+    private(set) var accessibilityEvent: UtterInkAccessibilityEvent?
     private(set) var isPreparing = false
 
     @ObservationIgnored private let exporter: any DiagnosticsExporting
@@ -28,12 +30,18 @@ final class DiagnosticsSettingsViewModel {
 
     var canExport: Bool { exportData != nil && !preview.isEmpty }
 
-    func refresh() async {
+    func refresh(announceCompletion: Bool = false) async {
         guard !isPreparing, let snapshotProvider else { return }
+        exportStatusMessage = nil
         isPreparing = true
         defer { isPreparing = false }
         do {
             preparePreview(try await snapshotProvider())
+            if canExport, announceCompletion {
+                accessibilityEvent = UtterInkAccessibilityEvent(
+                    message: "Diagnostics preview refreshed."
+                )
+            }
         } catch {
             preview = ""
             exportData = nil
@@ -42,6 +50,7 @@ final class DiagnosticsSettingsViewModel {
     }
 
     func preparePreview(_ snapshot: DiagnosticsSnapshot) {
+        exportStatusMessage = nil
         let data = exporter.export(snapshot)
         guard Self.hasOnlyAllowlistedFields(data),
               let value = String(data: data, encoding: .utf8) else {
@@ -57,6 +66,17 @@ final class DiagnosticsSettingsViewModel {
 
     var exportDocument: DiagnosticsJSONDocument? {
         exportData.map(DiagnosticsJSONDocument.init(data:))
+    }
+
+    func recordExportResult(_ result: Result<URL, Error>) {
+        switch result {
+        case .success:
+            failureMessage = nil
+            exportStatusMessage = "Diagnostics exported."
+        case .failure:
+            exportStatusMessage = nil
+            failureMessage = "Diagnostics could not be exported. No file path or system error details were retained."
+        }
     }
 
     static func liveSnapshot(
@@ -200,14 +220,21 @@ struct DiagnosticsSettingsView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(minHeight: 280)
+                    .accessibilityLabel("Diagnostics preview")
+                    .accessibilityValue(model.preview)
+                    .accessibilityIdentifier("settings.diagnostics.preview")
                 }
                 HStack {
-                    Button("Refresh Preview") { Task { await model.refresh() } }
+                    Button("Refresh Preview") {
+                        Task { await model.refresh(announceCompletion: true) }
+                    }
+                        .accessibilityIdentifier("settings.diagnostics.refresh")
                     Button("Export…") {
                         document = model.exportDocument
                         showsExporter = document != nil
                     }
                     .disabled(!model.canExport)
+                    .accessibilityIdentifier("settings.diagnostics.export")
                 }
             }
 
@@ -219,9 +246,25 @@ struct DiagnosticsSettingsView: View {
             if let failureMessage = model.failureMessage {
                 Label(failureMessage, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
+                    .accessibilityLabel("Error")
+                    .accessibilityValue(failureMessage)
+                    .accessibilityIdentifier("settings.diagnostics.error")
+                    .accessibilityAddTraits(.updatesFrequently)
+            } else if let exportStatusMessage = model.exportStatusMessage {
+                Label(exportStatusMessage, systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Export status")
+                    .accessibilityValue(exportStatusMessage)
+                    .accessibilityIdentifier("settings.diagnostics.exportStatus")
             }
         }
         .formStyle(.grouped)
+        .accessibilityIdentifier("settings.diagnostics")
+        .utterInkAccessibilityAnnouncement(
+            model.failureMessage.map { "Error: \($0)" }
+                ?? model.exportStatusMessage
+        )
+        .utterInkAccessibilityAnnouncement(model.accessibilityEvent)
         .navigationTitle("Diagnostics")
         .task { await model.refresh() }
         .fileExporter(
@@ -230,9 +273,7 @@ struct DiagnosticsSettingsView: View {
             contentType: .json,
             defaultFilename: "UtterInk-Diagnostics"
         ) { result in
-            if case .failure = result {
-                // The Save Panel owns any filesystem error. No path is retained or previewed.
-            }
+            model.recordExportResult(result)
             document = nil
         }
     }

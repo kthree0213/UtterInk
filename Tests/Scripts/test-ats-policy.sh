@@ -144,44 +144,80 @@ if ! codesign -d --entitlements :- "$APP" \
   exit 1
 fi
 
-python3 - \
+normalize_ats_policy() {
+  local path="$1"
+  local ats_type
+  local ats_keys
+  local allows_local_networking
+
+  if ! /usr/bin/plutil -lint -- "$path" >/dev/null; then
+    printf 'invalid property list in %s\n' "$path" >&2
+    return 1
+  fi
+  if /usr/bin/plutil -type NSLocalNetworkUsageDescription -- "$path" \
+    >/dev/null 2>&1; then
+    printf 'local-network usage description is forbidden in %s\n' "$path" >&2
+    return 1
+  fi
+  if ! ats_type="$(/usr/bin/plutil -type NSAppTransportSecurity -- "$path" 2>/dev/null)"; then
+    printf 'absent\n'
+    return
+  fi
+  if [[ "$ats_type" != "dictionary" ]]; then
+    printf 'disallowed ATS policy shape in %s\n' "$path" >&2
+    return 1
+  fi
+  if ! ats_keys="$(/usr/bin/plutil \
+    -extract NSAppTransportSecurity raw \
+    -expect dictionary \
+    -o - \
+    -- "$path" 2>/dev/null)" \
+    || [[ "$ats_keys" != "NSAllowsLocalNetworking" ]]; then
+    printf 'disallowed ATS policy shape in %s\n' "$path" >&2
+    return 1
+  fi
+  if ! allows_local_networking="$(/usr/bin/plutil \
+    -extract NSAppTransportSecurity.NSAllowsLocalNetworking raw \
+    -expect bool \
+    -o - \
+    -- "$path" 2>/dev/null)" \
+    || [[ "$allows_local_networking" != "true" ]]; then
+    printf 'disallowed ATS policy shape in %s\n' "$path" >&2
+    return 1
+  fi
+  printf 'allows-local-networking\n'
+}
+
+ATS_POLICY_REFERENCE=""
+for path in \
   App/Supporting/Info.plist \
   Tests/ATSPolicyProbe/Info.plist \
-  "$BUILT_PLIST" \
-  "$TMP/probe-entitlements.plist" <<'PY'
-import plistlib
-import sys
+  "$BUILT_PLIST"; do
+  policy="$(normalize_ats_policy "$path")"
+  if [[ -z "$ATS_POLICY_REFERENCE" ]]; then
+    ATS_POLICY_REFERENCE="$policy"
+  elif [[ "$policy" != "$ATS_POLICY_REFERENCE" ]]; then
+    printf 'ATS policies differ between app, probe, and built product\n' >&2
+    exit 1
+  fi
+done
 
-values = []
-for path in sys.argv[1:4]:
-    with open(path, "rb") as handle:
-        plist = plistlib.load(handle)
-    if "NSLocalNetworkUsageDescription" in plist:
-        raise SystemExit(f"local-network usage description is forbidden in {path}")
-    ats = plist.get("NSAppTransportSecurity")
-    is_allowed = ats is None or (
-        type(ats) is dict
-        and set(ats) == {"NSAllowsLocalNetworking"}
-        and type(ats["NSAllowsLocalNetworking"]) is bool
-        and ats["NSAllowsLocalNetworking"] is True
-    )
-    if not is_allowed:
-        raise SystemExit(f"disallowed ATS policy shape in {path}")
-    values.append(ats)
-
-if values[1:] != values[:-1]:
-    raise SystemExit("ATS policies differ between app, probe, and built product")
-
-with open(sys.argv[4], "rb") as handle:
-    entitlements = plistlib.load(handle)
-for key in (
-    "com.apple.security.app-sandbox",
-    "com.apple.security.network.client",
-    "com.apple.security.network.server",
-):
-    if key in entitlements:
-        raise SystemExit("signed ATS probe contains a forbidden entitlement")
-PY
+if ! /usr/bin/plutil -lint -- "$TMP/probe-entitlements.plist" >/dev/null; then
+  printf 'invalid signed ATS probe entitlement property list\n' >&2
+  exit 1
+fi
+for key in \
+  com.apple.security.app-sandbox \
+  com.apple.security.network.client \
+  com.apple.security.network.server; do
+  if /usr/libexec/PlistBuddy \
+    -c "Print :$key" \
+    "$TMP/probe-entitlements.plist" \
+    >/dev/null 2>&1; then
+    printf 'signed ATS probe contains forbidden entitlement %s\n' "$key" >&2
+    exit 1
+  fi
+done
 
 printf 'ATS_LOOPBACK_PASS\n' >"$TMP/expected.stdout"
 set +e

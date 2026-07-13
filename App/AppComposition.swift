@@ -172,6 +172,12 @@ final class AppComposition {
         )
     }
 
+#if DEBUG
+    static func uiTest(scenario: UITestScenario) -> AppComposition {
+        UITestCompositionFactory.make(scenario: scenario)
+    }
+#endif
+
     func start() async {
         await model.bootstrap()
         guard model.readiness == .ready else { return }

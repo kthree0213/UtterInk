@@ -16,11 +16,15 @@
 		2B78CD7B6DEB765136847735 /* FloatingWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC9E8ED29C019B210BEDC9F6 /* FloatingWindowController.swift */; };
 		349C1B0F770375BDD8F28842 /* UtterInkServices in Frameworks */ = {isa = PBXBuildFile; productRef = 5A4BEEB3487789DBD48B4F72 /* UtterInkServices */; };
 		3CA8FA693AAAFFCCB2D820A3 /* OnboardingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08A8845538578C14FD687CA8 /* OnboardingViewModel.swift */; };
+		3E525C01DEBB4A8A2BFE7247 /* PipelineStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46BFAD1519CCE183749690DB /* PipelineStateTests.swift */; };
 		4D7CF06D2E2738B003DD7902 /* FloatingRecorderContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54B10E54842C948D8ADA6570 /* FloatingRecorderContractTests.swift */; };
+		4DC0295C64BCC8E0385435B3 /* AccessibilityAnnouncement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EC1014F9AF6BF1F41978321 /* AccessibilityAnnouncement.swift */; };
 		4EC7359F0DC7AC9AAC508263 /* LaunchAtLoginService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D5B5B5331C7C4FBF186C2EE /* LaunchAtLoginService.swift */; };
+		53D6073BD0971AC3546EE189 /* UITestHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4204388B3976A0A7F4CAADCF /* UITestHarness.swift */; };
 		615082BE1A5D50F60C4AC7BC /* FloatingRecorderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DA661CBFD12F4E8993571B1 /* FloatingRecorderView.swift */; };
 		6A673A2C4CB25BA2B3CCD423 /* DiagnosticsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3323C3FF17C48F62CE1EEAB0 /* DiagnosticsSettingsView.swift */; };
 		7215C0A1E360A6C5BF8DDD7F /* AppComposition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0290D70562CE7E9DE9492108 /* AppComposition.swift */; };
+		7241526CD55001E23DF63875 /* LaunchAndNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05A5E8643C52F9B990C4F8CE /* LaunchAndNavigationTests.swift */; };
 		72F82199A11CF780CE79E2DC /* UtterInkCore in Frameworks */ = {isa = PBXBuildFile; productRef = 81B69EA66450AA1E413B991D /* UtterInkCore */; };
 		7CE43F275069225E83EDAF25 /* PermissionSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 627351AA17B74FEDC4D86747 /* PermissionSettingsView.swift */; };
 		7E85E4543BF986EB2E17FE14 /* UtterInkServices in Frameworks */ = {isa = PBXBuildFile; productRef = 6F0C53D16DB5E93F2743AD4E /* UtterInkServices */; };
@@ -32,6 +36,7 @@
 		8A0C974FAF8354D2972D9C27 /* UtterInkCore in Frameworks */ = {isa = PBXBuildFile; productRef = 36950818E6668CD9756F0083 /* UtterInkCore */; };
 		932E6FC7DD18DE1B34CDBA00 /* SpeechModelSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EBA6FF99282BE239A1ED9F9 /* SpeechModelSettingsView.swift */; };
 		950C78685A200436DB75CAE2 /* EnglishCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30D272D7DD05077B79FEDB33 /* EnglishCopy.swift */; };
+		957489E3FA17EEF3ADDFDDFB /* UITestScenario.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53A5C4B9BB2AFFE8125F1BD2 /* UITestScenario.swift */; };
 		95D78443F90710B66CB7556A /* SpeechModelSettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 741DC772C9E9EB94B3E3DB2E /* SpeechModelSettingsViewModel.swift */; };
 		9CAACBB0C922F2A180A8E823 /* RecordingIntentControllerSpy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2ACAA58F79B0796CBC4EC407 /* RecordingIntentControllerSpy.swift */; };
 		9EA98ECBB34A97BEDF0AFF61 /* OutputModeSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B91CE5B3B161584ED2FDDEF0 /* OutputModeSettingsView.swift */; };
@@ -58,10 +63,18 @@
 			remoteGlobalIDString = 675146D8A9E81872F5343486;
 			remoteInfo = UtterInk;
 		};
+		19255F4E32289C04995A9C80 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FB1A7C98E2286FAE3AE4C18B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 675146D8A9E81872F5343486;
+			remoteInfo = UtterInk;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		0290D70562CE7E9DE9492108 /* AppComposition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppComposition.swift; sourceTree = "<group>"; };
+		05A5E8643C52F9B990C4F8CE /* LaunchAndNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAndNavigationTests.swift; sourceTree = "<group>"; };
 		08A8845538578C14FD687CA8 /* OnboardingViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingViewModel.swift; sourceTree = "<group>"; };
 		0B7579D494FEFEA5DBC303EA /* AppFeatureFakes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppFeatureFakes.swift; sourceTree = "<group>"; };
 		0EBA6FF99282BE239A1ED9F9 /* SpeechModelSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechModelSettingsView.swift; sourceTree = "<group>"; };
@@ -72,10 +85,14 @@
 		2ACAA58F79B0796CBC4EC407 /* RecordingIntentControllerSpy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingIntentControllerSpy.swift; sourceTree = "<group>"; };
 		2EB6481326357AF1BA843A6D /* OnboardingWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingWindowController.swift; sourceTree = "<group>"; };
 		30D272D7DD05077B79FEDB33 /* EnglishCopy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnglishCopy.swift; sourceTree = "<group>"; };
+		322AE3763E209906DD8F0C91 /* UtterInkUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = UtterInkUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		32E26E60E6A5DEA5DBAA6C10 /* ATSPolicyProbeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ATSPolicyProbeApp.swift; sourceTree = "<group>"; };
 		3323C3FF17C48F62CE1EEAB0 /* DiagnosticsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsSettingsView.swift; sourceTree = "<group>"; };
+		4204388B3976A0A7F4CAADCF /* UITestHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITestHarness.swift; sourceTree = "<group>"; };
 		45A95866C1C1CA326271A299 /* MenuBarRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarRootView.swift; sourceTree = "<group>"; };
+		46BFAD1519CCE183749690DB /* PipelineStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PipelineStateTests.swift; sourceTree = "<group>"; };
 		4F790DEE644C9B4EB193DED2 /* LastResultView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LastResultView.swift; sourceTree = "<group>"; };
+		53A5C4B9BB2AFFE8125F1BD2 /* UITestScenario.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITestScenario.swift; sourceTree = "<group>"; };
 		54B10E54842C948D8ADA6570 /* FloatingRecorderContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingRecorderContractTests.swift; sourceTree = "<group>"; };
 		579124F6FE0A0EBD4FD6AFA4 /* UtterInkApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UtterInkApp.swift; sourceTree = "<group>"; };
 		57E906AE6303DB7884EF7539 /* UtterInk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = UtterInk.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -88,6 +105,7 @@
 		741DC772C9E9EB94B3E3DB2E /* SpeechModelSettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechModelSettingsViewModel.swift; sourceTree = "<group>"; };
 		83B2C2473ADFFFE98DD45B98 /* AppFeatureProtocols.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppFeatureProtocols.swift; sourceTree = "<group>"; };
 		88DA2B6A42760494D616E4F5 /* RecognitionLanguageSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecognitionLanguageSettingsView.swift; sourceTree = "<group>"; };
+		8EC1014F9AF6BF1F41978321 /* AccessibilityAnnouncement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityAnnouncement.swift; sourceTree = "<group>"; };
 		9490E92D1C0925CA920F6B48 /* ProviderPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderPresentationTests.swift; sourceTree = "<group>"; };
 		9D5B5B5331C7C4FBF186C2EE /* LaunchAtLoginService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLoginService.swift; sourceTree = "<group>"; };
 		9DADA0B685CAE1A236A6CF01 /* UtterInkKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = UtterInkKit; path = Packages/UtterInkKit; sourceTree = SOURCE_ROOT; };
@@ -185,6 +203,24 @@
 			path = Settings;
 			sourceTree = "<group>";
 		};
+		452F1A9AE9C80A1FE5D29146 /* UtterInkUITests */ = {
+			isa = PBXGroup;
+			children = (
+				05A5E8643C52F9B990C4F8CE /* LaunchAndNavigationTests.swift */,
+				46BFAD1519CCE183749690DB /* PipelineStateTests.swift */,
+				BCE9934CA4986388EAD967B0 /* Support */,
+			);
+			path = UtterInkUITests;
+			sourceTree = "<group>";
+		};
+		484F7F8B468126CB09D405D7 /* UITestSupport */ = {
+			isa = PBXGroup;
+			children = (
+				53A5C4B9BB2AFFE8125F1BD2 /* UITestScenario.swift */,
+			);
+			path = UITestSupport;
+			sourceTree = "<group>";
+		};
 		575879E8E36BEEE6E924B122 /* History */ = {
 			isa = PBXGroup;
 			children = (
@@ -228,6 +264,7 @@
 				59D0F8E4521B9084A0E47556 /* ATSPolicyProbe.app */,
 				57E906AE6303DB7884EF7539 /* UtterInk.app */,
 				11540CC22CF15422300D8BEE /* UtterInkAppTests.xctest */,
+				322AE3763E209906DD8F0C91 /* UtterInkUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -255,6 +292,7 @@
 				0290D70562CE7E9DE9492108 /* AppComposition.swift */,
 				6569F32A71D430BE8D907522 /* AppModel.swift */,
 				579124F6FE0A0EBD4FD6AFA4 /* UtterInkApp.swift */,
+				D1753DD1BD1BA52D26FD6221 /* Accessibility */,
 				D1E73F7731EBDC86B1122659 /* Floating */,
 				575879E8E36BEEE6E924B122 /* History */,
 				93974BD61BDE2EAA7351FE7D /* Localization */,
@@ -263,6 +301,7 @@
 				98D068608D1C88F7EF4DA59D /* Services */,
 				3D0319F65040878EBE414475 /* Settings */,
 				0EB5E7BAFAB8AD124DF0091F /* Supporting */,
+				484F7F8B468126CB09D405D7 /* UITestSupport */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -274,8 +313,17 @@
 				C7EC2B54F7C20F132F876E54 /* Packages */,
 				E4AEF50AD36167CAF3B42C7D /* Tests */,
 				0DC886C36DA470640BD9ED66 /* UtterInkAppTests */,
+				452F1A9AE9C80A1FE5D29146 /* UtterInkUITests */,
 				88543F2ABB51400CD0C27834 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		BCE9934CA4986388EAD967B0 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				4204388B3976A0A7F4CAADCF /* UITestHarness.swift */,
+			);
+			path = Support;
 			sourceTree = "<group>";
 		};
 		C7EC2B54F7C20F132F876E54 /* Packages */ = {
@@ -284,6 +332,14 @@
 				9DADA0B685CAE1A236A6CF01 /* UtterInkKit */,
 			);
 			path = Packages;
+			sourceTree = "<group>";
+		};
+		D1753DD1BD1BA52D26FD6221 /* Accessibility */ = {
+			isa = PBXGroup;
+			children = (
+				8EC1014F9AF6BF1F41978321 /* AccessibilityAnnouncement.swift */,
+			);
+			path = Accessibility;
 			sourceTree = "<group>";
 		};
 		D1E73F7731EBDC86B1122659 /* Floating */ = {
@@ -306,6 +362,24 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		1F2834E85B52381C195521BD /* UtterInkUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9160D2777F16D485D3B01552 /* Build configuration list for PBXNativeTarget "UtterInkUITests" */;
+			buildPhases = (
+				B01ED026CD691C942C9CAF82 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				8534C1A62B3504C36B2CFF6A /* PBXTargetDependency */,
+			);
+			name = UtterInkUITests;
+			packageProductDependencies = (
+			);
+			productName = UtterInkUITests;
+			productReference = 322AE3763E209906DD8F0C91 /* UtterInkUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		675146D8A9E81872F5343486 /* UtterInk */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = C311FA5CF37F9C1EE305737D /* Build configuration list for PBXNativeTarget "UtterInk" */;
@@ -375,6 +449,9 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 2640;
 				TargetAttributes = {
+					1F2834E85B52381C195521BD = {
+						TestTargetID = 675146D8A9E81872F5343486;
+					};
 					675146D8A9E81872F5343486 = {
 						ProvisioningStyle = Automatic;
 					};
@@ -403,6 +480,7 @@
 				A70D63CA0DD3A5A7A843CFE6 /* ATSPolicyProbe */,
 				675146D8A9E81872F5343486 /* UtterInk */,
 				F30AB49D0C7B6CD9DBBDA012 /* UtterInkAppTests */,
+				1F2834E85B52381C195521BD /* UtterInkUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -420,6 +498,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4DC0295C64BCC8E0385435B3 /* AccessibilityAnnouncement.swift in Sources */,
 				7215C0A1E360A6C5BF8DDD7F /* AppComposition.swift in Sources */,
 				F445DCCE650883552EFD418F /* AppFeatureProtocols.swift in Sources */,
 				0B1B0858467632F4B566A7F3 /* AppModel.swift in Sources */,
@@ -444,6 +523,7 @@
 				0332E22AF16015E09E00E4A3 /* ShortcutSettingsView.swift in Sources */,
 				932E6FC7DD18DE1B34CDBA00 /* SpeechModelSettingsView.swift in Sources */,
 				95D78443F90710B66CB7556A /* SpeechModelSettingsViewModel.swift in Sources */,
+				957489E3FA17EEF3ADDFDDFB /* UITestScenario.swift in Sources */,
 				885436C25493662D4CF7723A /* UtterInkApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -465,6 +545,16 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B01ED026CD691C942C9CAF82 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7241526CD55001E23DF63875 /* LaunchAndNavigationTests.swift in Sources */,
+				3E525C01DEBB4A8A2BFE7247 /* PipelineStateTests.swift in Sources */,
+				53D6073BD0971AC3546EE189 /* UITestHarness.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -472,6 +562,11 @@
 			isa = PBXTargetDependency;
 			target = 675146D8A9E81872F5343486 /* UtterInk */;
 			targetProxy = 02760E01E69C2C47ED04E450 /* PBXContainerItemProxy */;
+		};
+		8534C1A62B3504C36B2CFF6A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 675146D8A9E81872F5343486 /* UtterInk */;
+			targetProxy = 19255F4E32289C04995A9C80 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -605,6 +700,23 @@
 			};
 			name = Debug;
 		};
+		7B3CFF5235728CC0548A922F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				TEST_TARGET_NAME = UtterInk;
+			};
+			name = Release;
+		};
 		88D92EA27AD479B24115137D /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -727,6 +839,23 @@
 			};
 			name = Release;
 		};
+		D12CB859774350A6C484C6CE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				TEST_TARGET_NAME = UtterInk;
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -735,6 +864,15 @@
 			buildConfigurations = (
 				88D92EA27AD479B24115137D /* Debug */,
 				532F9F87A7331E9F8B57DDEE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		9160D2777F16D485D3B01552 /* Build configuration list for PBXNativeTarget "UtterInkUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D12CB859774350A6C484C6CE /* Debug */,
+				7B3CFF5235728CC0548A922F /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

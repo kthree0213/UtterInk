@@ -4,6 +4,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+if [[ "$#" -ne 0 ]]; then
+  printf 'unknown ci-local argument: %s\n' "$1" >&2
+  exit 64
+fi
+
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/utterink-ci.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 case "$TMP" in
@@ -136,8 +141,37 @@ xcodebuild \
   CODE_SIGNING_ALLOWED=NO \
   build
 
+xcodebuild \
+  -project UtterInk.xcodeproj \
+  -scheme UtterInk \
+  -configuration Debug \
+  -destination 'platform=macOS,arch=arm64' \
+  -derivedDataPath "$TMP/DerivedData" \
+  -clonedSourcePackagesDirPath "$TMP/SourcePackages" \
+  -parallel-testing-enabled NO \
+  CODE_SIGNING_ALLOWED=NO \
+  test \
+  -only-testing:UtterInkAppTests
+
+xcodebuild \
+  -project UtterInk.xcodeproj \
+  -scheme UtterInk \
+  -configuration Debug \
+  -destination 'platform=macOS,arch=arm64' \
+  -derivedDataPath "$TMP/DerivedData" \
+  -clonedSourcePackagesDirPath "$TMP/SourcePackages" \
+  -parallel-testing-enabled NO \
+  CODE_SIGNING_ALLOWED=NO \
+  test \
+  -only-testing:UtterInkUITests/LaunchAndNavigationTests/testIdleScenarioShowsReadyStartActionAndSettingsRoutes \
+  -only-testing:UtterInkUITests/PipelineStateTests/testRecordingScenarioShowsStopAndCancelActions
+
 UTTERINK_CLONED_SOURCE_PACKAGES_DIR="$TMP/SourcePackages" \
   bash Tests/Scripts/test-ats-policy.sh
+
+UTTERINK_CLONED_SOURCE_PACKAGES_DIR="$TMP/SourcePackages" \
+UTTERINK_UI_BOUNDARY_DERIVED_DATA_PATH="$TMP/ReleaseDerivedData" \
+  bash Tests/Scripts/test-ui-testing-release-boundary.sh
 
 if /usr/libexec/PlistBuddy \
   -c 'Print :NSAppTransportSecurity:NSAllowsArbitraryLoads' \
@@ -154,4 +188,4 @@ git diff --check
 ./Scripts/check-repo-hygiene.sh
 scan_public_history
 
-printf 'local foundation verification passed\n'
+printf 'local verification passed\n'

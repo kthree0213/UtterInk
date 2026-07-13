@@ -9,6 +9,7 @@ final class OutputModeSettingsViewModel {
     private(set) var selectedModeID = OutputMode.rawID
     private(set) var isSaving = false
     private(set) var failureMessage: String?
+    private(set) var accessibilityEvent: UtterInkAccessibilityEvent?
 
     @ObservationIgnored private let writer: SettingsMutationCoordinator
 
@@ -54,7 +55,8 @@ final class OutputModeSettingsViewModel {
             instructions: cleanInstructions
         )
         return await mutate(
-            failure: "The output mode could not be added."
+            failure: "The output mode could not be added.",
+            success: "Output mode added."
         ) { settings in
             Self.repairRawInvariant(&settings)
             guard !settings.outputModes.contains(where: { $0.id == mode.id }) else { return }
@@ -77,7 +79,8 @@ final class OutputModeSettingsViewModel {
         }
 
         return await mutate(
-            failure: "The output mode could not be updated."
+            failure: "The output mode could not be updated.",
+            success: "Output mode updated."
         ) { settings in
             Self.repairRawInvariant(&settings)
             guard let index = settings.outputModes.firstIndex(where: { $0.id == id }) else {
@@ -99,7 +102,8 @@ final class OutputModeSettingsViewModel {
             return
         }
         _ = await mutate(
-            failure: "The output mode could not be deleted."
+            failure: "The output mode could not be deleted.",
+            success: "Output mode deleted."
         ) { settings in
             Self.repairRawInvariant(&settings)
             settings.outputModes.removeAll { $0.id == id }
@@ -112,7 +116,8 @@ final class OutputModeSettingsViewModel {
     func select(id: UUID) async {
         guard !isSaving else { return }
         _ = await mutate(
-            failure: "The output mode could not be selected."
+            failure: "The output mode could not be selected.",
+            success: "Output mode selected for future dictations."
         ) { settings in
             Self.repairRawInvariant(&settings)
             guard settings.outputModes.contains(where: { $0.id == id }) else { return }
@@ -122,6 +127,7 @@ final class OutputModeSettingsViewModel {
 
     private func mutate(
         failure: String,
+        success: String,
         _ mutation: @escaping @Sendable (inout UserSettings) -> Void
     ) async -> Bool {
         isSaving = true
@@ -130,6 +136,7 @@ final class OutputModeSettingsViewModel {
         do {
             let saved = try await writer.update(mutation)
             publish(saved)
+            accessibilityEvent = UtterInkAccessibilityEvent(message: success)
             return true
         } catch {
             failureMessage = failure
@@ -190,6 +197,8 @@ struct OutputModeSettingsView: View {
                         .buttonStyle(.plain)
                         .disabled(model.isSaving)
                         .accessibilityLabel("Select \(mode.title)")
+                        .accessibilityValue(model.selectedModeID == mode.id ? "Selected" : "Not selected")
+                        .accessibilityIdentifier("settings.outputModes.select.\(mode.id.uuidString.lowercased())")
 
                         VStack(alignment: .leading) {
                             Text(mode.title)
@@ -205,22 +214,32 @@ struct OutputModeSettingsView: View {
                             Text("Built In").foregroundStyle(.secondary)
                         } else {
                             Button("Edit") { beginEditing(mode) }
+                                .accessibilityIdentifier("settings.outputModes.edit.\(mode.id.uuidString.lowercased())")
                             Button("Delete", role: .destructive) {
                                 Task { await model.delete(id: mode.id) }
                             }
+                            .accessibilityIdentifier("settings.outputModes.delete.\(mode.id.uuidString.lowercased())")
                         }
                     }
                 }
                 Button("Add Polish Mode") { beginAdding() }
                     .disabled(model.isSaving)
+                    .accessibilityIdentifier("settings.outputModes.add")
             }
 
             if let failureMessage = model.failureMessage {
                 Label(failureMessage, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
+                    .accessibilityLabel("Error")
+                    .accessibilityValue(failureMessage)
+                    .accessibilityIdentifier("settings.outputModes.error")
+                    .accessibilityAddTraits(.updatesFrequently)
             }
         }
         .formStyle(.grouped)
+        .accessibilityIdentifier("settings.outputModes")
+        .utterInkAccessibilityAnnouncement(model.failureMessage.map { "Error: \($0)" })
+        .utterInkAccessibilityAnnouncement(model.accessibilityEvent)
         .navigationTitle("Output Modes")
         .task { await model.load() }
         .sheet(isPresented: $editorIsPresented) {
@@ -228,18 +247,32 @@ struct OutputModeSettingsView: View {
                 Text(editingID == nil ? "Add Polish Mode" : "Edit Polish Mode")
                     .font(.title2.bold())
                 TextField("Name", text: $title)
-                TextEditor(text: $instructions)
+                    .accessibilityLabel("Polish Mode Name")
+                    .accessibilityIdentifier("settings.outputModes.editor.name")
+                TextField(
+                    "Instructions",
+                    text: $instructions,
+                    axis: .vertical
+                )
+                    .textFieldStyle(.plain)
+                    .lineLimit(6...12)
+                    .padding(8)
                     .frame(minHeight: 140)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator))
+                    .accessibilityLabel("Instructions")
+                    .accessibilityIdentifier("settings.outputModes.editor.instructions")
                 HStack {
                     Spacer()
                     Button("Cancel", role: .cancel) { editorIsPresented = false }
+                        .accessibilityIdentifier("settings.outputModes.editor.cancel")
                     Button("Save") { saveEditor() }
                         .keyboardShortcut(.defaultAction)
+                        .accessibilityIdentifier("settings.outputModes.editor.save")
                 }
             }
             .padding(24)
             .frame(width: 480)
+            .accessibilityIdentifier("settings.outputModes.editor")
         }
     }
 

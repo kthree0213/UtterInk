@@ -131,8 +131,19 @@ struct StagePresentation: Equatable {
         self.init(
             stage: state.stage,
             deliveryPreference: deliveryPreference,
-            warningCode: state.failure?.code ?? state.result?.warning
+            warningCode: Self.warningCode(for: state)
         )
+    }
+
+    private static func warningCode(for state: PipelineState) -> DiagnosticCode? {
+        if let failure = state.failure?.code {
+            return failure
+        }
+        let result = state.result ?? state.failure?.recoverableResult
+        if case let .manualCopyRequired(code)? = result?.delivery {
+            return code
+        }
+        return result?.warning
     }
 
     init(
@@ -140,6 +151,32 @@ struct StagePresentation: Equatable {
         sessionPresentation: SessionPresentationContext?
     ) {
         if state.stage == .delivering, sessionPresentation == nil {
+            let warning = EnglishCopy.warning(for: .deliveryTargetUnavailable)
+            self.init(
+                label: "Needs Attention",
+                systemImage: "exclamationmark.triangle.fill",
+                primaryAction: .none,
+                canCancel: true,
+                secondaryAction: .cancel,
+                warning: warning
+            )
+            return
+        }
+        if state.stage == .delivering,
+           sessionPresentation?.destination == .onboardingTest {
+            self.init(
+                label: "Returning Result to Onboarding",
+                systemImage: "arrow.uturn.backward.circle",
+                primaryAction: .none,
+                canCancel: true,
+                secondaryAction: .cancel,
+                warning: nil
+            )
+            return
+        }
+        if state.stage == .delivering,
+           sessionPresentation?.destination == .copyOnlyFallback,
+           sessionPresentation?.deliveryPreference == .automaticPaste {
             let warning = EnglishCopy.warning(for: .deliveryTargetUnavailable)
             self.init(
                 label: "Needs Attention",

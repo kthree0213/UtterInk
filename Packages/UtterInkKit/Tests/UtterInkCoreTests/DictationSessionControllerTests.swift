@@ -15,6 +15,10 @@ final class DictationSessionControllerTests: XCTestCase {
 
         harness.controller.send(.start(.focusedExternal))
         await waitUntil { harness.controller.state.stage == .recording }
+        XCTAssertEqual(
+            harness.controller.sessionPresentation?.destination,
+            .external
+        )
         await harness.settings.setDeliveryPreference(.automaticPaste)
         harness.controller.send(.stop)
         await waitUntil {
@@ -211,6 +215,10 @@ final class DictationSessionControllerTests: XCTestCase {
 
         harness.controller.send(.start(.focusedExternal))
         await waitUntil { harness.controller.state.stage == .recording }
+        XCTAssertEqual(
+            harness.controller.sessionPresentation?.destination,
+            .copyOnlyFallback
+        )
         await harness.settings.setDeliveryPreference(.copyOnly)
         harness.controller.send(.stop)
         await waitUntil { harness.controller.state.stage == .completed }
@@ -237,6 +245,10 @@ final class DictationSessionControllerTests: XCTestCase {
 
         harness.controller.send(.start(.onboardingTest))
         await waitUntil { harness.controller.state.stage == .recording }
+        XCTAssertEqual(
+            harness.controller.sessionPresentation?.destination,
+            .onboardingTest
+        )
         harness.controller.send(.stop)
         await waitUntil { harness.controller.state.stage == .completed }
 

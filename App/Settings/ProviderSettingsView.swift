@@ -91,6 +91,7 @@ final class ProviderSettingsViewModel {
     private(set) var isBusy = false
     private(set) var failureMessage: String?
     private(set) var credentialCleanupPending: Set<UUID> = []
+    private(set) var accessibilityEvent: UtterInkAccessibilityEvent?
 
     @ObservationIgnored private let writer: SettingsMutationCoordinator
     @ObservationIgnored private let credentials: any CredentialStore
@@ -286,6 +287,9 @@ final class ProviderSettingsViewModel {
             credentialRevision[profile.id, default: 0] &+= 1
             migrationResults[profile.id] = .noLegacyValue
             invalidateReadiness(profileID: profile.id)
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Provider profile added. Test it before selecting it."
+            )
             return true
         } catch {
             if hasCredential {
@@ -369,6 +373,9 @@ final class ProviderSettingsViewModel {
             }
             publish(saved)
             if modelChanged { invalidateReadiness(profileID: id) }
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Provider profile updated. Test it again before selecting it."
+            )
             return true
         } catch {
             failureMessage = "The provider profile could not be updated. Its saved values were kept."
@@ -396,6 +403,9 @@ final class ProviderSettingsViewModel {
             do {
                 try await credentials.delete(profileID: id)
                 credentialCleanupPending.remove(id)
+                accessibilityEvent = UtterInkAccessibilityEvent(
+                    message: "Provider profile deleted."
+                )
             } catch {
                 credentialCleanupPending.insert(id)
                 failureMessage = "The profile was removed, but its orphaned Keychain item still needs cleanup. No provider uses it."
@@ -411,6 +421,9 @@ final class ProviderSettingsViewModel {
             try await credentials.delete(profileID: profileID)
             credentialCleanupPending.remove(profileID)
             failureMessage = nil
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Orphaned provider credential removed from Keychain."
+            )
         } catch {
             failureMessage = "The orphaned Keychain item could not be removed yet."
         }
@@ -435,6 +448,9 @@ final class ProviderSettingsViewModel {
                 throw ProviderDraftError.persistenceConflict
             }
             publish(saved)
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Provider selected for future polished dictations."
+            )
         } catch {
             failureMessage = "The provider could not be selected."
         }
@@ -465,6 +481,9 @@ final class ProviderSettingsViewModel {
               let endpoint = try? EndpointValidator.validate(profile.baseURL.absoluteString),
               endpoint.policy == profile.policy else {
             readiness[profileID] = .incomplete
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Provider test could not start. Complete the profile first."
+            )
             return
         }
 
@@ -472,6 +491,9 @@ final class ProviderSettingsViewModel {
         failureMessage = nil
         let expectedFingerprint = fingerprint(for: profile)
         readiness[profileID] = .validating
+        accessibilityEvent = UtterInkAccessibilityEvent(
+            message: "Provider test started."
+        )
         defer { isBusy = false }
 
         let secret: SessionSecret
@@ -483,6 +505,9 @@ final class ProviderSettingsViewModel {
             } else {
                 readiness[profileID] = .incomplete
                 credentialPresence[profileID] = false
+                accessibilityEvent = UtterInkAccessibilityEvent(
+                    message: "Provider test could not start. A Keychain credential is missing."
+                )
                 return
             }
         } catch {
@@ -496,6 +521,9 @@ final class ProviderSettingsViewModel {
         guard let current = profiles.first(where: { $0.id == profileID }),
               fingerprint(for: current) == expectedFingerprint else {
             invalidateReadiness(profileID: profileID)
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Provider test result discarded because the profile changed."
+            )
             return
         }
 
@@ -504,12 +532,21 @@ final class ProviderSettingsViewModel {
             where normalizedHost == endpoint.displayAuthority && modelID == profile.modelID:
             validatedFingerprints[profileID] = expectedFingerprint
             readiness[profileID] = .ready(normalizedHost: normalizedHost, modelID: modelID)
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Provider test passed."
+            )
         case .ready:
             validatedFingerprints[profileID] = nil
             readiness[profileID] = .failed(.polishInvalidResponse)
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Provider test failed. \(EnglishCopy.warning(for: .polishInvalidResponse))"
+            )
         case let .failed(code):
             validatedFingerprints[profileID] = nil
             readiness[profileID] = .failed(code)
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Provider test failed. \(EnglishCopy.warning(for: code))"
+            )
         }
     }
 
@@ -552,6 +589,11 @@ final class ProviderSettingsViewModel {
             credentialPresence[profileID] = false
         }
         invalidateReadiness(profileID: profileID)
+        accessibilityEvent = UtterInkAccessibilityEvent(
+            message: migrationBlocks(profileID)
+                ? "Credential migration still needs attention."
+                : "Credential migration resolved."
+        )
     }
 
     private func replaceProfile(
@@ -594,6 +636,11 @@ final class ProviderSettingsViewModel {
             } catch {
                 credentialCleanupPending.insert(existing.id)
                 failureMessage = "The new profile is saved, but the old orphaned Keychain item still needs cleanup."
+            }
+            if failureMessage == nil {
+                accessibilityEvent = UtterInkAccessibilityEvent(
+                    message: "Provider profile updated. Test it again before selecting it."
+                )
             }
             return true
         } catch {
@@ -766,18 +813,24 @@ struct ProviderSettingsView: View {
                             Button("Test Connection") {
                                 Task { await model.validate(profileID: profile.id) }
                             }
+                            .accessibilityIdentifier("settings.provider.test.\(profile.id.uuidString.lowercased())")
                             Button("Use") {
                                 Task { await model.select(profileID: profile.id) }
                             }
                             .disabled(!model.canSelect(profileID: profile.id))
+                            .accessibilityIdentifier("settings.provider.use.\(profile.id.uuidString.lowercased())")
                             Button("Edit") { beginEditing(profile) }
+                                .accessibilityIdentifier("settings.provider.edit.\(profile.id.uuidString.lowercased())")
                             Button("Delete", role: .destructive) {
                                 Task { await model.deleteProfile(id: profile.id) }
                             }
+                            .accessibilityIdentifier("settings.provider.delete.\(profile.id.uuidString.lowercased())")
                         }
                         if let migrationMessage = model.migrationMessage(for: profile.id) {
                             Label(migrationMessage, systemImage: "lock.trianglebadge.exclamationmark")
                                 .foregroundStyle(.orange)
+                                .accessibilityLabel("Credential migration warning")
+                                .accessibilityValue(migrationMessage)
                         }
                         if model.conflictChoices(for: profile.id).contains(.keepSecure) {
                             HStack {
@@ -801,6 +854,8 @@ struct ProviderSettingsView: View {
                         }
                     }
                     .padding(.vertical, 4)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("settings.provider.profile.\(profile.id.uuidString.lowercased())")
                 }
             }
 
@@ -810,16 +865,28 @@ struct ProviderSettingsView: View {
                         Text(template.title).tag(template.id)
                     }
                 }
+                .accessibilityLabel("Provider Template")
+                .accessibilityIdentifier("settings.provider.template")
                 TextField("Name", text: $title)
+                    .accessibilityLabel("Provider Name")
+                    .accessibilityIdentifier("settings.provider.name")
                 if let fixed = ProviderTemplate.template(for: templateID).fixedBaseURL {
                     LabeledContent("Base URL", value: fixed)
                 } else {
                     TextField("Base URL", text: $baseURL)
+                        .accessibilityLabel("Provider Base URL")
+                        .accessibilityIdentifier("settings.provider.baseURL")
                 }
                 TextField("Model ID", text: $modelID)
+                    .accessibilityLabel("Provider Model ID")
+                    .accessibilityIdentifier("settings.provider.modelID")
                 SecureField("API Key (stored only in Keychain)", text: $credential)
+                    .accessibilityLabel("Provider API Key")
+                    .accessibilityIdentifier("settings.provider.apiKey")
                 if templateID == .custom {
                     Toggle(ProviderSettingsViewModel.loopbackOptInLabel, isOn: $allowsLoopbackHTTP)
+                        .accessibilityLabel(ProviderSettingsViewModel.loopbackOptInLabel)
+                        .accessibilityIdentifier("settings.provider.allowLoopbackHTTP")
                 }
                 if let disclosure = model.egressDisclosure(
                     forCandidate: endpointDraft,
@@ -832,8 +899,10 @@ struct ProviderSettingsView: View {
                     Button(editingID == nil ? "Add Profile" : "Save Changes") {
                         saveDraft()
                     }
+                    .accessibilityIdentifier("settings.provider.save")
                     if editingID != nil {
                         Button("Cancel", role: .cancel) { resetDraft() }
+                            .accessibilityIdentifier("settings.provider.cancelEdit")
                     }
                 }
             }
@@ -859,6 +928,7 @@ struct ProviderSettingsView: View {
                                     await model.retryCredentialCleanup(profileID: profileID)
                                 }
                             }
+                            .accessibilityIdentifier("settings.provider.retryCleanup.\(profileID.uuidString.lowercased())")
                         }
                     }
                 }
@@ -867,9 +937,16 @@ struct ProviderSettingsView: View {
             if let failureMessage = model.failureMessage {
                 Label(failureMessage, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
+                    .accessibilityLabel("Error")
+                    .accessibilityValue(failureMessage)
+                    .accessibilityIdentifier("settings.provider.error")
+                    .accessibilityAddTraits(.updatesFrequently)
             }
         }
         .formStyle(.grouped)
+        .accessibilityIdentifier("settings.provider")
+        .utterInkAccessibilityAnnouncement(model.failureMessage.map { "Error: \($0)" })
+        .utterInkAccessibilityAnnouncement(model.accessibilityEvent)
         .navigationTitle("Provider")
         .task { await model.load() }
         .onChange(of: templateID) { _, newValue in

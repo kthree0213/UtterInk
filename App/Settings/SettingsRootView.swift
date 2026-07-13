@@ -142,12 +142,18 @@ struct SettingsRootView: View {
             List(SettingsRoute.allCases, selection: $selectedRoute) { route in
                 Label(route.title, systemImage: route.systemImage)
                     .tag(route)
+                    .accessibilityValue(route == selectedRoute ? "Current" : "")
+                    .accessibilityIdentifier("settings.route.\(route.rawValue)")
             }
             .navigationTitle("Settings")
+            .accessibilityLabel("Settings sections")
+            .accessibilityIdentifier("settings.sidebar")
+            .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 320)
         } detail: {
             destination(selectedRoute ?? .general)
         }
         .frame(minWidth: 720, minHeight: 500)
+        .accessibilityIdentifier("settings.root")
     }
 
     @ViewBuilder

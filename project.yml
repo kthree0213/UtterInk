@@ -102,18 +102,31 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/UtterInk.app/Contents/MacOS/UtterInk"
         BUNDLE_LOADER: "$(TEST_HOST)"
+  UtterInkUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: UtterInkUITests
+    dependencies:
+      - target: UtterInk
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
 schemes:
   UtterInk:
     build:
       targets:
         UtterInk: all
         UtterInkAppTests: [test]
+        UtterInkUITests: [test]
     run:
       config: Debug
     test:
       config: Debug
       targets:
         - name: UtterInkAppTests
+        - name: UtterInkUITests
     archive:
       config: Release
   ATSPolicyProbe:

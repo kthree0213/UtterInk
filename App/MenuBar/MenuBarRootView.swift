@@ -1,3 +1,4 @@
+import Accessibility
 import AppKit
 import SwiftUI
 import UtterInkCore
@@ -31,37 +32,50 @@ struct MenuBarRootView: View {
     }
 
     var body: some View {
-        statusContent
-        Divider()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                statusContent
+                Divider()
 
-        if model.readiness == .ready {
-            actionContent
-            Divider()
-            latestResultContent
-            Divider()
-            configurationContent
-            Divider()
-            routeContent
-        }
+                if model.readiness == .ready {
+                    actionContent
+                    Divider()
+                    latestResultContent
+                    Divider()
+                    configurationContent
+                    Divider()
+                    routeContent
+                }
 
-        Button {
-            openSettings()
-        } label: {
-            Label(EnglishCopy.settings, systemImage: "gearshape")
-        }
-        .help("Open UtterInk Settings")
+                Button {
+                    openSettings()
+                } label: {
+                    Label(EnglishCopy.settings, systemImage: "gearshape")
+                }
+                .accessibilityIdentifier("menu.settings")
+                .help("Open UtterInk Settings")
 
-        Divider()
-        Button {
-            NSApplication.shared.terminate(nil)
-        } label: {
-            Label(EnglishCopy.quit, systemImage: "xmark")
+                Divider()
+                Button {
+                    NSApplication.shared.terminate(nil)
+                } label: {
+                    Label(EnglishCopy.quit, systemImage: "xmark")
+                }
+                .accessibilityIdentifier("menu.quit")
+                .help(EnglishCopy.quit)
+            }
+            .padding(12)
         }
-        .help(EnglishCopy.quit)
+        .frame(width: 320)
+        .frame(maxHeight: 640)
         .task {
             guard let settingsStore,
                   let loaded = try? await settingsStore.current() else { return }
             settings = loaded
+        }
+        .onChange(of: outputSaveWarning) { _, warning in
+            guard let warning else { return }
+            AccessibilityNotification.Announcement("Error: \(warning)").post()
         }
     }
 
@@ -72,21 +86,33 @@ struct MenuBarRootView: View {
             Label(EnglishCopy.starting, systemImage: "clock")
                 .accessibilityLabel(EnglishCopy.status)
                 .accessibilityValue(EnglishCopy.starting)
+                .accessibilityIdentifier("menu.status")
+                .accessibilityAddTraits(.updatesFrequently)
         case .failed:
             Label(EnglishCopy.unavailable, systemImage: "exclamationmark.triangle.fill")
                 .accessibilityLabel(EnglishCopy.status)
                 .accessibilityValue(EnglishCopy.appUnavailable)
+                .accessibilityIdentifier("menu.status")
+                .accessibilityAddTraits(.updatesFrequently)
             Text(EnglishCopy.appUnavailable)
+                .accessibilityHidden(true)
         case .ready:
             let presentation = stagePresentation
             Label(presentation.label, systemImage: presentation.systemImage)
                 .accessibilityLabel(EnglishCopy.status)
-                .accessibilityValue(presentation.accessibilityValue)
+                .accessibilityValue(presentation.label)
+                .accessibilityIdentifier("menu.status")
+                .accessibilityAddTraits(.updatesFrequently)
 
             if let warning = presentation.warning {
                 Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .accessibilityLabel("Warning")
+                    .accessibilityValue(warning)
+                    .accessibilityIdentifier("menu.warning")
             } else if model.pipeline.stage == .completed {
                 Label(EnglishCopy.resultSuccess, systemImage: "checkmark")
+                    .accessibilityLabel("Result")
+                    .accessibilityValue(EnglishCopy.resultSuccess)
             }
         }
     }
@@ -100,6 +126,7 @@ struct MenuBarRootView: View {
             } label: {
                 Label(EnglishCopy.start, systemImage: "text.cursor")
             }
+            .accessibilityIdentifier("menu.start")
             .help(EnglishCopy.start)
         case .stop:
             Button {
@@ -107,6 +134,7 @@ struct MenuBarRootView: View {
             } label: {
                 Label(EnglishCopy.stop, systemImage: "square")
             }
+            .accessibilityIdentifier("menu.stop")
             .help(EnglishCopy.stop)
         case .none:
             EmptyView()
@@ -119,6 +147,7 @@ struct MenuBarRootView: View {
             } label: {
                 Label(EnglishCopy.cancel, systemImage: "xmark")
             }
+            .accessibilityIdentifier("menu.cancel")
             .help("Cancel the active dictation")
         case .dismiss:
             Button {
@@ -126,6 +155,7 @@ struct MenuBarRootView: View {
             } label: {
                 Label(EnglishCopy.dismiss, systemImage: "xmark")
             }
+            .accessibilityIdentifier("menu.dismiss")
             .help("Dismiss the finished dictation")
         case .none:
             EmptyView()
@@ -139,6 +169,7 @@ struct MenuBarRootView: View {
         if let result = model.latestResult {
             Text(result.finalText)
                 .lineLimit(3)
+                .accessibilityIdentifier("menu.latestResult")
                 .help("Latest dictation result")
 
             if let warning = result.warning {
@@ -146,6 +177,9 @@ struct MenuBarRootView: View {
                     EnglishCopy.warning(for: warning),
                     systemImage: "exclamationmark.triangle.fill"
                 )
+                .accessibilityLabel("Warning")
+                .accessibilityValue(EnglishCopy.warning(for: warning))
+                .accessibilityIdentifier("menu.resultWarning")
             }
 
             Button {
@@ -154,6 +188,7 @@ struct MenuBarRootView: View {
                 Label(EnglishCopy.copyLatestResult, systemImage: "doc.on.doc")
             }
             .disabled(!canRecoverResult)
+            .accessibilityIdentifier("menu.copyLatest")
             .help(EnglishCopy.copyLatestResult)
 
             Button {
@@ -162,6 +197,7 @@ struct MenuBarRootView: View {
                 Label(EnglishCopy.pasteLatestResult, systemImage: "arrow.up.doc")
             }
             .disabled(!canRecoverResult)
+            .accessibilityIdentifier("menu.pasteLatest")
             .help(EnglishCopy.pasteLatestResult)
 
             Button {
@@ -173,6 +209,7 @@ struct MenuBarRootView: View {
             } label: {
                 Label(EnglishCopy.viewLatestResult, systemImage: "rectangle.on.rectangle")
             }
+            .accessibilityIdentifier("menu.viewLatest")
             .help(EnglishCopy.viewLatestResult)
         } else {
             Text(EnglishCopy.noRecentResult)
@@ -201,9 +238,14 @@ struct MenuBarRootView: View {
             )
         }
         .disabled(settingsStore == nil || isSavingOutputMode)
+        .accessibilityIdentifier("menu.outputMode")
+        .accessibilityValue(selectedOutputTitle)
 
         if let outputSaveWarning {
             Label(outputSaveWarning, systemImage: "exclamationmark.triangle.fill")
+                .accessibilityLabel("Error")
+                .accessibilityValue(outputSaveWarning)
+                .accessibilityIdentifier("menu.outputModeError")
         }
 
         Label(
@@ -227,6 +269,7 @@ struct MenuBarRootView: View {
         } label: {
             Label(EnglishCopy.history, systemImage: "clock.arrow.circlepath")
         }
+        .accessibilityIdentifier("menu.history")
         .help(EnglishCopy.history)
 
         Button {
@@ -235,6 +278,7 @@ struct MenuBarRootView: View {
             Label(EnglishCopy.onboarding, systemImage: "list.number")
         }
         .disabled(openOnboarding == nil)
+        .accessibilityIdentifier("menu.onboarding")
         .help(
             openOnboarding == nil
                 ? EnglishCopy.onboardingUnavailable

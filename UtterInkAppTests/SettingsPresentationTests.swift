@@ -136,6 +136,10 @@ final class SettingsPresentationTests: XCTestCase {
         let savedLaunchAtLogin = try await store.current().launchAtLogin
         XCTAssertTrue(model.launchAtLoginEnabled)
         XCTAssertTrue(savedLaunchAtLogin)
+        XCTAssertEqual(
+            model.accessibilityEvent?.message,
+            "Launch at Login is now on."
+        )
     }
 
     func testHistoryDefaultsTrueAndPrivacyIntentsAreImmediateWithoutCompetingSave() async {
@@ -218,6 +222,10 @@ final class SettingsPresentationTests: XCTestCase {
         XCTAssertEqual(model.deliveryPreference, .copyOnly)
         XCTAssertEqual(savedDelivery, .copyOnly)
         XCTAssertEqual(
+            model.accessibilityEvent?.message,
+            "Delivery preference saved: Copy Only."
+        )
+        XCTAssertEqual(
             model.deliveryExplanation,
             "Copy Only uses your snapshotted pre-authorization to replace the clipboard with each completed dictation. It does not send Command-V and does not automatically restore the previous clipboard."
         )
@@ -240,6 +248,10 @@ final class SettingsPresentationTests: XCTestCase {
         XCTAssertEqual(model.configuration, .fixed(languageCode: "en"))
         XCTAssertEqual(model.effectiveChoice, "English (en)")
         XCTAssertEqual(savedFixedRecognition, .fixed(languageCode: "en"))
+        XCTAssertEqual(
+            model.accessibilityEvent?.message,
+            "Recognition language saved: English (en)."
+        )
 
         await model.setAutomatic()
         let savedAutomaticRecognition = try await store.current().recognition
@@ -291,9 +303,17 @@ final class SettingsPresentationTests: XCTestCase {
         let savedShortcutMode = try await store.current().shortcutMode
         XCTAssertEqual(model.mode, .holdToTalk)
         XCTAssertEqual(savedShortcutMode, .holdToTalk)
+        XCTAssertEqual(
+            model.accessibilityEvent?.message,
+            "Shortcut mode saved: Hold to Talk."
+        )
         XCTAssertEqual(hotkey.calls.last, "hotkey.reconfigure.holdToTalk")
 
         model.resetShortcut()
+        XCTAssertEqual(
+            model.accessibilityEvent?.message,
+            "Shortcut reset. No shortcut recorded."
+        )
         XCTAssertEqual(
             Array(hotkey.calls.suffix(2)),
             ["hotkey.reset", "hotkey.reconfigure.holdToTalk"]

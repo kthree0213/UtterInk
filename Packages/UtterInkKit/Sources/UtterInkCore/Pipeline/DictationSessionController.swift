@@ -376,8 +376,18 @@ public final class DictationSessionController: DictationControlling {
             currentSnapshot = snapshot
             currentToken = token
             recordingTelemetry = RecordingTelemetry(startedAt: snapshot.startedAt, inputLevel: 0)
+            let presentationDestination: SessionPresentationDestination
+            switch selectedTarget {
+            case .external:
+                presentationDestination = .external
+            case .copyOnly:
+                presentationDestination = .copyOnlyFallback
+            case .onboardingTest:
+                presentationDestination = .onboardingTest
+            }
             sessionPresentation = SessionPresentationContext(
-                deliveryPreference: snapshot.deliveryPreference
+                deliveryPreference: snapshot.deliveryPreference,
+                destination: presentationDestination
             )
             await apply(.start(snapshot), token: token, snapshot: snapshot)
         } catch is CancellationError {

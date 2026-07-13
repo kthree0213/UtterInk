@@ -31,6 +31,7 @@ struct FloatingRecorderView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isShowingLastResult = false
+    @FocusState private var isViewLatestFocused: Bool
 
     var body: some View {
         let motion = FloatingMotionPolicy(reduceMotion: reduceMotion)
@@ -73,6 +74,11 @@ struct FloatingRecorderView: View {
                 isShowingLastResult = false
             }
         }
+        .onChange(of: isShowingLastResult) { wasShowing, isShowing in
+            if wasShowing, !isShowing {
+                isViewLatestFocused = true
+            }
+        }
     }
 
     @ViewBuilder
@@ -87,7 +93,9 @@ struct FloatingRecorderView: View {
                 Label(presentation.label, systemImage: presentation.systemImage)
                     .font(.headline)
                     .accessibilityLabel(EnglishCopy.status)
-                    .accessibilityValue(presentation.accessibilityValue)
+                    .accessibilityValue(presentation.label)
+                    .accessibilityIdentifier("floating.status")
+                    .accessibilityAddTraits(.updatesFrequently)
 
                 Spacer(minLength: 12)
 
@@ -95,6 +103,8 @@ struct FloatingRecorderView: View {
                     Text(Self.elapsedText(elapsed))
                         .font(.system(.body, design: .monospaced))
                         .accessibilityLabel("Recording elapsed time")
+                        .accessibilityValue(Self.elapsedText(elapsed))
+                        .accessibilityIdentifier("floating.elapsed")
                 }
             }
 
@@ -104,14 +114,20 @@ struct FloatingRecorderView: View {
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: inputLevel)
                     .accessibilityLabel("Microphone input level")
                     .accessibilityValue("\(Int((inputLevel * 100).rounded())) percent")
+                    .accessibilityIdentifier("floating.inputLevel")
             }
 
             if let warning = presentation.warning {
                 Label(warning, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
+                    .accessibilityLabel("Warning")
+                    .accessibilityValue(warning)
+                    .accessibilityIdentifier("floating.warning")
             } else if model.pipeline.stage == .completed {
                 Label(EnglishCopy.resultSuccess, systemImage: "checkmark")
                     .font(.caption)
+                    .accessibilityLabel("Result")
+                    .accessibilityValue(EnglishCopy.resultSuccess)
             }
 
             actionRow(presentation: presentation)
@@ -130,6 +146,7 @@ struct FloatingRecorderView: View {
                         .labelStyle(.iconOnly)
                 }
                 .accessibilityLabel(EnglishCopy.start)
+                .accessibilityIdentifier("floating.start")
                 .help(EnglishCopy.start)
             case .stop:
                 Button {
@@ -139,6 +156,7 @@ struct FloatingRecorderView: View {
                         .labelStyle(.iconOnly)
                 }
                 .accessibilityLabel(EnglishCopy.stop)
+                .accessibilityIdentifier("floating.stop")
                 .help(EnglishCopy.stop)
             case .none:
                 EmptyView()
@@ -153,6 +171,7 @@ struct FloatingRecorderView: View {
                         .labelStyle(.iconOnly)
                 }
                 .accessibilityLabel(EnglishCopy.cancel)
+                .accessibilityIdentifier("floating.cancel")
                 .help("Cancel the active dictation")
             case .dismiss:
                 Button {
@@ -162,6 +181,7 @@ struct FloatingRecorderView: View {
                         .labelStyle(.iconOnly)
                 }
                 .accessibilityLabel(EnglishCopy.dismiss)
+                .accessibilityIdentifier("floating.dismiss")
                 .help("Dismiss the finished dictation")
             case .none:
                 EmptyView()
@@ -178,6 +198,8 @@ struct FloatingRecorderView: View {
                         .labelStyle(.iconOnly)
                 }
                 .accessibilityLabel(EnglishCopy.viewLatestResult)
+                .accessibilityIdentifier("floating.viewLatest")
+                .focused($isViewLatestFocused)
                 .help(EnglishCopy.viewLatestResult)
                 .popover(isPresented: $isShowingLastResult, arrowEdge: .top) {
                     LastResultView(
@@ -194,6 +216,7 @@ struct FloatingRecorderView: View {
                         .labelStyle(.iconOnly)
                 }
                 .accessibilityLabel(EnglishCopy.copyLatestResult)
+                .accessibilityIdentifier("floating.copyLatest")
                 .help(EnglishCopy.copyLatestResult)
 
                 Button {
@@ -203,6 +226,7 @@ struct FloatingRecorderView: View {
                         .labelStyle(.iconOnly)
                 }
                 .accessibilityLabel(EnglishCopy.pasteLatestResult)
+                .accessibilityIdentifier("floating.pasteLatest")
                 .help(EnglishCopy.pasteLatestResult)
             }
         }

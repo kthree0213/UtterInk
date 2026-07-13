@@ -105,6 +105,10 @@ final class OnboardingViewModelTests: XCTestCase {
         await historyChange.value
         await start.value
         XCTAssertEqual(
+            harness.model.accessibilityEvent?.message,
+            "History is now off."
+        )
+        XCTAssertEqual(
             harness.controller.intents,
             [.setHistoryEnabled(false), .start(.onboardingTest)]
         )
@@ -129,6 +133,10 @@ final class OnboardingViewModelTests: XCTestCase {
         await harness.waitUntil { harness.model.shortcutTestPassed }
 
         XCTAssertTrue(harness.model.shortcutTestPassed)
+        XCTAssertEqual(
+            harness.model.accessibilityEvent?.message,
+            "Shortcut detected."
+        )
         XCTAssertEqual(harness.systemSettings.openCount, 0)
         XCTAssertEqual(harness.hotkeyProbe.calls, ["hotkey.armProbeOnly"])
     }
@@ -270,6 +278,10 @@ final class OnboardingViewModelTests: XCTestCase {
         XCTAssertEqual(settings.speechModelID, "base")
         XCTAssertEqual(harness.controller.preparedSpeechModelIDs, ["base"])
         XCTAssertEqual(updateCallCount, 2)
+        XCTAssertEqual(
+            harness.model.accessibilityEvent?.message,
+            "Speech model selection saved."
+        )
     }
 
     func testSharedSinkPublishesRecoverableRawResultAndCompletes() async throws {

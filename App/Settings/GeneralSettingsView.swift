@@ -17,6 +17,7 @@ final class GeneralSettingsViewModel {
     private(set) var deliveryPreference = UserSettings.p0Default.deliveryPreference
     private(set) var isSaving = false
     private(set) var failureMessage: String?
+    private(set) var accessibilityEvent: UtterInkAccessibilityEvent?
 
     let failureSymbol = "exclamationmark.triangle.fill"
 
@@ -86,6 +87,19 @@ final class GeneralSettingsViewModel {
         }
     }
 
+    var historyAccessibilityAnnouncement: String? {
+        switch controller.historyControlStatus {
+        case let .applying(enabled):
+            return "Applying History \(enabled ? "on" : "off") setting."
+        case .clearing:
+            return "Clearing History."
+        case let .settled(enabled):
+            return "History is now \(enabled ? "on" : "off")."
+        case .failed:
+            return nil
+        }
+    }
+
     func load() async {
         guard !isSaving else { return }
         launchAtLogin.refresh()
@@ -119,6 +133,9 @@ final class GeneralSettingsViewModel {
         do {
             let saved = try await writer.update { $0.launchAtLogin = enabled }
             launchAtLoginEnabled = saved.launchAtLogin
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Launch at Login is now \(saved.launchAtLogin ? "on" : "off")."
+            )
         } catch {
             await launchAtLogin.setEnabled(previous)
             launchAtLoginEnabled = launchAtLogin.state == .enabled
@@ -135,6 +152,9 @@ final class GeneralSettingsViewModel {
             let saved = try await writer.update { $0.showFloatingRecorder = enabled }
             showFloatingRecorder = saved.showFloatingRecorder
             setFloatingRecorderVisibility(saved.showFloatingRecorder)
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Floating recorder is now \(saved.showFloatingRecorder ? "on" : "off")."
+            )
         } catch {
             failureMessage = "Floating recorder visibility could not be saved. Your current setting was kept."
         }
@@ -157,6 +177,11 @@ final class GeneralSettingsViewModel {
         do {
             let saved = try await writer.update { $0.deliveryPreference = preference }
             deliveryPreference = saved.deliveryPreference
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: saved.deliveryPreference == .automaticPaste
+                    ? "Delivery preference saved: Automatic Paste."
+                    : "Delivery preference saved: Copy Only."
+            )
         } catch {
             failureMessage = "Delivery preference could not be saved. Your current setting was kept."
         }
@@ -178,8 +203,13 @@ struct GeneralSettingsView: View {
                         set: { value in Task { await model.setLaunchAtLoginEnabled(value) } }
                     )
                 )
+                .accessibilityLabel("Launch at Login")
+                .accessibilityIdentifier("settings.general.launchAtLogin")
                 Text(model.launchAtLoginStatus)
                     .foregroundStyle(.secondary)
+                    .accessibilityLabel("Launch at Login status")
+                    .accessibilityValue(model.launchAtLoginStatus)
+                    .accessibilityIdentifier("settings.general.launchAtLoginStatus")
                 Toggle(
                     "Show Floating Recorder",
                     isOn: Binding(
@@ -187,6 +217,8 @@ struct GeneralSettingsView: View {
                         set: { value in Task { await model.setFloatingRecorderEnabled(value) } }
                     )
                 )
+                .accessibilityLabel("Show Floating Recorder")
+                .accessibilityIdentifier("settings.general.floatingRecorder")
             }
             .disabled(model.isSaving)
 
@@ -198,15 +230,25 @@ struct GeneralSettingsView: View {
                         set: model.setHistoryEnabled
                     )
                 )
+                .accessibilityLabel("Save History")
+                .accessibilityIdentifier("settings.general.historyEnabled")
                 Text("Turning History off keeps existing saved results until you choose Clear History.")
                     .foregroundStyle(.secondary)
                 Button("Clear History", role: .destructive) { confirmsClear = true }
+                    .accessibilityIdentifier("settings.general.clearHistory")
                 if model.historyControlIsPending {
                     Label("Applying history privacy change…", systemImage: "clock")
+                        .accessibilityLabel("History status")
+                        .accessibilityValue("Applying privacy change")
+                        .accessibilityIdentifier("settings.general.historyStatus")
+                        .accessibilityAddTraits(.updatesFrequently)
                 }
                 if let warning = model.historyControlWarning {
                     Label(warning, systemImage: model.failureSymbol)
                         .foregroundStyle(.red)
+                        .accessibilityLabel("History error")
+                        .accessibilityValue(warning)
+                        .accessibilityIdentifier("settings.general.historyError")
                 }
             }
 
@@ -222,6 +264,8 @@ struct GeneralSettingsView: View {
                     Text("Copy Only").tag(DeliveryPreference.copyOnly)
                 }
                 .pickerStyle(.radioGroup)
+                .accessibilityLabel("Completed Dictations")
+                .accessibilityIdentifier("settings.general.deliveryPreference")
                 Text(model.deliveryExplanation)
                     .foregroundStyle(.secondary)
                 Label(
@@ -234,9 +278,19 @@ struct GeneralSettingsView: View {
             if let failureMessage = model.failureMessage {
                 Label(failureMessage, systemImage: model.failureSymbol)
                     .foregroundStyle(.red)
+                    .accessibilityLabel("Error")
+                    .accessibilityValue(failureMessage)
+                    .accessibilityIdentifier("settings.general.error")
+                    .accessibilityAddTraits(.updatesFrequently)
             }
         }
         .formStyle(.grouped)
+        .accessibilityIdentifier("settings.general")
+        .utterInkAccessibilityAnnouncement(
+            (model.failureMessage ?? model.historyControlWarning).map { "Error: \($0)" }
+        )
+        .utterInkAccessibilityAnnouncement(model.historyAccessibilityAnnouncement)
+        .utterInkAccessibilityAnnouncement(model.accessibilityEvent)
         .navigationTitle("General")
         .task { await model.load() }
         .confirmationDialog(
@@ -244,6 +298,7 @@ struct GeneralSettingsView: View {
             isPresented: $confirmsClear
         ) {
             Button("Clear History", role: .destructive, action: model.clearHistory)
+                .accessibilityIdentifier("settings.general.confirmClearHistory")
         }
     }
 }
