@@ -110,6 +110,13 @@ bash Tests/Scripts/test-check-repo-hygiene.sh
 bash Tests/Scripts/test-generate-legacy-defaults-map.sh
 bash Tests/Scripts/test-check-parity-replacement.sh
 python3 Tests/Scripts/test-check-public-docs.py
+python3 Tests/Scripts/test-release-metadata.py
+python3 Tests/Scripts/test-release-entitlements.py
+python3 Tests/Scripts/test-release-info-policy.py
+bash Tests/Scripts/test-verify-candidate.sh
+python3 Scripts/release/read-metadata.py --json
+python3 Scripts/release/verify-entitlements.py
+python3 Scripts/release/verify-info-policy.py
 swift Scripts/generate-legacy-defaults-map.swift \
   --check \
   --input docs/provenance/legacy-defaults-map.tsv \

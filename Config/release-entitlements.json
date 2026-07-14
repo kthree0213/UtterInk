@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "app": {
+    "bundleIdentifier": "dev.utterink.UtterInk",
+    "sourcePath": "App/Supporting/UtterInk.entitlements",
+    "entitlements": [
+      {
+        "key": "com.apple.security.device.audio-input",
+        "value": true,
+        "reason": "Required for local microphone capture"
+      }
+    ]
+  },
+  "nestedComponents": []
+}

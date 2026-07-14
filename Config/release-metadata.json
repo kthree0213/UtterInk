@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "product": "UtterInk",
+  "configuration": "Release",
+  "dmgFilenameTemplate": "UtterInk-{marketingVersion}-{architecture}.dmg",
+  "supportedArchitectures": [
+    "arm64"
+  ],
+  "releaseTag": "v0.1.0"
+}

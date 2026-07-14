@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UtterInk release candidate evidence",
+  "description": "Allowlisted, machine-verifiable identity for one exact UtterInk release candidate.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "evidenceType",
+    "product",
+    "source",
+    "release",
+    "toolchain",
+    "packageResolution",
+    "policies",
+    "checks"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "evidenceType": {
+      "const": "release-candidate"
+    },
+    "product": {
+      "const": "UtterInk"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commit",
+        "tree",
+        "releaseTag",
+        "clean"
+      ],
+      "properties": {
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "releaseTag": {
+          "const": "v0.1.0"
+        },
+        "clean": {
+          "const": true
+        }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "configuration",
+        "marketingVersion",
+        "buildNumber",
+        "bundleIdentifier",
+        "deploymentTarget",
+        "architecture",
+        "dmgFilename"
+      ],
+      "properties": {
+        "configuration": {
+          "const": "Release"
+        },
+        "marketingVersion": {
+          "const": "0.1.0"
+        },
+        "buildNumber": {
+          "const": "1"
+        },
+        "bundleIdentifier": {
+          "const": "dev.utterink.UtterInk"
+        },
+        "deploymentTarget": {
+          "const": "14.0"
+        },
+        "architecture": {
+          "const": "arm64"
+        },
+        "dmgFilename": {
+          "const": "UtterInk-0.1.0-arm64.dmg"
+        }
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lockSHA256",
+        "xcodeVersion",
+        "xcodeBuild",
+        "sdkVersion",
+        "sdkBuild",
+        "swiftVersion",
+        "xcodegenVersion",
+        "xcodegenBinarySHA256"
+      ],
+      "properties": {
+        "lockSHA256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "xcodeVersion": {
+          "const": "26.4.1"
+        },
+        "xcodeBuild": {
+          "const": "17E202"
+        },
+        "sdkVersion": {
+          "const": "26.4"
+        },
+        "sdkBuild": {
+          "type": "string",
+          "pattern": "^[0-9]{2}[A-Z][0-9]{1,4}[a-z]?$"
+        },
+        "swiftVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^(?:swift-driver version: [0-9]+(?:\\.[0-9]+)* )?Apple Swift version 6\\.3(?:\\.[0-9]+)* \\(swiftlang-[A-Za-z0-9.]+ clang-[A-Za-z0-9.]+\\)$"
+        },
+        "xcodegenVersion": {
+          "const": "2.45.4"
+        },
+        "xcodegenBinarySHA256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "packageResolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "const": "Packages/UtterInkKit/Package.resolved"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "policies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "releaseMetadataSHA256",
+        "releaseEntitlementsSHA256",
+        "releaseInfoPolicySHA256",
+        "ciToolchainSHA256"
+      ],
+      "properties": {
+        "releaseMetadataSHA256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "releaseEntitlementsSHA256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "releaseInfoPolicySHA256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "ciToolchainSHA256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "history",
+        "metadata",
+        "entitlements",
+        "infoPolicy",
+        "packageResolution",
+        "generatedProjectClean"
+      ],
+      "properties": {
+        "history": {
+          "const": true
+        },
+        "metadata": {
+          "const": true
+        },
+        "entitlements": {
+          "const": true
+        },
+        "infoPolicy": {
+          "const": true
+        },
+        "packageResolution": {
+          "const": true
+        },
+        "generatedProjectClean": {
+          "const": true
+        }
+      }
+    }
+  }
+}

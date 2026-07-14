@@ -11,7 +11,9 @@ targets:
   UtterInk:
     type: application
     platform: macOS
-    deploymentTarget: "14.0"
+    configFiles:
+      Debug: Config/Debug.xcconfig
+      Release: Config/Release.xcconfig
     sources:
       - path: App
     info:
@@ -27,7 +29,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSApplicationCategoryType: public.app-category.productivity
-        LSMinimumSystemVersion: "14.0"
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
         LSUIElement: true
         NSMicrophoneUsageDescription: UtterInk uses the microphone to transcribe speech locally on this Mac.
     entitlements:
@@ -42,15 +44,8 @@ targets:
     settings:
       base:
         PRODUCT_NAME: UtterInk
-        PRODUCT_BUNDLE_IDENTIFIER: dev.utterink.UtterInk
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        MACOSX_DEPLOYMENT_TARGET: "14.0"
-        ARCHS: arm64
-        SWIFT_VERSION: "5.0"
-        MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "1"
         CODE_SIGN_STYLE: Automatic
-        ENABLE_HARDENED_RUNTIME: YES
         GENERATE_INFOPLIST_FILE: NO
   ATSPolicyProbe:
     type: application

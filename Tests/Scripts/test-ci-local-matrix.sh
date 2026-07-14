@@ -53,6 +53,7 @@ new_repository() {
     Tests/Scripts/test-check-repo-hygiene.sh \
     Tests/Scripts/test-generate-legacy-defaults-map.sh \
     Tests/Scripts/test-check-parity-replacement.sh \
+    Tests/Scripts/test-verify-candidate.sh \
     Tests/Scripts/test-ats-policy.sh \
     Tests/Scripts/test-ui-testing-release-boundary.sh; do
     write_local_spy "$repository" "$relative_path"
@@ -151,6 +152,13 @@ assert_required_gates() {
   assert_once "$log" local:Tests/Scripts/test-generate-legacy-defaults-map.sh '' 'legacy defaults generator tests'
   assert_once "$log" local:Tests/Scripts/test-check-parity-replacement.sh '' 'parity replacement checker tests'
   assert_once "$log" python3 'Tests/Scripts/test-check-public-docs.py' 'public document validator tests'
+  assert_once "$log" python3 'Tests/Scripts/test-release-metadata.py' 'release metadata tests'
+  assert_once "$log" python3 'Tests/Scripts/test-release-entitlements.py' 'release entitlement tests'
+  assert_once "$log" python3 'Tests/Scripts/test-release-info-policy.py' 'release Info policy tests'
+  assert_once "$log" local:Tests/Scripts/test-verify-candidate.sh '' 'release candidate verifier tests'
+  assert_once "$log" python3 'Scripts/release/read-metadata.py --json' 'release metadata validator'
+  assert_once "$log" python3 'Scripts/release/verify-entitlements.py' 'release entitlement validator'
+  assert_once "$log" python3 'Scripts/release/verify-info-policy.py' 'release Info policy validator'
   assert_once "$log" swift 'Scripts/generate-legacy-defaults-map.swift --check ' 'legacy defaults generated-source check'
   assert_once "$log" local:Scripts/check-parity-replacement.sh '' 'parity replacement evidence checker'
   assert_once "$log" swift 'test --package-path Packages/UtterInkKit ' 'UtterInkKit package tests'

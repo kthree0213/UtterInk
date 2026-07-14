@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "finalShape": "absent",
+  "authoritativeSources": {
+    "app": "App/Supporting/Info.plist",
+    "probe": "Tests/ATSPolicyProbe/Info.plist"
+  },
+  "sourceAppOwnedFields": {
+    "CFBundleDevelopmentRegion": "en",
+    "CFBundleDisplayName": "UtterInk",
+    "CFBundleExecutable": "$(EXECUTABLE_NAME)",
+    "CFBundleIdentifier": "$(PRODUCT_BUNDLE_IDENTIFIER)",
+    "CFBundleInfoDictionaryVersion": "6.0",
+    "CFBundleName": "UtterInk",
+    "CFBundlePackageType": "APPL",
+    "CFBundleShortVersionString": "$(MARKETING_VERSION)",
+    "CFBundleVersion": "$(CURRENT_PROJECT_VERSION)",
+    "LSApplicationCategoryType": "public.app-category.productivity",
+    "LSMinimumSystemVersion": "$(MACOSX_DEPLOYMENT_TARGET)",
+    "LSUIElement": true,
+    "NSMicrophoneUsageDescription": "UtterInk uses the microphone to transcribe speech locally on this Mac."
+  },
+  "sourceProbeOwnedFields": {
+    "CFBundleDevelopmentRegion": "en",
+    "CFBundleDisplayName": "ATSPolicyProbe",
+    "CFBundleExecutable": "$(EXECUTABLE_NAME)",
+    "CFBundleIdentifier": "$(PRODUCT_BUNDLE_IDENTIFIER)",
+    "CFBundleInfoDictionaryVersion": "6.0",
+    "CFBundleName": "ATSPolicyProbe",
+    "CFBundlePackageType": "APPL",
+    "CFBundleShortVersionString": "1.0",
+    "CFBundleVersion": "1",
+    "LSMinimumSystemVersion": "14.0"
+  },
+  "archivedAppOwnedFields": {
+    "CFBundleDevelopmentRegion": "en",
+    "CFBundleDisplayName": "UtterInk",
+    "CFBundleExecutable": "UtterInk",
+    "CFBundleIdentifier": "dev.utterink.UtterInk",
+    "CFBundleInfoDictionaryVersion": "6.0",
+    "CFBundleName": "UtterInk",
+    "CFBundlePackageType": "APPL",
+    "CFBundleShortVersionString": "0.1.0",
+    "CFBundleVersion": "1",
+    "LSApplicationCategoryType": "public.app-category.productivity",
+    "LSMinimumSystemVersion": "14.0",
+    "LSUIElement": true,
+    "NSMicrophoneUsageDescription": "UtterInk uses the microphone to transcribe speech locally on this Mac."
+  },
+  "archiveGeneratedKeyAllowlist": []
+}

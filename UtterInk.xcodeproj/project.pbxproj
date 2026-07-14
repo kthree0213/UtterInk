@@ -102,6 +102,7 @@
 		5DA661CBFD12F4E8993571B1 /* FloatingRecorderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingRecorderView.swift; sourceTree = "<group>"; };
 		627351AA17B74FEDC4D86747 /* PermissionSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionSettingsView.swift; sourceTree = "<group>"; };
 		6569F32A71D430BE8D907522 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		6A6BD74BBB914B40448FD80D /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
 		6B59AC7610A4B669532FBE11 /* UtterInk.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = UtterInk.entitlements; sourceTree = "<group>"; };
 		725C877ACC61EDDC1B466410 /* AppModelContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelContractTests.swift; sourceTree = "<group>"; };
 		741DC772C9E9EB94B3E3DB2E /* SpeechModelSettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechModelSettingsViewModel.swift; sourceTree = "<group>"; };
@@ -121,6 +122,7 @@
 		DC9E8ED29C019B210BEDC9F6 /* FloatingWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingWindowController.swift; sourceTree = "<group>"; };
 		E63604C41A3EA74913B7B680 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
 		EE4551F49BDBC9887EDB42F4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		F76DA53BF33BE27A6640D2EC /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
 		FE1897BAF60CE43C71118A30 /* ProviderSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderSettingsView.swift; sourceTree = "<group>"; };
 		FE1BB7748C1084C26759987E /* OnboardingViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingViewModelTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -313,6 +315,7 @@
 			isa = PBXGroup;
 			children = (
 				A0F68DD837A42BA3A8C83670 /* App */,
+				DB2C7ECB2E3B0D92FDD43912 /* Config */,
 				C7EC2B54F7C20F132F876E54 /* Packages */,
 				E4AEF50AD36167CAF3B42C7D /* Tests */,
 				0DC886C36DA470640BD9ED66 /* UtterInkAppTests */,
@@ -360,6 +363,15 @@
 				DC9E8ED29C019B210BEDC9F6 /* FloatingWindowController.swift */,
 			);
 			path = Floating;
+			sourceTree = "<group>";
+		};
+		DB2C7ECB2E3B0D92FDD43912 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				F76DA53BF33BE27A6640D2EC /* Debug.xcconfig */,
+				6A6BD74BBB914B40448FD80D /* Release.xcconfig */,
+			);
+			path = Config;
 			sourceTree = "<group>";
 		};
 		E4AEF50AD36167CAF3B42C7D /* Tests */ = {
@@ -700,26 +712,20 @@
 		};
 		7737FD61AA82E4A23ECB4990 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = F76DA53BF33BE27A6640D2EC /* Debug.xcconfig */;
 			buildSettings = {
-				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = App/Supporting/UtterInk.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
-				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Supporting/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.utterink.UtterInk;
 				PRODUCT_NAME = UtterInk;
 				SDKROOT = macosx;
-				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
 		};
@@ -759,26 +765,20 @@
 		};
 		8DEBA7774A90B66ECE38C7F0 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 6A6BD74BBB914B40448FD80D /* Release.xcconfig */;
 			buildSettings = {
-				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = App/Supporting/UtterInk.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
-				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Supporting/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.utterink.UtterInk;
 				PRODUCT_NAME = UtterInk;
 				SDKROOT = macosx;
-				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
 		};
