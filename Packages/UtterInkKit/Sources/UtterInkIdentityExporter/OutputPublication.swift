@@ -4,10 +4,22 @@ import Foundation
 final class OutputPublication {
     let destination: URL
     let stagingDirectory: URL
-    private var committed = false
+    private let removeItem: (URL) throws -> Void
+    private enum PublicationState: Equatable {
+        case staged
+        case publishedFromMissing
+        case publishedBySwap
+        case cleanupOnly
+        case finalized
+    }
+    private var state: PublicationState = .staged
 
-    init(destination: URL) throws {
+    init(
+        destination: URL,
+        removeItem: @escaping (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }
+    ) throws {
         self.destination = destination.standardizedFileURL
+        self.removeItem = removeItem
         let parent = self.destination.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         try Self.requireRealDirectory(parent, label: "output parent")
@@ -29,43 +41,87 @@ final class OutputPublication {
     }
 
     func commit() throws {
+        try commitKeepingPrior()
+        try finalizeCommit()
+    }
+
+    func commitKeepingPrior() throws {
+        guard state == .staged else {
+            throw IdentityExporterError.invalidInput("identity output publication already used")
+        }
         try Self.requireRealDirectory(stagingDirectory, label: "output staging directory")
         switch Self.kind(at: destination) {
         case .missing:
-            guard Darwin.rename(stagingDirectory.path, destination.path) == 0 else {
+            guard Self.renameExclusive(stagingDirectory, destination) == 0 else {
                 throw IdentityExporterError.invalidInput("could not publish identity output")
             }
+            state = .publishedFromMissing
         case .directory:
-            let result = stagingDirectory.path.withCString { stagingPath in
-                destination.path.withCString { destinationPath in
-                    renameatx_np(
-                        AT_FDCWD,
-                        stagingPath,
-                        AT_FDCWD,
-                        destinationPath,
-                        UInt32(RENAME_SWAP)
-                    )
-                }
-            }
+            let result = Self.swap(stagingDirectory, destination)
             guard result == 0 else {
                 throw IdentityExporterError.invalidInput("could not replace identity output")
             }
-            do {
-                try FileManager.default.removeItem(at: stagingDirectory)
-            } catch {
-                // The new output is already atomically published. A cleanup
-                // failure must be visible rather than reported as full success.
-                throw IdentityExporterError.invalidInput("published output but could not remove prior output")
-            }
+            state = .publishedBySwap
         case .other:
             throw IdentityExporterError.invalidInput("output path changed during publication")
         }
-        committed = true
+    }
+
+    func finalizeCommit() throws {
+        switch state {
+        case .publishedFromMissing:
+            state = .finalized
+        case .publishedBySwap:
+            // The new output is already authoritative. Move to a cleanup-only
+            // state before a throwing operation so a deferred discard can
+            // never swap the prior output back into place.
+            state = .cleanupOnly
+            do { try finishCleanup() } catch {
+                throw IdentityExporterError.invalidInput(
+                    "published output but could not remove prior output"
+                )
+            }
+        case .staged, .cleanupOnly, .finalized:
+            throw IdentityExporterError.invalidInput("identity output is not awaiting finalization")
+        }
+    }
+
+    func rollbackCommit() throws {
+        switch state {
+        case .publishedFromMissing:
+            guard Self.renameExclusive(destination, stagingDirectory) == 0 else {
+                throw IdentityExporterError.invalidInput("could not roll back published identity output")
+            }
+            // The destination is restored as soon as rename succeeds. From
+            // this point onward only staging cleanup may be retried.
+            state = .cleanupOnly
+            try finishCleanup()
+        case .publishedBySwap:
+            guard Self.swap(stagingDirectory, destination) == 0 else {
+                throw IdentityExporterError.invalidInput("could not roll back replaced identity output")
+            }
+            // The prior destination is restored as soon as swap succeeds.
+            // Record that transition before removal, which can fail.
+            state = .cleanupOnly
+            try finishCleanup()
+        case .staged, .cleanupOnly, .finalized:
+            throw IdentityExporterError.invalidInput("identity output is not awaiting rollback")
+        }
     }
 
     func discardIfNeeded() {
-        guard !committed, Self.kind(at: stagingDirectory) != .missing else { return }
-        try? FileManager.default.removeItem(at: stagingDirectory)
+        switch state {
+        case .staged:
+            if Self.kind(at: stagingDirectory) != .missing {
+                try? removeItem(stagingDirectory)
+            }
+        case .publishedFromMissing, .publishedBySwap:
+            try? rollbackCommit()
+        case .cleanupOnly:
+            try? finishCleanup()
+        case .finalized:
+            break
+        }
     }
 
     private enum PathKind: Equatable {
@@ -87,5 +143,43 @@ final class OutputPublication {
         guard kind(at: url) == .directory else {
             throw IdentityExporterError.invalidInput("\(label) must be a real directory")
         }
+    }
+
+    private static func swap(_ first: URL, _ second: URL) -> Int32 {
+        first.path.withCString { firstPath in
+            second.path.withCString { secondPath in
+                renameatx_np(
+                    AT_FDCWD,
+                    firstPath,
+                    AT_FDCWD,
+                    secondPath,
+                    UInt32(RENAME_SWAP)
+                )
+            }
+        }
+    }
+
+    private static func renameExclusive(_ source: URL, _ destination: URL) -> Int32 {
+        source.path.withCString { sourcePath in
+            destination.path.withCString { destinationPath in
+                renameatx_np(
+                    AT_FDCWD,
+                    sourcePath,
+                    AT_FDCWD,
+                    destinationPath,
+                    UInt32(RENAME_EXCL)
+                )
+            }
+        }
+    }
+
+    private func finishCleanup() throws {
+        guard state == .cleanupOnly else {
+            throw IdentityExporterError.invalidInput("identity output cleanup is not pending")
+        }
+        if Self.kind(at: stagingDirectory) != .missing {
+            try removeItem(stagingDirectory)
+        }
+        state = .finalized
     }
 }

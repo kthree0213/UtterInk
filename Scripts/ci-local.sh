@@ -121,6 +121,18 @@ swift test \
   --disable-sandbox \
   --force-resolved-versions
 
+if [[ -e Brand/identity-lock.json || -L Brand/identity-lock.json ]]; then
+  swift run \
+    --package-path Packages/UtterInkKit \
+    --scratch-path "$TMP/UtterInkKit-build" \
+    --disable-sandbox \
+    --force-resolved-versions \
+    UtterInkIdentityExporter \
+    --check \
+    --lock Brand/identity-lock.json \
+    --asset-catalog App/Resources/Assets.xcassets
+fi
+
 xcodegen generate
 xcodebuild \
   -project UtterInk.xcodeproj \

@@ -1,0 +1,181 @@
+{
+  "approvalScope": "palette-and-pixel-fitted-menu-geometry-only",
+  "approvalTimestamp": "2026-07-14T05:35:43Z",
+  "approvals": [
+    {
+      "evidence": "explicit-local-user-approval",
+      "reviewer": "kthree0213",
+      "scope": "palette-and-pixel-fitted-menu-geometry-only",
+      "status": "approved",
+      "timestamp": "2026-07-14T05:35:43Z"
+    },
+    {
+      "evidence": "explicit-local-user-approval",
+      "reviewer": "kthree0213",
+      "scope": "complete-source-family",
+      "status": "approved",
+      "timestamp": "2026-07-14T06:25:25Z"
+    }
+  ],
+  "assetLicense": "Apache-2.0",
+  "brand": "UtterInk",
+  "canonicalInputHashes": [
+    {
+      "id": "selected-logo-route",
+      "sha256": "15963ac872c2385170408029c86b450c4e2bdfc3b1c970f88d945adb8e7c4f08"
+    },
+    {
+      "id": "identity-handoff",
+      "sha256": "0464a616dad340ded1672781c014a4421c7f04779bd4c1af4f38877fc225d3aa"
+    },
+    {
+      "id": "right-cursor-vector",
+      "sha256": "8bd098aedf9dee4bd5d1752eea513557a1bc756b78e82c00f647a8fc77932839"
+    },
+    {
+      "id": "menu-bar-comparison",
+      "sha256": "5e02410fdac93b6e2fcde790e7afa55fea7556c3a0604041b4c786d13857b506"
+    }
+  ],
+  "copyrightOwner": "kthree0213",
+  "geometry": {
+    "alphaConnectivity": 8,
+    "alphaThresholdExclusive": 31,
+    "canonicalCursorPath": "M18.8 4.6v3.8",
+    "cursorTranslationY": -2.0,
+    "id": "B-right-cursor-visible-gap-1B",
+    "pixelFit": [
+      {
+        "componentCount": 2,
+        "cursorHeight": 4,
+        "cursorWidth": 3,
+        "outputSHA256": "05d3546ecb8c0d9d6cebb037117e11d9da601024434ba46774ba5312c0e7514c",
+        "pixelSize": 16,
+        "pointSize": 16,
+        "scale": 1
+      },
+      {
+        "componentCount": 2,
+        "cursorHeight": 8,
+        "cursorWidth": 4,
+        "outputSHA256": "5ac420cb08d4f3fbcf66a833e0493cad80e71f68ca894986bfc96179c75b525d",
+        "pixelSize": 32,
+        "pointSize": 16,
+        "scale": 2
+      },
+      {
+        "componentCount": 2,
+        "cursorHeight": 5,
+        "cursorWidth": 2,
+        "outputSHA256": "d45d188df11d8dc40231de754b873e067a86cb906f8c5d6dc4997d3cbb809708",
+        "pixelSize": 18,
+        "pointSize": 18,
+        "scale": 1
+      },
+      {
+        "componentCount": 2,
+        "cursorHeight": 10,
+        "cursorWidth": 4,
+        "outputSHA256": "f501c8a81921478521146b397c08e761a5f77f35af2645872e4d6aa610fa9dd3",
+        "pixelSize": 36,
+        "pointSize": 18,
+        "scale": 2
+      },
+      {
+        "componentCount": 2,
+        "cursorHeight": 6,
+        "cursorWidth": 3,
+        "outputSHA256": "2c3b24bcfa4d6bb782ecf7e65cd4cca2f79e8ea6e68f1f1ed7afe4cb9a382f5f",
+        "pixelSize": 20,
+        "pointSize": 20,
+        "scale": 1
+      },
+      {
+        "componentCount": 2,
+        "cursorHeight": 11,
+        "cursorWidth": 5,
+        "outputSHA256": "ee57d8ec22f0b4733513fd56e26aa38968203d25ac28715de6c9c510746389b6",
+        "pixelSize": 40,
+        "pointSize": 20,
+        "scale": 2
+      }
+    ],
+    "resolvedCursorPath": "M18.8 2.6v3.8",
+    "visibleInkGapSVGUnits": 2.0
+  },
+  "palette": {
+    "background": "#171821",
+    "id": "night-ink",
+    "mark": "#F3F0E8",
+    "sourceSHA256": "570fd1697c49bba9a961cc3f33b5bf012b1f70193264ad0c6e860ef1b0616746"
+  },
+  "riskReview": {
+    "competitorSimilarity": "reviewed-name-amber-icon-low-to-medium",
+    "legalClearance": false,
+    "reviewDate": "2026-07-14",
+    "scope": "internal-knockout-not-legal-advice-or-trademark-clearance"
+  },
+  "reviewer": "kthree0213",
+  "schemaVersion": 2,
+  "sourceFamily": [
+    {
+      "copyrightOwner": "kthree0213",
+      "creator": "kthree0213",
+      "id": "recording-state",
+      "license": "Apache-2.0",
+      "path": "Brand/states/recording.svg",
+      "publicationAuthority": "Original creator and sole copyright holder; authorized for Apache-2.0 publication",
+      "purpose": "single-color-recording-state",
+      "rightsScope": "Entire artifact",
+      "sha256": "d571228027b9f3e86236f30eda79d5ce90aee03f35f02c6ebe7fe75017dd29fd"
+    },
+    {
+      "copyrightOwner": "kthree0213",
+      "creator": "kthree0213",
+      "id": "processing-state",
+      "license": "Apache-2.0",
+      "path": "Brand/states/processing.svg",
+      "publicationAuthority": "Original creator and sole copyright holder; authorized for Apache-2.0 publication",
+      "purpose": "single-color-processing-state",
+      "rightsScope": "Entire artifact",
+      "sha256": "b76594845c336da49196f797a7a4d60b166776a2b38af74004aa81ea5d43fd7c"
+    },
+    {
+      "copyrightOwner": "kthree0213",
+      "creator": "kthree0213",
+      "id": "success-state",
+      "license": "Apache-2.0",
+      "path": "Brand/states/success.svg",
+      "publicationAuthority": "Original creator and sole copyright holder; authorized for Apache-2.0 publication",
+      "purpose": "single-color-success-state",
+      "rightsScope": "Entire artifact",
+      "sha256": "94ac00cecd37c722484d039a2822e88a9873a020f9724eaca5014f6b347f7320"
+    },
+    {
+      "copyrightOwner": "kthree0213",
+      "creator": "kthree0213",
+      "id": "failure-state",
+      "license": "Apache-2.0",
+      "path": "Brand/states/failure.svg",
+      "publicationAuthority": "Original creator and sole copyright holder; authorized for Apache-2.0 publication",
+      "purpose": "single-color-failure-state",
+      "rightsScope": "Entire artifact",
+      "sha256": "3349900f7b9456125cb7413c16df4f08e75fe070e6380a0755c21c5dcbfd80c7"
+    },
+    {
+      "copyrightOwner": "kthree0213",
+      "creator": "kthree0213",
+      "fontDependency": "none",
+      "id": "wordmark-lockup",
+      "letterformConstruction": "custom SVG outlines; no third-party font file or glyph outline was copied or imported",
+      "license": "Apache-2.0",
+      "path": "Brand/wordmark-lockup.svg",
+      "publicationAuthority": "Original creator and sole copyright holder; authorized for Apache-2.0 publication",
+      "purpose": "deterministic-outlined-wordmark",
+      "rightsScope": "Entire artifact",
+      "sha256": "b00a37fb4941b7bc0bbcfcf9a68ce81d74ed91b44a36d43556e261ae1cea560d"
+    }
+  ],
+  "status": "approved-source-family-awaiting-export-lock",
+  "trademarkTreatment": "Apache-2.0 grants no trademark rights; UtterInk name and final production marks remain subject to separate trademark policy and final review"
+}

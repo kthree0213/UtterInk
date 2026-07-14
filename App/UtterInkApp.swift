@@ -113,7 +113,13 @@ private struct MenuBarStatusLabel: View {
             sessionPresentation: model.sessionPresentation
         )
 
-        Label(ProductIdentity.name, systemImage: "text.cursor")
+        Label {
+            Text(ProductIdentity.name)
+        } icon: {
+            Image("MenuBarIcon")
+                .renderingMode(.template)
+                .accessibilityHidden(true)
+        }
             .labelStyle(.iconOnly)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(ProductIdentity.name)

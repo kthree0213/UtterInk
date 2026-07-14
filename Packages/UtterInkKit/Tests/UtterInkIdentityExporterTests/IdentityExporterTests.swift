@@ -362,6 +362,130 @@ final class IdentityExporterTests: XCTestCase {
         )
     }
 
+    func testOutputPublicationRollbackRemovesNewDestination() throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let destination = temporaryDirectory.appendingPathComponent("published", isDirectory: true)
+        let publication = try OutputPublication(destination: destination)
+        defer { publication.discardIfNeeded() }
+        try Data("current".utf8).write(
+            to: publication.stagingDirectory.appendingPathComponent("current.txt")
+        )
+
+        try publication.commitKeepingPrior()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+
+        try publication.rollbackCommit()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    func testOutputPublicationRollbackRestoresExistingDestination() throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let destination = temporaryDirectory.appendingPathComponent("published", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try Data("prior".utf8).write(to: destination.appendingPathComponent("prior.txt"))
+
+        let publication = try OutputPublication(destination: destination)
+        defer { publication.discardIfNeeded() }
+        try Data("current".utf8).write(
+            to: publication.stagingDirectory.appendingPathComponent("current.txt")
+        )
+
+        try publication.commitKeepingPrior()
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: destination.appendingPathComponent("prior.txt").path)
+        )
+
+        try publication.rollbackCommit()
+        XCTAssertEqual(
+            try Data(contentsOf: destination.appendingPathComponent("prior.txt")),
+            Data("prior".utf8)
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: destination.appendingPathComponent("current.txt").path)
+        )
+    }
+
+    func testOutputPublicationRollbackCleanupFailureNeverRepublishesNewDestination() throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let destination = temporaryDirectory.appendingPathComponent("published", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try Data("prior".utf8).write(to: destination.appendingPathComponent("prior.txt"))
+
+        var injectedFailures = 1
+        let publication = try OutputPublication(destination: destination) { url in
+            if injectedFailures > 0 {
+                injectedFailures -= 1
+                throw CocoaError(.fileWriteUnknown)
+            }
+            try FileManager.default.removeItem(at: url)
+        }
+        defer { publication.discardIfNeeded() }
+        try Data("current".utf8).write(
+            to: publication.stagingDirectory.appendingPathComponent("current.txt")
+        )
+
+        try publication.commitKeepingPrior()
+        XCTAssertThrowsError(try publication.rollbackCommit())
+        XCTAssertEqual(
+            try Data(contentsOf: destination.appendingPathComponent("prior.txt")),
+            Data("prior".utf8)
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: destination.appendingPathComponent("current.txt").path)
+        )
+
+        publication.discardIfNeeded()
+        XCTAssertEqual(
+            try Data(contentsOf: destination.appendingPathComponent("prior.txt")),
+            Data("prior".utf8)
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: publication.stagingDirectory.path))
+    }
+
+    func testOutputPublicationFinalizeCleanupFailureKeepsPublishedDestination() throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let destination = temporaryDirectory.appendingPathComponent("published", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try Data("prior".utf8).write(to: destination.appendingPathComponent("prior.txt"))
+
+        var injectedFailures = 1
+        let publication = try OutputPublication(destination: destination) { url in
+            if injectedFailures > 0 {
+                injectedFailures -= 1
+                throw CocoaError(.fileWriteUnknown)
+            }
+            try FileManager.default.removeItem(at: url)
+        }
+        defer { publication.discardIfNeeded() }
+        try Data("current".utf8).write(
+            to: publication.stagingDirectory.appendingPathComponent("current.txt")
+        )
+
+        XCTAssertThrowsError(try publication.commit())
+        XCTAssertEqual(
+            try Data(contentsOf: destination.appendingPathComponent("current.txt")),
+            Data("current".utf8)
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: destination.appendingPathComponent("prior.txt").path)
+        )
+
+        publication.discardIfNeeded()
+        XCTAssertEqual(
+            try Data(contentsOf: destination.appendingPathComponent("current.txt")),
+            Data("current".utf8)
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: publication.stagingDirectory.path))
+    }
+
     func testSecureFileReaderRejectsOversizedAndSpecialFiles() throws {
         let temporaryDirectory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }

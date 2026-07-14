@@ -43,6 +43,7 @@ targets:
       base:
         PRODUCT_NAME: UtterInk
         PRODUCT_BUNDLE_IDENTIFIER: dev.utterink.UtterInk
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         ARCHS: arm64
         SWIFT_VERSION: "5.0"

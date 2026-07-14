@@ -33,11 +33,15 @@ enum IdentityRasterPipeline {
     static let linearSupersamplingScale = 16
     static let supersamplingSamplesPerPixel = 256
 
-    static func renderMenu(svg: ValidatedSVG, pixelSize: Int) throws -> RasterImage {
-        guard pixelSize > 0 else {
+    static func renderMenu(
+        svg: ValidatedSVG,
+        pixelSize: Int,
+        supersamplingScale: Int = linearSupersamplingScale
+    ) throws -> RasterImage {
+        guard pixelSize > 0, supersamplingScale > 0, supersamplingScale <= linearSupersamplingScale else {
             throw IdentityExporterError.invalidInput("menu output size must be positive")
         }
-        let sourceSize = try checkedMultiply(pixelSize, linearSupersamplingScale)
+        let sourceSize = try checkedMultiply(pixelSize, supersamplingScale)
         let supersampled = try renderTemplateMask(
             svg: svg,
             width: sourceSize,
@@ -53,9 +57,24 @@ enum IdentityRasterPipeline {
         return try blackTemplate(from: reduced)
     }
 
-    static func renderAppIconMasterMask(svg: ValidatedSVG) throws -> RasterImage {
+    static func renderAppIconMasterMask(
+        svg: ValidatedSVG,
+        supersamplingScale: Int = linearSupersamplingScale
+    ) throws -> RasterImage {
         let destinationSize = 1_024
-        let sourceSize = try checkedMultiply(destinationSize, linearSupersamplingScale)
+        guard supersamplingScale > 0, supersamplingScale <= linearSupersamplingScale else {
+            throw IdentityExporterError.invalidInput("invalid App Icon supersampling scale")
+        }
+        let sourceSize = try checkedMultiply(destinationSize, supersamplingScale)
+        if sourceSize == destinationSize {
+            return try blackTemplate(from: renderTemplateMask(
+                svg: svg,
+                width: sourceSize,
+                height: sourceSize,
+                contentScale: 0.82,
+                opticalOffset: VectorPoint(x: -0.12, y: -0.18)
+            ))
+        }
         let bandHeight = 128
         var cachedBandStart = -1
         var cachedBandHeight = 0
