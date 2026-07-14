@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "brand": "UtterInk",
+  "reviewDate": "2026-07-14",
+  "artifacts": [
+    {
+      "id": "selected-logo-route",
+      "sha256": "15963ac872c2385170408029c86b450c4e2bdfc3b1c970f88d945adb8e7c4f08",
+      "path": "Brand/Source/selected-logo-route.json",
+      "purpose": "identity-direction-record",
+      "creator": "kthree0213",
+      "copyrightOwner": "kthree0213",
+      "rightsScope": "Entire artifact",
+      "publicationAuthority": "Original creator and sole copyright holder; authorized for Apache-2.0 publication",
+      "license": "Apache-2.0",
+      "trademarkTreatment": "Apache-2.0 grants no trademark rights; UtterInk name and final production marks remain subject to separate trademark policy and final review",
+      "reviewer": "kthree0213",
+      "publicDistribution": true
+    },
+    {
+      "id": "identity-handoff",
+      "sha256": "0464a616dad340ded1672781c014a4421c7f04779bd4c1af4f38877fc225d3aa",
+      "path": "Brand/Source/identity-handoff.md",
+      "purpose": "identity-production-handoff",
+      "creator": "kthree0213",
+      "copyrightOwner": "kthree0213",
+      "rightsScope": "Entire artifact",
+      "publicationAuthority": "Original creator and sole copyright holder; authorized for Apache-2.0 publication",
+      "license": "Apache-2.0",
+      "trademarkTreatment": "Apache-2.0 grants no trademark rights; UtterInk name and final production marks remain subject to separate trademark policy and final review",
+      "reviewer": "kthree0213",
+      "publicDistribution": true
+    },
+    {
+      "id": "right-cursor-vector",
+      "sha256": "8bd098aedf9dee4bd5d1752eea513557a1bc756b78e82c00f647a8fc77932839",
+      "path": "Brand/Source/B-right-cursor.svg",
+      "purpose": "production-identity-vector-draft",
+      "creator": "kthree0213",
+      "copyrightOwner": "kthree0213",
+      "rightsScope": "Entire artifact",
+      "publicationAuthority": "Original creator and sole copyright holder; authorized for Apache-2.0 publication",
+      "license": "Apache-2.0",
+      "trademarkTreatment": "Apache-2.0 grants no trademark rights; UtterInk name and final production marks remain subject to separate trademark policy and final review",
+      "reviewer": "kthree0213",
+      "publicDistribution": true
+    },
+    {
+      "id": "menu-bar-comparison",
+      "sha256": "5e02410fdac93b6e2fcde790e7afa55fea7556c3a0604041b4c786d13857b506",
+      "path": "dist/identity-input-review/menu-bar-comparison.png",
+      "purpose": "local-review-montage",
+      "creator": "kthree0213",
+      "copyrightOwner": "kthree0213",
+      "rightsScope": "Original montage selection and arrangement and original UtterInk candidate marks only; embedded third-party reference imagery and marks are excluded",
+      "publicationAuthority": "Original review montage authorized for local review only and excluded from public distribution",
+      "license": "Local review only; not distributed",
+      "trademarkTreatment": "Embedded third-party marks are reference-only; no ownership or trademark rights are asserted; the file is excluded from public distribution",
+      "reviewer": "kthree0213",
+      "publicDistribution": false
+    }
+  ]
+}

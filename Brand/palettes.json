@@ -1,0 +1,14 @@
+{
+  "night-ink": {
+    "background": "#171821",
+    "mark": "#F3F0E8"
+  },
+  "warm-paper": {
+    "background": "#ECE6DA",
+    "mark": "#1D1E25"
+  },
+  "slate": {
+    "background": "#24303A",
+    "mark": "#EEF1F2"
+  }
+}

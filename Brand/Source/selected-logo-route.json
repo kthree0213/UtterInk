@@ -1,0 +1,53 @@
+{
+  "brand": "UtterInk",
+  "selectedDirection": {
+    "round1": {
+      "id": "ink-caret-monogram",
+      "label": "Ink Caret Monogram",
+      "family": "monogram"
+    },
+    "round2": {
+      "id": "B",
+      "slug": "right-cursor",
+      "label": "Right Cursor",
+      "sourceSvg": "../menu-bar-round2/variants/B-right-cursor.svg",
+      "comparison": "../menu-bar-round2/menu-bar-comparison.png"
+    }
+  },
+  "decision": {
+    "why": "The open U silhouette remains legible at 18pt while the interrupted right stem reads as a text cursor and breaks the symmetry that made centered versions resemble a power button.",
+    "bestFor": [
+      "macOS menu-bar template image",
+      "foundation geometry for the App Icon",
+      "GitHub and documentation identity"
+    ],
+    "watchOut": "The upper cursor segment must keep a deliberate gap from the lower right stem at 16-20pt and must not read as a stray dot.",
+    "nextStep": "Pixel-fit the vector at 16, 18, and 20pt, then derive the color App Icon, full wordmark, and recording/processing/result state family."
+  },
+  "preserve": [
+    "Exact brand spelling: UtterInk",
+    "Open U bowl with a segmented right-side text cursor",
+    "Transparent single-color template artwork for the menu bar",
+    "Quiet, native, privacy-first, crafted tone",
+    "Shared geometry across menu bar, App Icon, wordmark companion mark, and state icons"
+  ],
+  "avoid": [
+    "Centered caret or concentric forms that resemble a power button",
+    "Literal microphones, waveforms, speech bubbles, droplets, quills, or generic AI gradients",
+    "Wide UI-letter pair, folded notch, dense filled well, or enclosing type block",
+    "Raster extraction, white matte edges, color-dependent status meaning, or details that disappear below 18pt"
+  ],
+  "rejectedDirections": [
+    { "id": "A", "reason": "Centered caret retained power-button and psi-like ambiguity." },
+    { "id": "C", "reason": "U + I pair was too wide and read as the user-interface abbreviation." },
+    { "id": "D", "reason": "Filled well became visually dense beside real menu-bar icons." },
+    { "id": "E", "reason": "Folded notch collapsed into visual noise at 18pt." },
+    { "id": "F", "reason": "Type block lost distinctiveness and read as a generic U when reduced." }
+  ],
+  "caveats": [
+    "Generated round-one typography was directional and is not production artwork.",
+    "The selected round-two SVG is a validated silhouette draft, not the final trademark-cleared vector identity.",
+    "Final assets still require competitor similarity review, trademark review, pixel fitting, contrast testing, and deterministic export."
+  ],
+  "finalOwner": "deterministic-production-identity"
+}

@@ -6,7 +6,8 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "UtterInkCore", targets: ["UtterInkCore"]),
-        .library(name: "UtterInkServices", targets: ["UtterInkServices"])
+        .library(name: "UtterInkServices", targets: ["UtterInkServices"]),
+        .executable(name: "UtterInkIdentityExporter", targets: ["UtterInkIdentityExporter"])
     ],
     dependencies: [
         .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", exact: "2.4.0"),
@@ -22,8 +23,13 @@ let package = Package(
                 .product(name: "WhisperKit", package: "WhisperKit")
             ]
         ),
+        .executableTarget(name: "UtterInkIdentityExporter"),
         .testTarget(name: "UtterInkCoreTests", dependencies: ["UtterInkCore"]),
         .testTarget(name: "UtterInkServicesTests", dependencies: ["UtterInkCore", "UtterInkServices"]),
+        .testTarget(
+            name: "UtterInkIdentityExporterTests",
+            dependencies: ["UtterInkIdentityExporter"]
+        ),
         .testTarget(
             name: "UtterInkExternalConsumerTests",
             dependencies: ["UtterInkCore", "UtterInkServices"]
