@@ -109,6 +109,7 @@ bash Tests/Scripts/test-import-legacy-parity.sh
 bash Tests/Scripts/test-check-repo-hygiene.sh
 bash Tests/Scripts/test-generate-legacy-defaults-map.sh
 bash Tests/Scripts/test-check-parity-replacement.sh
+python3 Tests/Scripts/test-check-public-docs.py
 swift Scripts/generate-legacy-defaults-map.swift \
   --check \
   --input docs/provenance/legacy-defaults-map.tsv \
@@ -121,18 +122,6 @@ swift test \
   --disable-sandbox \
   --force-resolved-versions
 
-if [[ -e Brand/identity-lock.json || -L Brand/identity-lock.json ]]; then
-  swift run \
-    --package-path Packages/UtterInkKit \
-    --scratch-path "$TMP/UtterInkKit-build" \
-    --disable-sandbox \
-    --force-resolved-versions \
-    UtterInkIdentityExporter \
-    --check \
-    --lock Brand/identity-lock.json \
-    --asset-catalog App/Resources/Assets.xcassets
-fi
-
 xcodegen generate
 xcodebuild \
   -project UtterInk.xcodeproj \
@@ -142,6 +131,18 @@ xcodebuild \
   -resolvePackageDependencies
 python3 Tests/Scripts/test-check-package-resolution.py
 python3 Scripts/check-package-resolution.py
+python3 Scripts/check-public-docs.py
+UTTERINK_NOTICE_SCRATCH_PATH="$TMP/UtterInkKit-build" \
+  ./Scripts/collect-third-party-notices.sh --check
+swift run \
+  --package-path Packages/UtterInkKit \
+  --scratch-path "$TMP/UtterInkKit-build" \
+  --disable-sandbox \
+  --force-resolved-versions \
+  UtterInkIdentityExporter \
+  --check \
+  --lock Brand/identity-lock.json \
+  --asset-catalog App/Resources/Assets.xcassets
 assert_foundation_outputs_unchanged
 
 xcodebuild \

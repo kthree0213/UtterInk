@@ -1,0 +1,153 @@
+name: Feature request
+description: Propose a focused improvement to UtterInk's current source workflow.
+title: "[Feature]: "
+labels: []
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the user problem before prescribing an implementation.
+
+        This issue is public. For a suspected vulnerability, stop here and follow the repository-root `SECURITY.md` instructions. Do not include credentials, private transcripts, audio, pasteboard contents, private paths, or other personal data.
+
+  - type: checkboxes
+    id: public-report-safety
+    attributes:
+      label: Public report safety
+      description: Confirm both items before continuing.
+      options:
+        - label: I have removed credentials, transcripts, audio, pasteboard contents, private paths, and unrelated personal data.
+          required: true
+        - label: This request does not disclose an unpatched security vulnerability.
+          required: true
+    validations:
+      required: true
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: Which macOS version did you use when evaluating the current workflow?
+      placeholder: "14.x (build ...)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: architecture
+    attributes:
+      label: Architecture
+      options:
+        - Apple Silicon / arm64
+        - Other or unknown
+    validations:
+      required: true
+
+  - type: input
+    id: utterink-build
+    attributes:
+      label: UtterInk build or commit
+      description: Provide the commit SHA, branch, or build identifier used to evaluate the current behavior.
+      placeholder: "Commit SHA or build identifier"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: Who has this problem, and what are they trying to accomplish?
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-workflow
+    attributes:
+      label: Current workflow, reproduction, and actual behavior
+      description: Describe the current steps, the actual result, and where the workflow becomes difficult. Use sanitized example data.
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. The current result is ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Describe the observable result you want, without requiring a particular implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: Describe implementation ideas, constraints, or product tradeoffs that should be considered.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe existing workarounds or alternatives. Write "None" if there are none.
+    validations:
+      required: true
+
+  - type: textarea
+    id: tests
+    attributes:
+      label: Validation and test plan
+      description: Explain how the expected behavior could be verified with automated tests and privacy-safe manual scenarios.
+    validations:
+      required: true
+
+  - type: textarea
+    id: accessibility-impact
+    attributes:
+      label: Accessibility impact
+      description: Consider keyboard control, VoiceOver, focus, permissions, target validation, and Automatic Paste. Write "No known impact" if none.
+    validations:
+      required: true
+
+  - type: textarea
+    id: privacy-security-impact
+    attributes:
+      label: Privacy and security impact
+      description: Explain any effect on local audio, History, provider egress, credentials, pasteboard handling, diagnostics, permissions, or deletion. Write "No known impact" if none.
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics or measurements
+      description: Optional. Include only reviewed allowlisted diagnostics or non-sensitive measurements; do not include user content, credentials, private paths, raw errors, or full provider URLs.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Sanitized mockups or screenshots
+      description: Optional. Crop and redact all transcripts, credentials, private paths, pasteboard contents, personal window titles, and other private data.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: proposal-confirmation
+    attributes:
+      label: Proposal confirmation
+      options:
+        - label: I understand that this issue starts a design discussion; it is not approval to implement, publish, or release the proposal.
+          required: true
+        - label: I reviewed all text and attachments for private content and have the right to submit them publicly.
+          required: true
+        - label: If implemented, the behavior change will follow the test-driven workflow and complete verification in CONTRIBUTING.md.
+          required: true
+    validations:
+      required: true

@@ -12,6 +12,69 @@ fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 AUTHORITATIVE_LOCK="$ROOT/Packages/UtterInkKit/Package.resolved"
+NOTICE_SCRATCH_PATH=""
+
+if [[ -n "${UTTERINK_NOTICE_SCRATCH_PATH:-}" ]]; then
+  NOTICE_SCRATCH_PATH="$(
+    python3 - "$ROOT" "$UTTERINK_NOTICE_SCRATCH_PATH" <<'PY'
+from __future__ import annotations
+
+import stat
+import sys
+from pathlib import Path
+
+
+root = Path(sys.argv[1]).resolve(strict=True)
+raw = sys.argv[2]
+
+
+def reject(message: str) -> None:
+    raise SystemExit(f"third-party notice check failed: {message}")
+
+
+if any(ord(character) < 32 or ord(character) == 127 for character in raw):
+    reject("UTTERINK_NOTICE_SCRATCH_PATH contains a control character")
+
+candidate = Path(raw)
+if not candidate.is_absolute():
+    reject("UTTERINK_NOTICE_SCRATCH_PATH must be absolute")
+if ".." in candidate.parts:
+    reject("UTTERINK_NOTICE_SCRATCH_PATH must not contain a parent traversal")
+
+try:
+    metadata = candidate.lstat()
+except FileNotFoundError:
+    metadata = None
+except OSError as error:
+    reject(f"cannot inspect UTTERINK_NOTICE_SCRATCH_PATH: {error}")
+
+if metadata is not None:
+    if stat.S_ISLNK(metadata.st_mode):
+        reject("UTTERINK_NOTICE_SCRATCH_PATH must not be a symlink")
+    if not stat.S_ISDIR(metadata.st_mode):
+        reject("UTTERINK_NOTICE_SCRATCH_PATH must be a directory")
+
+try:
+    scratch = candidate.resolve(strict=False)
+except (OSError, RuntimeError) as error:
+    reject(f"cannot resolve UTTERINK_NOTICE_SCRATCH_PATH: {error}")
+
+
+def contains(parent: Path, child: Path) -> bool:
+    try:
+        child.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+if contains(root, scratch) or contains(scratch, root):
+    reject("UTTERINK_NOTICE_SCRATCH_PATH must be outside the repository")
+
+print(scratch)
+PY
+  )"
+fi
 
 # Reject links and special files before SwiftPM is allowed to run.  This
 # preflight is intentionally broader than Package.resolved: `swift package
@@ -80,8 +143,16 @@ PY
 )" || fail 'cannot fingerprint authoritative lock before resolve'
 
 cd "$ROOT"
-swift package resolve --package-path Packages/UtterInkKit \
-  || fail 'Swift package resolution failed'
+if [[ -n "$NOTICE_SCRATCH_PATH" ]]; then
+  swift package resolve --package-path Packages/UtterInkKit \
+    --scratch-path "$NOTICE_SCRATCH_PATH" \
+    || fail 'Swift package resolution failed'
+  CHECKOUT_ROOT="$NOTICE_SCRATCH_PATH/checkouts"
+else
+  swift package resolve --package-path Packages/UtterInkKit \
+    || fail 'Swift package resolution failed'
+  CHECKOUT_ROOT="Packages/UtterInkKit/.build/checkouts"
+fi
 
 lock_after="$(python3 - "$AUTHORITATIVE_LOCK" <<'PY'
 import hashlib
@@ -98,7 +169,7 @@ PY
 [[ "$lock_before" == "$lock_after" ]] \
   || fail 'swift package resolve changed the authoritative Package.resolved bytes'
 
-python3 - "$ROOT" <<'PY'
+python3 - "$ROOT" "$CHECKOUT_ROOT" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -112,6 +183,7 @@ from urllib.parse import urlsplit
 
 
 root = Path(sys.argv[1])
+checkout_root = sys.argv[2]
 
 
 def reject(message: str) -> None:
@@ -439,7 +511,6 @@ if workspace_path is not None:
     if workspace != authoritative:
         reject("workspace lock does not exactly match the authoritative lock")
 
-checkout_root = "Packages/UtterInkKit/.build/checkouts"
 regular_directory(checkout_root)
 checkout_license_texts: dict[str, str] = {}
 checkout_notice_texts: dict[str, str] = {}

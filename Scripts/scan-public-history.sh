@@ -48,7 +48,11 @@ emit_file() {
   local category="$1"
   local identifier
   identifier="$(safe_file_id "$2")"
+  local line_number="${3-}"
   local line="finding category=$category file=$identifier"
+  if [[ "$line_number" =~ ^[1-9][0-9]*$ ]]; then
+    line="$line line=$line_number"
+  fi
   if ! grep -Fqx -- "$line" "$FINDINGS"; then
     printf '%s\n' "$line" >> "$FINDINGS"
     printf '%s\n' "$line" >&2
@@ -58,10 +62,14 @@ emit_file() {
 emit_object() {
   local category="$1"
   local object="$2"
+  local line_number="${3-}"
   case "$object" in
     *[!0-9a-f]*|'') object=unknown ;;
   esac
   local line="finding category=$category object=$object"
+  if [[ "$line_number" =~ ^[1-9][0-9]*$ ]]; then
+    line="$line line=$line_number"
+  fi
   if ! grep -Fqx -- "$line" "$FINDINGS"; then
     printf '%s\n' "$line" >> "$FINDINGS"
     printf '%s\n' "$line" >&2
@@ -70,11 +78,15 @@ emit_object() {
 
 check_private_path() {
   local path="$1"
-  case "$path" in
+  local lower_path
+  lower_path="$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')"
+  case "$lower_path" in
     .env.example|*/.env.example) return ;;
-    .env|*/.env|.env.*|*/.env.*|secrets|secrets/*|*/secrets|*/secrets/*|Models|Models/*|*/Models|*/Models/*|\
-    .DS_Store|*/.DS_Store|.build|.build/*|*/.build|*/.build/*|.swiftpm|.swiftpm/*|*/.swiftpm|*/.swiftpm/*|\
-    DerivedData|DerivedData/*|*/DerivedData|*/DerivedData/*|dist|dist/*|*/dist|*/dist/*|\
+    .env|*/.env|.env.*|*/.env.*|.envrc|*/.envrc|\
+    secrets|secrets/*|*/secrets|*/secrets/*|models|models/*|*/models|*/models/*|\
+    .ds_store|*/.ds_store|.build|.build/*|*/.build|*/.build/*|.swiftpm|.swiftpm/*|*/.swiftpm|*/.swiftpm/*|\
+    deriveddata|deriveddata/*|*/deriveddata|*/deriveddata/*|xcuserdata|xcuserdata/*|*/xcuserdata|*/xcuserdata/*|\
+    dist|dist/*|*/dist|*/dist/*|\
     *.pem|*.p12|*.cer|*.mobileprovision|*.dmg|*.xcarchive|*.xcresult|*.caf|*.wav)
       emit_file private-path "$path"
       ;;
@@ -87,12 +99,20 @@ match_category() {
   local regex="$3"
   local kind="$4"
   local identifier="$5"
-  local status
-  if grep -aEq -- "$regex" "$sample" 2>/dev/null; then
+  local match_line status
+  if match_line="$(grep -aEn -m 1 -- "$regex" "$sample" 2>/dev/null | awk -F: 'NR == 1 { print $1 }')"; then
+    if [[ ! "$match_line" =~ ^[1-9][0-9]*$ ]]; then
+      if [[ "$kind" == object ]]; then
+        emit_object unscannable-content "$identifier"
+      else
+        emit_file unscannable-content "$identifier"
+      fi
+      return
+    fi
     if [[ "$kind" == object ]]; then
-      emit_object "$category" "$identifier"
+      emit_object "$category" "$identifier" "$match_line"
     else
-      emit_file "$category" "$identifier"
+      emit_file "$category" "$identifier" "$match_line"
     fi
   else
     status=$?
@@ -106,6 +126,43 @@ match_category() {
   fi
 }
 
+match_api_key_assignment() {
+  local sample="$1"
+  local kind="$2"
+  local identifier="$3"
+  local match_line
+  if match_line="$(perl -0777 -ne '
+      BEGIN { binmode STDIN }
+      while (/[.]apiKey\s*=\s*(?:"""(.*?)"""|"((?:\\.|[^"\\])*)"|\x27([^\x27]*)\x27)/gsi) {
+        my $value = defined($1) ? $1 : defined($2) ? $2 : $3;
+        next if $value eq q{} || $value eq q{...};
+        my $prefix = substr($_, 0, $-[0]);
+        my $line = 1 + ($prefix =~ tr/\n//);
+        print "$line\n";
+        last;
+      }
+    ' "$sample" 2>/dev/null)"; then
+    [[ -n "$match_line" ]] || return 0
+    if [[ ! "$match_line" =~ ^[1-9][0-9]*$ ]]; then
+      if [[ "$kind" == object ]]; then
+        emit_object unscannable-content "$identifier"
+      else
+        emit_file unscannable-content "$identifier"
+      fi
+      return
+    fi
+    if [[ "$kind" == object ]]; then
+      emit_object provider-credential "$identifier" "$match_line"
+    else
+      emit_file provider-credential "$identifier" "$match_line"
+    fi
+  elif [[ "$kind" == object ]]; then
+    emit_object unscannable-content "$identifier"
+  else
+    emit_file unscannable-content "$identifier"
+  fi
+}
+
 classify_sample() {
   local sample="$1"
   local kind="$2"
@@ -113,13 +170,25 @@ classify_sample() {
   local users_prefix='/Users'
   local home_prefix='/home'
   local personal_pattern="(${users_prefix}/[^/[:space:]]+/[^[:space:]]+|${home_prefix}/[^/[:space:]]+/[^[:space:]]+|[A-Za-z]:\\\\Users\\\\[^\\\\[:space:]]+\\\\[^[:space:]]+)"
-  local approved_credential_url credential_sample
+  local approved_credential_url approved_provider_canary credential_sample provider_sample
   approved_credential_url="$(printf '%s%s' 'https://user:' 'pass@example.com/v1')"
+  approved_provider_canary="$(printf '%s%s' 'sk-canary-' 'transcript-path-query')"
   credential_sample="$TMP/credential-sample"
+  provider_sample="$TMP/provider-sample"
 
   match_category "$sample" private-key '-----BEGIN (RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----' "$kind" "$identifier"
   match_category "$sample" common-token '(AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|sk_(live|test)_[A-Za-z0-9]{16,}|AIza[0-9A-Za-z_-]{30,})' "$kind" "$identifier"
-  match_category "$sample" provider-credential '(sk-or-v1-[A-Za-z0-9_-]{20,}|sk-proj-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9_-]{20,}|xai-[A-Za-z0-9_-]{20,})' "$kind" "$identifier"
+  if APPROVED_PROVIDER_CANARY="$approved_provider_canary" perl -0777 -pe '
+      BEGIN { binmode STDIN; binmode STDOUT; $placeholder = quotemeta($ENV{"APPROVED_PROVIDER_CANARY"}) }
+      s/(?<![A-Za-z0-9_-])$placeholder(?![A-Za-z0-9_-])/[approved-provider-canary]/g
+    ' "$sample" > "$provider_sample" 2>/dev/null; then
+    match_category "$provider_sample" provider-credential '(^|[^A-Za-z0-9_-])(sk-[A-Za-z0-9_-]{16,}|gsk_[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9_-]{20,}|xai-[A-Za-z0-9_-]{20,})' "$kind" "$identifier"
+  elif [[ "$kind" == object ]]; then
+    emit_object unscannable-content "$identifier"
+  else
+    emit_file unscannable-content "$identifier"
+  fi
+  match_api_key_assignment "$sample" "$kind" "$identifier"
   match_category "$sample" transcript-canary '(TRANSCRIPT[_ -]?CANARY|PRIVATE[_ -]?TRANSCRIPT)[_ :=-]*[A-Za-z0-9_-]{8,}' "$kind" "$identifier"
   match_category "$sample" personal-path "$personal_pattern" "$kind" "$identifier"
   if APPROVED_CREDENTIAL_URL="$approved_credential_url" perl -0777 -pe '
@@ -132,6 +201,45 @@ classify_sample() {
   else
     emit_file unscannable-content "$identifier"
   fi
+}
+
+is_public_facing_path() {
+  case "$1" in
+    README.md|README.zh-CN.md|PRIVACY.md|SECURITY.md|CONTRIBUTING.md|CODE_OF_CONDUCT.md|CHANGELOG.md|TRADEMARKS.md|THIRD_PARTY_NOTICES.md|NOTICE|LICENSE|\
+    Brand/wordmark-lockup.svg|docs/privacy-data-flow.md|\
+    .github/ISSUE_TEMPLATE/bug_report.yml|.github/ISSUE_TEMPLATE/feature_request.yml|.github/pull_request_template.md)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+scan_public_file_url_sample() {
+  local sample="$1"
+  local kind="$2"
+  local identifier="$3"
+  local path="$4"
+  is_public_facing_path "$path" || return 0
+  match_category "$sample" file-url '[Ff][Ii][Ll][Ee]://[^[:space:]]+' "$kind" "$identifier"
+}
+
+scan_public_blob_file_url() {
+  local blob_oid="$1"
+  local path="$2"
+  local kind="$3"
+  local identifier="$4"
+  local sample statuses
+  is_public_facing_path "$path" || return 0
+  sample="$TMP/public-blob-sample"
+  set +o pipefail
+  git cat-file blob "$blob_oid" 2>/dev/null | head -c "$MAX_SCAN_BYTES" > "$sample" 2>/dev/null
+  statuses=("${PIPESTATUS[@]}")
+  set -o pipefail
+  if [[ "${statuses[1]}" -ne 0 || ( "${statuses[0]}" -ne 0 && "${statuses[0]}" -ne 141 ) ]]; then
+    emit_object unscannable-object "$blob_oid"
+    return
+  fi
+  scan_public_file_url_sample "$sample" "$kind" "$identifier" "$path"
 }
 
 sample_is_binary() {
@@ -165,6 +273,7 @@ scan_file_content() {
     return
   fi
   classify_sample "$sample" file "$display"
+  scan_public_file_url_sample "$sample" file "$display" "$display"
   if [[ "$size" -gt "$MAX_SCAN_BYTES" ]]; then
     if is_known_text_path "$display"; then
       emit_file unscannable-text "$display"
@@ -224,6 +333,8 @@ grafts_path="$(git rev-parse --git-path info/grafts 2>/dev/null || true)"
 [[ -n "$grafts_path" && -s "$grafts_path" ]] && emit_file git-grafts .git/info/grafts
 
 refs_file="$TMP/refs"
+tag_ref_trees_file="$TMP/tag-ref-trees"
+: > "$tag_ref_trees_file"
 if git for-each-ref --format='%(refname)' > "$refs_file" 2>/dev/null; then
   while IFS= read -r ref || [[ -n "$ref" ]]; do
     case "$ref" in refs/replace/*) emit_file git-replace refs/replace ;;
@@ -234,6 +345,17 @@ if git for-each-ref --format='%(refname)' > "$refs_file" 2>/dev/null; then
   done < "$refs_file"
 else
   emit_file unscannable-git-metadata .git/refs
+fi
+
+tag_ref_targets="$TMP/tag-ref-targets"
+if git for-each-ref --format='%(objectname)%09%(objecttype)' refs/tags > "$tag_ref_targets" 2>/dev/null; then
+  while IFS=$'\t' read -r target_oid target_type || [[ -n "${target_oid-}" ]]; do
+    if [[ "$target_type" == tree && "$target_oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+      printf '%s\n' "$target_oid" >> "$tag_ref_trees_file"
+    fi
+  done < "$tag_ref_targets"
+else
+  emit_file unscannable-git-metadata .git/refs/tags
 fi
 
 if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null || printf true)" != false ]]; then
@@ -288,6 +410,9 @@ if find . -mindepth 1 \( -path './.git' -o -path './.git/*' \) -prune -o \( -typ
   while IFS= read -r -d '' raw_path; do
     path="${raw_path#./}"
     check_private_path "$path"
+    if is_public_facing_path "$path"; then
+      scan_file_content "$path" "$path"
+    fi
   done < "$all_worktree_paths"
 else
   emit_file unscannable-worktree .
@@ -311,8 +436,13 @@ if git ls-files --stage -z > "$index_entries" 2>/dev/null; then
     metadata="${entry%%$'\t'*}"
     path="${entry#*$'\t'}"
     mode="${metadata%% *}"
+    remainder="${metadata#* }"
+    index_blob_oid="${remainder%% *}"
     check_private_path "$path"
     [[ "$mode" != 160000 ]] || emit_file legacy-git-link "$path"
+    if [[ "$mode" != 160000 ]]; then
+      scan_public_blob_file_url "$index_blob_oid" "$path" file "$path"
+    fi
   done < "$index_entries"
 else
   emit_file unscannable-index .git/index
@@ -368,6 +498,8 @@ commits_file="$TMP/commits"
 : > "$commits_file"
 trees_file="$TMP/trees"
 : > "$trees_file"
+root_trees_file="$TMP/root-trees"
+: > "$root_trees_file"
 while IFS=$'\t' read -r oid type size || [[ -n "${oid-}" ]]; do
   [[ -n "${oid-}" ]] || continue
   if [[ ! "$oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ || ! "$size" =~ ^[0-9]+$ ]]; then
@@ -402,12 +534,23 @@ while IFS=$'\t' read -r oid type size || [[ -n "${oid-}" ]]; do
       fi
       if [[ "$type" == commit ]]; then
         printf '%s\n' "$oid" >> "$commits_file"
+        commit_tree_oid="$(awk 'NR == 1 && /^tree [0-9a-f]+$/ { print $2 }' "$sample")"
+        if [[ "$commit_tree_oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+          printf '%s\n' "$commit_tree_oid" >> "$root_trees_file"
+        fi
+      elif [[ "$type" == tag ]]; then
+        tag_target_oid="$(awk 'NR == 1 && /^object [0-9a-f]+$/ { print $2 }' "$sample")"
+        tag_target_type="$(awk 'NR == 2 && /^type [a-z]+$/ { print $2 }' "$sample")"
+        if [[ "$tag_target_type" == tree && "$tag_target_oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+          printf '%s\n' "$tag_target_oid" >> "$root_trees_file"
+        fi
       fi
       ;;
     tree) printf '%s\n' "$oid" >> "$trees_file" ;;
     *) emit_object unscannable-object "$oid" ;;
   esac
 done < "$objects_file"
+cat "$tag_ref_trees_file" >> "$root_trees_file"
 
 root_count=0
 while IFS= read -r commit_oid || [[ -n "$commit_oid" ]]; do
@@ -434,6 +577,33 @@ fi
 # complete object inventory.
 unique_trees_file="$TMP/unique-trees"
 sort -u "$trees_file" > "$unique_trees_file"
+child_trees_file="$TMP/child-trees"
+: > "$child_trees_file"
+while IFS= read -r tree_oid || [[ -n "$tree_oid" ]]; do
+  [[ -n "$tree_oid" ]] || continue
+  direct_tree_entries="$TMP/direct-tree-entries"
+  if ! git ls-tree -z "$tree_oid" > "$direct_tree_entries" 2>/dev/null; then
+    emit_object unscannable-object "$tree_oid"
+    continue
+  fi
+  while IFS= read -r -d '' entry; do
+    metadata="${entry%%$'\t'*}"
+    remainder="${metadata#* }"
+    type="${remainder%% *}"
+    child_oid="${remainder##* }"
+    if [[ "$type" == tree && "$child_oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+      printf '%s\n' "$child_oid" >> "$child_trees_file"
+    fi
+  done < "$direct_tree_entries"
+done < "$unique_trees_file"
+
+unique_child_trees_file="$TMP/unique-child-trees"
+sort -u "$child_trees_file" > "$unique_child_trees_file"
+public_root_trees_file="$TMP/public-root-trees"
+sort -u "$root_trees_file" > "$public_root_trees_file"
+comm -23 "$unique_trees_file" "$unique_child_trees_file" >> "$public_root_trees_file"
+sort -u -o "$public_root_trees_file" "$public_root_trees_file"
+
 while IFS= read -r tree_oid || [[ -n "$tree_oid" ]]; do
   [[ -n "$tree_oid" ]] || continue
   tree_entries="$TMP/tree-entries"
@@ -449,6 +619,9 @@ while IFS= read -r tree_oid || [[ -n "$tree_oid" ]]; do
     type="${remainder%% *}"
     blob_oid="${remainder##* }"
     check_private_path "$path"
+    if [[ "$type" == blob ]] && grep -Fqx -- "$tree_oid" "$public_root_trees_file"; then
+      scan_public_blob_file_url "$blob_oid" "$path" object "$blob_oid"
+    fi
     case "$path" in
       LegacyParity/*)
         if [[ "$manifest_valid" -ne 1 || "$type" != blob || ( "$mode" != 100644 && "$mode" != 100755 ) ]]; then

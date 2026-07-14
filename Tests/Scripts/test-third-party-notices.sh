@@ -645,12 +645,28 @@ PY
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
-  '[[ "$*" == "package resolve --package-path Packages/UtterInkKit" ]] || {' \
+  '[[ "$#" == 4 || "$#" == 6 ]] || {' \
+  '  printf "unexpected swift invocation: %s\n" "$*" >&2' \
+  '  exit 64' \
+  '}' \
+  '[[ "$1" == "package" ]] && [[ "$2" == "resolve" ]] && [[ "$3" == "--package-path" ]] && [[ "$4" == "Packages/UtterInkKit" ]] || {' \
   '  printf "unexpected swift invocation: %s\n" "$*" >&2' \
   '  exit 64' \
   '}' \
   'printf "%s\n" "$*" >> "${UTTERINK_SWIFT_LOG:?}"' \
-  'checkout_root="${UTTERINK_FIXTURE_ROOT:?}/Packages/UtterInkKit/.build/checkouts"' \
+  'if [[ "$#" == 6 ]]; then' \
+  '  [[ "$5" == "--scratch-path" ]] && [[ -n "${UTTERINK_EXPECTED_NOTICE_SCRATCH_PATH:-}" ]] && [[ "$6" == "$UTTERINK_EXPECTED_NOTICE_SCRATCH_PATH" ]] || {' \
+  '    printf "unexpected notice scratch path: %s\n" "$*" >&2' \
+  '    exit 64' \
+  '  }' \
+  '  checkout_root="$6/checkouts"' \
+  'else' \
+  '  [[ -z "${UTTERINK_EXPECTED_NOTICE_SCRATCH_PATH:-}" ]] || {' \
+  '    printf "missing notice scratch path: %s\n" "$*" >&2' \
+  '    exit 64' \
+  '  }' \
+  '  checkout_root="${UTTERINK_FIXTURE_ROOT:?}/Packages/UtterInkKit/.build/checkouts"' \
+  'fi' \
   'rm -rf -- "$checkout_root"' \
   'mkdir -p "$checkout_root"' \
   'cp -R "${UTTERINK_FIXTURE_ROOT:?}/.test-license-fixtures/." "$checkout_root/"' \
@@ -704,6 +720,7 @@ SWIFT_LOG=""
 GIT_LOG=""
 BAD_GIT_CHECKOUT=""
 SWIFT_MUTATE_LOCK=""
+NOTICE_SCRATCH_PATH=""
 
 new_case() {
   local label="$1"
@@ -715,6 +732,7 @@ new_case() {
   GIT_LOG="$TMP/$CASE_NUMBER-$label.git.log"
   BAD_GIT_CHECKOUT=""
   SWIFT_MUTATE_LOCK=""
+  NOTICE_SCRATCH_PATH=""
   : > "$SWIFT_LOG"
   : > "$GIT_LOG"
 }
@@ -750,15 +768,23 @@ PY
 }
 
 run_check() {
+  local -a environment=(
+    "PATH=$CASE_ROOT/bin:$PATH"
+    "UTTERINK_FIXTURE_ROOT=$CASE_ROOT"
+    "UTTERINK_SWIFT_LOG=$SWIFT_LOG"
+    "UTTERINK_GIT_LOG=$GIT_LOG"
+    "UTTERINK_BAD_GIT_CHECKOUT=$BAD_GIT_CHECKOUT"
+    "UTTERINK_SWIFT_MUTATE_LOCK=$SWIFT_MUTATE_LOCK"
+  )
+  if [[ -n "$NOTICE_SCRATCH_PATH" ]]; then
+    environment+=(
+      "UTTERINK_NOTICE_SCRATCH_PATH=$NOTICE_SCRATCH_PATH"
+      "UTTERINK_EXPECTED_NOTICE_SCRATCH_PATH=$NOTICE_SCRATCH_PATH"
+    )
+  fi
   (
     cd "$CASE_ROOT"
-    PATH="$CASE_ROOT/bin:$PATH" \
-      UTTERINK_FIXTURE_ROOT="$CASE_ROOT" \
-      UTTERINK_SWIFT_LOG="$SWIFT_LOG" \
-      UTTERINK_GIT_LOG="$GIT_LOG" \
-      UTTERINK_BAD_GIT_CHECKOUT="$BAD_GIT_CHECKOUT" \
-      UTTERINK_SWIFT_MUTATE_LOCK="$SWIFT_MUTATE_LOCK" \
-      ./Scripts/collect-third-party-notices.sh --check
+    env "${environment[@]}" ./Scripts/collect-third-party-notices.sh --check
   )
 }
 
@@ -768,6 +794,16 @@ assert_one_offline_resolve() {
   [[ "$count" == 1 ]] || fail "collector invoked swift $count times; expected exactly once"
   grep -Fx 'package resolve --package-path Packages/UtterInkKit' "$SWIFT_LOG" >/dev/null \
     || fail 'collector did not use the exact offline-resolved command contract'
+}
+
+assert_one_external_offline_resolve() {
+  local scratch_path="$1"
+  local count
+  count="$(wc -l < "$SWIFT_LOG" | tr -d '[:space:]')"
+  [[ "$count" == 1 ]] || fail "collector invoked swift $count times; expected exactly once"
+  grep -Fx "package resolve --package-path Packages/UtterInkKit --scratch-path $scratch_path" \
+    "$SWIFT_LOG" >/dev/null \
+    || fail 'collector did not pass the external scratch path to offline resolve'
 }
 
 assert_zero_offline_resolves() {
@@ -945,6 +981,60 @@ valid_after="$(checked_fingerprint)"
 [[ "$valid_before" == "$valid_after" ]] || fail '--check modified a checked input'
 assert_one_offline_resolve
 assert_nine_git_heads
+
+# An explicit scratch path must keep both SwiftPM resolution and legal checkout
+# inspection outside the repository. The spy creates checkouts only under the
+# supplied path, so a passing audit proves that the collector read that root.
+new_case external-notice-scratch
+NOTICE_SCRATCH_PATH="$TMP/external-notice-scratch-$CASE_NUMBER"
+mkdir -p "$NOTICE_SCRATCH_PATH"
+NOTICE_SCRATCH_PATH="$(cd "$NOTICE_SCRATCH_PATH" && pwd -P)"
+external_before="$(checked_fingerprint)"
+run_check > "$CASE_ROOT/stdout" 2> "$CASE_ROOT/stderr" \
+  || { sed 's/^/  /' "$CASE_ROOT/stderr" >&2; fail 'external scratch fixture was rejected'; }
+external_after="$(checked_fingerprint)"
+[[ "$external_before" == "$external_after" ]] \
+  || fail 'external scratch check modified a checked input'
+assert_one_external_offline_resolve "$NOTICE_SCRATCH_PATH"
+assert_nine_git_heads
+[[ -d "$NOTICE_SCRATCH_PATH/checkouts" ]] \
+  || fail 'external scratch spy did not materialize legal checkouts'
+[[ ! -e "$CASE_ROOT/Packages/UtterInkKit/.build" ]] \
+  && [[ ! -L "$CASE_ROOT/Packages/UtterInkKit/.build" ]] \
+  || fail 'external scratch check created a repository-local .build path'
+
+# Reject unsafe scratch overrides before SwiftPM can run. These cases pin the
+# boundary that CI relies on: absolute, repository-external, non-symlinked, and
+# free of explicit parent traversal.
+new_case relative-notice-scratch
+NOTICE_SCRATCH_PATH='relative-notice-scratch'
+expect_preflight_rejected 'relative notice scratch path'
+grep -Fx 'third-party notice check failed: UTTERINK_NOTICE_SCRATCH_PATH must be absolute' \
+  "$CASE_ROOT/stderr" >/dev/null \
+  || fail 'relative notice scratch path produced the wrong diagnostic'
+
+new_case repository-local-notice-scratch
+NOTICE_SCRATCH_PATH="$CASE_ROOT/.notice-scratch"
+expect_preflight_rejected 'repository-local notice scratch path'
+grep -Fx 'third-party notice check failed: UTTERINK_NOTICE_SCRATCH_PATH must be outside the repository' \
+  "$CASE_ROOT/stderr" >/dev/null \
+  || fail 'repository-local notice scratch path produced the wrong diagnostic'
+
+new_case parent-traversal-notice-scratch
+NOTICE_SCRATCH_PATH="$TMP/scratch-parent/../scratch-child"
+expect_preflight_rejected 'parent-traversal notice scratch path'
+grep -Fx 'third-party notice check failed: UTTERINK_NOTICE_SCRATCH_PATH must not contain a parent traversal' \
+  "$CASE_ROOT/stderr" >/dev/null \
+  || fail 'parent-traversal notice scratch path produced the wrong diagnostic'
+
+new_case symlinked-notice-scratch
+mkdir -p "$TMP/real-notice-scratch-$CASE_NUMBER"
+NOTICE_SCRATCH_PATH="$TMP/symlinked-notice-scratch-$CASE_NUMBER"
+ln -s "$TMP/real-notice-scratch-$CASE_NUMBER" "$NOTICE_SCRATCH_PATH"
+expect_preflight_rejected 'symlinked notice scratch path'
+grep -Fx 'third-party notice check failed: UTTERINK_NOTICE_SCRATCH_PATH must not be a symlink' \
+  "$CASE_ROOT/stderr" >/dev/null \
+  || fail 'symlinked notice scratch path produced the wrong diagnostic'
 
 new_case resolve-rewrites-authoritative-lock
 SWIFT_MUTATE_LOCK='append-space'

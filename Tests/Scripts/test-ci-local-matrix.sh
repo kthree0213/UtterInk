@@ -13,7 +13,7 @@ write_local_spy() {
   printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
-    "printf '%s\\t%s\\n' 'local:$relative_path' \"\$*\" >> \"\${UTTERINK_MATRIX_LOG:?}\"" \
+    "printf '%s\\t%s\\t%s\\n' 'local:$relative_path' \"\$*\" \"\${UTTERINK_NOTICE_SCRATCH_PATH:-}\" >> \"\${UTTERINK_MATRIX_LOG:?}\"" \
     > "$repository/$relative_path"
   chmod +x "$repository/$relative_path"
 }
@@ -45,6 +45,7 @@ new_repository() {
   for relative_path in \
     Scripts/check-parity-replacement.sh \
     Scripts/check-repo-hygiene.sh \
+    Scripts/collect-third-party-notices.sh \
     Scripts/scan-public-history.sh \
     Tests/Scripts/test-generate-import-manifest.sh \
     Tests/Scripts/test-scan-public-history.sh \
@@ -87,6 +88,20 @@ assert_once() {
   fi
 }
 
+assert_twice() {
+  local log="$1"
+  local command="$2"
+  local fragment="$3"
+  local description="$4"
+  local actual
+  actual="$(matching_count "$log" "$command" "$fragment")"
+  if [[ "$actual" -ne 2 ]]; then
+    printf '%s executed %s times, expected exactly twice\n' "$description" "$actual" >&2
+    sed 's/^/  /' "$log" >&2
+    exit 1
+  fi
+}
+
 assert_zero() {
   local log="$1"
   local command="$2"
@@ -101,20 +116,108 @@ assert_zero() {
   fi
 }
 
+first_matching_line() {
+  local log="$1"
+  local command="$2"
+  local fragment="$3"
+  awk -F '\t' -v command="$command" -v fragment="$fragment" '
+    $1 == command && (fragment == "" || index($2, fragment)) { print NR; exit }
+  ' "$log"
+}
+
+assert_after() {
+  local log="$1"
+  local earlier_command="$2"
+  local earlier_fragment="$3"
+  local later_command="$4"
+  local later_fragment="$5"
+  local description="$6"
+  local earlier_line
+  local later_line
+  earlier_line="$(first_matching_line "$log" "$earlier_command" "$earlier_fragment")"
+  later_line="$(first_matching_line "$log" "$later_command" "$later_fragment")"
+  if [[ -z "$earlier_line" || -z "$later_line" || "$later_line" -le "$earlier_line" ]]; then
+    printf '%s did not execute in the required order\n' "$description" >&2
+    sed 's/^/  /' "$log" >&2
+    exit 1
+  fi
+}
+
 assert_required_gates() {
   local log="$1"
+  local notice_scratch
+  local repository="${log%/commands.log}"
   assert_zero "$log" swift 'test --package-path LegacyParity ' 'LegacyParity package tests'
   assert_once "$log" local:Tests/Scripts/test-generate-legacy-defaults-map.sh '' 'legacy defaults generator tests'
   assert_once "$log" local:Tests/Scripts/test-check-parity-replacement.sh '' 'parity replacement checker tests'
+  assert_once "$log" python3 'Tests/Scripts/test-check-public-docs.py' 'public document validator tests'
   assert_once "$log" swift 'Scripts/generate-legacy-defaults-map.swift --check ' 'legacy defaults generated-source check'
   assert_once "$log" local:Scripts/check-parity-replacement.sh '' 'parity replacement evidence checker'
   assert_once "$log" swift 'test --package-path Packages/UtterInkKit ' 'UtterInkKit package tests'
+  assert_once "$log" python3 'Scripts/check-public-docs.py' 'public document validator'
+  assert_once "$log" local:Scripts/collect-third-party-notices.sh '--check' 'third-party notice validator'
+  assert_once "$log" swift 'UtterInkIdentityExporter --check --lock Brand/identity-lock.json --asset-catalog App/Resources/Assets.xcassets' 'identity lock validator'
+  assert_twice "$log" local:Scripts/scan-public-history.sh '' 'public history scan'
   assert_once "$log" xcodebuild 'CODE_SIGNING_ALLOWED=NO test -only-testing:UtterInkAppTests' 'App unit tests'
   assert_once "$log" xcodebuild 'CODE_SIGNING_ALLOWED=NO test -only-testing:UtterInkUITests/' 'UI smoke tests'
   assert_once "$log" xcodebuild '-only-testing:UtterInkUITests/LaunchAndNavigationTests/testIdleScenarioShowsReadyStartActionAndSettingsRoutes' 'idle Settings UI smoke test'
   assert_once "$log" xcodebuild '-only-testing:UtterInkUITests/PipelineStateTests/testRecordingScenarioShowsStopAndCancelActions' 'recording UI smoke test'
   assert_once "$log" local:Tests/Scripts/test-ats-policy.sh '' 'signed ATS probe'
   assert_once "$log" local:Tests/Scripts/test-ui-testing-release-boundary.sh '' 'Release UI-test boundary'
+
+  notice_scratch="$(awk -F '\t' '
+    $1 == "local:Scripts/collect-third-party-notices.sh" { print $3 }
+  ' "$log")"
+  if [[ "$notice_scratch" != /* ]]; then
+    printf 'third-party notice validator did not receive an absolute scratch path\n' >&2
+    sed 's/^/  /' "$log" >&2
+    exit 1
+  fi
+  case "$notice_scratch" in
+    */UtterInkKit-build) ;;
+    *)
+      printf 'third-party notice validator did not receive the canonical UtterInkKit scratch path\n' >&2
+      sed 's/^/  /' "$log" >&2
+      exit 1
+      ;;
+  esac
+  case "$notice_scratch" in
+    "$repository"|"$repository"/*)
+      printf 'third-party notice validator received a repository-local scratch path\n' >&2
+      sed 's/^/  /' "$log" >&2
+      exit 1
+      ;;
+  esac
+  if ! awk -F '\t' -v scratch="$notice_scratch" '
+      $1 == "swift" && index($2, "test --package-path Packages/UtterInkKit ") \
+        && index($2, "--scratch-path " scratch) { found = 1 }
+      END { exit !found }
+    ' "$log"; then
+    printf 'third-party notice validator did not reuse the UtterInkKit scratch path\n' >&2
+    sed 's/^/  /' "$log" >&2
+    exit 1
+  fi
+
+  assert_after \
+    "$log" \
+    xcodebuild '-resolvePackageDependencies' \
+    python3 'Scripts/check-package-resolution.py' \
+    'package lock validation after Xcode package resolution'
+  assert_after \
+    "$log" \
+    python3 'Scripts/check-package-resolution.py' \
+    python3 'Scripts/check-public-docs.py' \
+    'public document validation after package lock validation'
+  assert_after \
+    "$log" \
+    python3 'Scripts/check-package-resolution.py' \
+    local:Scripts/collect-third-party-notices.sh '--check' \
+    'third-party notice validation after package lock validation'
+  assert_after \
+    "$log" \
+    python3 'Scripts/check-package-resolution.py' \
+    swift 'UtterInkIdentityExporter --check --lock Brand/identity-lock.json' \
+    'identity lock validation after package lock validation'
 
   if grep -F $'xcodebuild\t' "$log" \
       | grep -F -- '-only-testing:' \
