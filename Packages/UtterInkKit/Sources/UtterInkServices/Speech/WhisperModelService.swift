@@ -603,11 +603,22 @@ final class LocalWhisperTokenizer: WhisperTokenizer {
               tokenizer.decode(tokens: [whitespace]) == " " else {
             throw RealBackendError.invalidTokenizer
         }
+        let noTimestamps = try required("<|notimestamps|>")
+        let noSpeech: Int
+        if let explicitNoSpeech = tokenizer.convertTokenToId("<|nospeech|>"),
+           tokenizer.convertIdToToken(explicitNoSpeech) == "<|nospeech|>" {
+            noSpeech = explicitNoSpeech
+        } else {
+            noSpeech = noTimestamps - 1
+        }
+        guard noSpeech > end, noSpeech + 1 == noTimestamps else {
+            throw RealBackendError.invalidTokenizer
+        }
         specialTokens = try SpecialTokens(
             endToken: end,
             englishToken: required("<|en|>"),
-            noSpeechToken: required("<|nospeech|>"),
-            noTimestampsToken: required("<|notimestamps|>"),
+            noSpeechToken: noSpeech,
+            noTimestampsToken: noTimestamps,
             specialTokenBegin: end,
             startOfPreviousToken: required("<|startofprev|>"),
             startOfTranscriptToken: required("<|startoftranscript|>"),

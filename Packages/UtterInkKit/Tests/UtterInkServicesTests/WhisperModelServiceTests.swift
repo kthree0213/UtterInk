@@ -23,9 +23,21 @@ final class WhisperModelServiceTests: XCTestCase {
         let tokenizer = try LocalWhisperTokenizer(tokenizer: backing)
 
         XCTAssertEqual(tokenizer.specialTokens.whitespaceToken, 220)
+        let tokenizerWithImplicitNoSpeech = try LocalWhisperTokenizer(
+            tokenizer: LocalTokenizerBackingFake(missingToken: "<|nospeech|>")
+        )
+        XCTAssertEqual(tokenizerWithImplicitNoSpeech.specialTokens.noSpeechToken, 50_362)
         XCTAssertThrowsError(
             try LocalWhisperTokenizer(
                 tokenizer: LocalTokenizerBackingFake(missingToken: "<|translate|>")
+            )
+        )
+    }
+
+    func testLocalTokenizerRejectsExplicitNoSpeechTokenThatIsNotAdjacentToNoTimestamps() {
+        XCTAssertThrowsError(
+            try LocalWhisperTokenizer(
+                tokenizer: LocalTokenizerBackingFake(noSpeechTokenID: 50_360)
             )
         )
     }
@@ -192,10 +204,10 @@ private struct ModelServiceTestClock: AppClock {
 }
 
 private struct LocalTokenizerBackingFake: LocalWhisperTokenizerBacking {
-    private static let tokenIDs = [
+    private static let defaultTokenIDs = [
         "<|endoftext|>": 50_257,
         "<|en|>": 50_259,
-        "<|nospeech|>": 50_360,
+        "<|nospeech|>": 50_362,
         "<|notimestamps|>": 50_363,
         "<|startofprev|>": 50_361,
         "<|startoftranscript|>": 50_258,
@@ -205,9 +217,13 @@ private struct LocalTokenizerBackingFake: LocalWhisperTokenizerBacking {
     ]
 
     let missingToken: String?
+    private let tokenIDs: [String: Int]
 
-    init(missingToken: String? = nil) {
+    init(missingToken: String? = nil, noSpeechTokenID: Int = 50_362) {
         self.missingToken = missingToken
+        var tokenIDs = Self.defaultTokenIDs
+        tokenIDs["<|nospeech|>"] = noSpeechTokenID
+        self.tokenIDs = tokenIDs
     }
 
     func encode(text: String) -> [Int] {
@@ -220,13 +236,13 @@ private struct LocalTokenizerBackingFake: LocalWhisperTokenizerBacking {
 
     func convertTokenToId(_ token: String) -> Int? {
         if token == missingToken { return 50_257 }
-        if let id = Self.tokenIDs[token] { return id }
+        if let id = tokenIDs[token] { return id }
         if token.hasPrefix("<|"), token.hasSuffix("|>") { return 50_259 }
         return 50_257
     }
 
     func convertIdToToken(_ id: Int) -> String? {
-        Self.tokenIDs.first(where: { $0.value == id })?.key
+        tokenIDs.first(where: { $0.value == id })?.key
     }
 }
 
