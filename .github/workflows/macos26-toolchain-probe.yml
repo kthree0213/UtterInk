@@ -1,0 +1,24 @@
+name: macOS 26 Toolchain Probe
+
+on:
+  push:
+    branches:
+      - codex/macos26-toolchain-probe
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.app/Contents/Developer
+      UTTERINK_CI_RUNNER_LABEL: macos-26
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Probe locked toolchain and unsigned archive
+        run: /bin/bash Scripts/release/probe-macos26-toolchain.sh
