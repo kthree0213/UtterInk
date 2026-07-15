@@ -1157,11 +1157,15 @@ PACKAGE_HASH_AFTER="$($SHASUM -a 256 "$PACKAGE_RESOLUTION" | /usr/bin/awk 'NR ==
   fail package-resolution-mismatch 31
 [[ "$PACKAGE_HASH_AFTER" == "$PACKAGE_HASH_BEFORE" ]] || fail package-resolution-mismatch 31
 
+BUILD_USER="$(/usr/bin/id -un 2>/dev/null)" || fail generated-project-mismatch 32
+[[ "$BUILD_USER" =~ ^[A-Za-z0-9._-]+$ ]] || fail generated-project-mismatch 32
+readonly BUILD_USER
 if [[ "$TEST_MODE" -eq 1 ]]; then
   (
     cd "$EXACT_SOURCE"
     /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C \
       HOME="$EXACT_RELEASE_WORK/home" TMPDIR="$EXACT_RELEASE_WORK/tmp" \
+      USER="$BUILD_USER" LOGNAME="$BUILD_USER" \
       UTTERINK_FIXTURE_LOG="$UTTERINK_FIXTURE_LOG" \
       "$VERIFIED_XCODEGEN" generate
   ) > "$TRANSIENT/xcodegen-output" 2> "$TRANSIENT/xcodegen-error" || fail generated-project-mismatch 32
@@ -1170,6 +1174,7 @@ else
     cd "$EXACT_SOURCE"
     /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C \
       HOME="$EXACT_RELEASE_WORK/home" TMPDIR="$EXACT_RELEASE_WORK/tmp" \
+      USER="$BUILD_USER" LOGNAME="$BUILD_USER" \
       "$VERIFIED_XCODEGEN" generate
   ) > "$TRANSIENT/xcodegen-output" 2> "$TRANSIENT/xcodegen-error" || fail generated-project-mismatch 32
 fi
@@ -1305,6 +1310,7 @@ if ! (
     -onlyUsePackageVersionsFromResolvedFile \
     ARCHS=arm64 \
     ONLY_ACTIVE_ARCH=NO \
+    OTHER_LDFLAGS=-Wl,-no_adhoc_codesign \
     CODE_SIGNING_ALLOWED=NO \
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_IDENTITY= \

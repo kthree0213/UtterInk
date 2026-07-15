@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "runnerImage": {
+    "label": "macos-26",
+    "releaseTag": "macos-26-arm64/20260630.0213",
+    "commit": "afadebc447d1a69fc726b50cd5aba055c0cfdf82",
+    "imageVersion": "20260630.0213.1",
+    "osVersion": "26.4",
+    "osBuild": "25E246",
+    "architecture": "arm64"
+  },
+  "xcode": {
+    "version": "26.4.1",
+    "build": "17E202",
+    "developerDir": "/Applications/Xcode_26.4.app/Contents/Developer"
+  },
+  "sdk": {
+    "version": "26.4",
+    "build": "25E251"
+  },
+  "swift": {
+    "version": "Apple Swift version 6.3.1 (swiftlang-6.3.1.1.2 clang-2100.0.123.102)"
+  },
+  "xcodegen": {
+    "version": "2.45.4",
+    "sourceCommit": "8d3d3476a69ae3e5d68e1adccc701c410c05eb36",
+    "archiveURL": "https://github.com/yonaskolb/XcodeGen/archive/8d3d3476a69ae3e5d68e1adccc701c410c05eb36.tar.gz",
+    "archiveSHA256": "afe64a4e9b14a91a113ae7bd2c156666ee9be51dfa84c9a6e89c89797e5d871c",
+    "binarySHA256": "74e644c6e2e727dab5f1db1d0828cccbc28fa3de77dd8b4736d1f0e18eec71fc"
+  },
+  "sources": {
+    "runnerRelease": "https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260630.0213",
+    "runnerReadme": "https://github.com/actions/runner-images/blob/afadebc447d1a69fc726b50cd5aba055c0cfdf82/images/macos/macos-26-arm64-Readme.md",
+    "xcodegenRelease": "https://github.com/yonaskolb/XcodeGen/releases/tag/2.45.4",
+    "xcodegenCommit": "https://github.com/yonaskolb/XcodeGen/commit/8d3d3476a69ae3e5d68e1adccc701c410c05eb36"
+  }
+}

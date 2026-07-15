@@ -47,5 +47,18 @@
     "LSUIElement": true,
     "NSMicrophoneUsageDescription": "UtterInk uses the microphone to transcribe speech locally on this Mac."
   },
-  "archiveGeneratedKeyAllowlist": []
+  "archiveGeneratedKeyAllowlist": [
+    "BuildMachineOSBuild",
+    "CFBundleIconFile",
+    "CFBundleIconName",
+    "CFBundleSupportedPlatforms",
+    "DTCompiler",
+    "DTPlatformBuild",
+    "DTPlatformName",
+    "DTPlatformVersion",
+    "DTSDKBuild",
+    "DTSDKName",
+    "DTXcode",
+    "DTXcodeBuild"
+  ]
 }

@@ -242,6 +242,8 @@ case "${1-}" in
   --version) printf 'Version: 2.45.4\n' ;;
   generate)
     [[ "$PWD" == */.release-work/.build-candidate.*/.transient/exact-source ]]
+    [[ -n "${USER:-}" && "${LOGNAME:-}" == "$USER" ]]
+    printf 'xcodegen-user\t%s\n' "$USER" >> "${UTTERINK_FIXTURE_LOG:?}"
     if [[ -f "${UTTERINK_FIXTURE_LOG:?}.mutate-project" ]]; then
       printf '// generator drift\n' >> UtterInk.xcodeproj/project.pbxproj
     fi
@@ -708,9 +710,11 @@ for expected in \
   $'xcodebuild\t-resolvePackageDependencies' \
   $'xcodebuild\t-project\tUtterInk.xcodeproj\t-scheme\tUtterInk\t-configuration\tRelease\t-showBuildSettings' \
   $'xcodebuild\tarchive\t-project\tUtterInk.xcodeproj\t-scheme\tUtterInk\t-configuration\tRelease\t-destination\tgeneric/platform=macOS' \
-  $'ARCHS=arm64\tONLY_ACTIVE_ARCH=NO\tCODE_SIGNING_ALLOWED=NO\tCODE_SIGNING_REQUIRED=NO\tCODE_SIGN_IDENTITY=\tDEVELOPMENT_TEAM=\tPROVISIONING_PROFILE_SPECIFIER='; do
+  $'ARCHS=arm64\tONLY_ACTIVE_ARCH=NO\tOTHER_LDFLAGS=-Wl,-no_adhoc_codesign\tCODE_SIGNING_ALLOWED=NO\tCODE_SIGNING_REQUIRED=NO\tCODE_SIGN_IDENTITY=\tDEVELOPMENT_TEAM=\tPROVISIONING_PROFILE_SPECIFIER='; do
   /usr/bin/grep -Fq "$expected" "$FIXTURE_LOG" || fail "baseline skipped or changed required command: $expected"
 done
+/usr/bin/grep -Eq '^xcodegen-user\t[A-Za-z0-9._-]+$' "$FIXTURE_LOG" ||
+  fail 'XcodeGen did not receive a sanitized system username'
 if /usr/bin/grep -q $'verify-arg\t--expected-origin' "$FIXTURE_LOG"; then
   fail 'originless build forwarded an implicit origin'
 fi

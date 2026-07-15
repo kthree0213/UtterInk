@@ -23,32 +23,31 @@ text, tag, and filename agree.
 
 ## Current toolchain-lock status
 
-The planned CI and release lock is the official `macos-26` arm64 runner with
-Xcode `26.4.1` build `17E202`, macOS SDK `26.4`, and XcodeGen `2.45.4` built
-from an immutable reviewed source revision.
+The reviewed CI and release lock is the official `macos-26` arm64 runner image
+`20260630.0213.1` with macOS `26.4` build `25E246`, Xcode `26.4.1` build
+`17E202`, macOS SDK `26.4` build `25E251`, Apple Swift `6.3.1`, and XcodeGen
+`2.45.4` built from an immutable reviewed source revision. The complete values,
+hashes, and source references are committed in `Config/ci-toolchain.json`.
 
-That lock is not yet complete. The current development Mac reports Xcode
-`26.4` build `17E192`, which is not the planned Xcode `26.4.1` build `17E202`
-tuple and therefore is not acceptable release-candidate evidence. The exact
-CI-observed SDK build, full Swift version, and XcodeGen built-binary SHA-256
-still require a probe on the approved runner. Until those values and their
-official sources are reviewed and committed in `Config/ci-toolchain.json`, no
-document, local result, or CI result may claim that the release toolchain lock
-has passed.
+A temporary read-only GitHub Actions probe captured those values on the locked
+runner without repository secrets, signing, notarization, artifact upload, or
+publication. The same probe built a clean unsigned `Release` archive using
+`-no_adhoc_codesign`, recorded the exact processed `Info.plist` generated-key
+set, and confirmed that the app has no nested signable code components. Its
+three Swift package `.bundle` directories contain resources rather than
+executables and therefore are not nested signing targets.
 
-That probe must also build a clean `Release` archive and capture the exact
-processed `Info.plist` generated fields and the nested code-component
-inventory. The current empty generated-key and nested-component allowlists are
-fail-closed placeholders: source policy checks pass, but archived/signed policy
-verification is not complete until the locked archive proves the exact fields,
-values, and component set. A Debug test-host product is not acceptable evidence
-for either inventory.
+The current development Mac reports Xcode `26.4` build `17E192`, which does not
+match the locked Xcode `26.4.1` build `17E202` tuple. It can run ordinary local
+development checks, but it cannot supply accepted locked-toolchain candidate
+evidence. Candidate evidence must be produced on an environment that matches
+every committed lock value.
 
 Toolchain drift fails closed. A rolling runner-image update, dependency update,
 Action update, Xcode update, SDK update, Swift update, or XcodeGen update
 requires a dedicated reviewed lock change and fresh evidence.
 
-The reviewed immutable source identities for the pending lock are:
+The reviewed immutable source identities for the lock are:
 
 - GitHub's official [`macos-26-arm64/20260630.0213` runner release](https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260630.0213)
   and its [commit-pinned software inventory](https://github.com/actions/runner-images/blob/afadebc447d1a69fc726b50cd5aba055c0cfdf82/images/macos/macos-26-arm64-Readme.md);
@@ -59,11 +58,10 @@ The reviewed immutable source identities for the pending lock are:
 - `actions/checkout` at reviewed commit
   [`de0fac2e4500dabe0009e67214ff5f5447ce83dd`](https://github.com/actions/checkout/commit/de0fac2e4500dabe0009e67214ff5f5447ce83dd).
 
-Those references prove source identity only. They do not replace the missing
-runner-observed SDK build, complete Swift version, source-built XcodeGen binary
-hash, or Release archive inventory. Until those facts are committed, the
-bootstrap, toolchain verification, CI mode, and candidate path must stop rather
-than fall back to Homebrew, an ordinary `PATH` executable, or guessed values.
+Those references and the runner-observed values are both required. Bootstrap,
+toolchain verification, CI mode, and the candidate path stop on any mismatch
+rather than fall back to Homebrew, an ordinary `PATH` executable, or guessed
+values.
 
 The pull-request workflow is source verification only. It has read-only
 repository permission, checks out full history without persisted credentials,
@@ -93,9 +91,9 @@ build or unsigned packaging smoke test is verification only: it is not a
 distributable release, is not uploaded by default, and must never be reused as
 a signed candidate.
 
-After the reviewed toolchain lock is complete, the unsigned packaging smoke
-path is invoked from one exact clean commit as follows. This first form is only
-for a repository that has no Git remote:
+With the reviewed toolchain lock committed, the unsigned packaging smoke path
+is invoked from one exact clean commit as follows. This first form is only for
+a repository that has no Git remote:
 
 ```bash
 ./Scripts/bootstrap-xcodegen.sh
@@ -114,17 +112,16 @@ canonical URL explicitly; do not derive the expected value from the repository
 configuration that it is meant to check:
 
 ```bash
-# Replace only after Gate 1 approval.
-EXPECTED_ORIGIN='https://github.com/OWNER/UtterInk.git'
+EXPECTED_ORIGIN='https://github.com/kthree0213/UtterInk.git'
 ./Scripts/package-unsigned-smoke.sh \
   --commit "$(git rev-parse HEAD)" \
   --output dist/unsigned-smoke \
   --expected-origin "$EXPECTED_ORIGIN"
 ```
 
-Until Gate 1 approves a real owner, repository, and private first push, the
-placeholder above is documentation only and must not be treated as an approved
-remote.
+Gate 1 approved the private `kthree0213/UtterInk` repository and its first push.
+This origin value does not authorize a visibility change, tag, Release, or
+asset publication.
 
 When repository origin scope is known locally, supply it explicitly with
 `--expected-origin` to the package command. For the local packaging mode of
@@ -141,10 +138,9 @@ symlink. Inspection is read-only and rejects unexpected files, metadata,
 architectures, links, signatures, or additional mounted volumes. After exact
 candidate verification, archive creation, DMG creation, and inspection run
 from an isolated local clone detached at that commit; only the inspected bytes
-are atomically linked into the requested output directory. While
-`Config/ci-toolchain.json` remains incomplete, the real commands above stop
-before producing a package; the offline fake-tool tests do not waive that
-lock.
+are atomically linked into the requested output directory. The real commands
+stop before producing a package if any committed toolchain value is absent or
+mismatched; the offline fake-tool tests do not waive that lock.
 
 ## Release-candidate evidence
 
@@ -266,11 +262,11 @@ maintainer-supplied parameters; no concrete value belongs in committed
 configuration, documentation, or committed evidence. All generated candidate
 and signing evidence remains local and uncommitted under `.release-work`.
 
-The real pipeline currently fails closed because `Config/ci-toolchain.json`
-does not yet contain the complete reviewed lock. The automated tests use only
-fake tools and fixture identities; they never select, inspect, or use a real
-certificate. These commands do not notarize, upload, staple, or publish any
-artifact.
+The reviewed lock is complete, but this development Mac does not match it and
+therefore fails closed before creating release-candidate evidence. The
+automated tests use only fake tools and fixture identities; they never select,
+inspect, or use a real certificate. These commands do not notarize, upload,
+staple, or publish any artifact.
 
 ### One-use notarization approval gate
 

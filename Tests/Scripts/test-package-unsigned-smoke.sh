@@ -497,6 +497,7 @@ for required_argument in \
   $'\t-configuration\tRelease' \
   $'\t-destination\tgeneric/platform=macOS' \
   $'\tARCHS=arm64' \
+  $'\tOTHER_LDFLAGS=-Wl,-no_adhoc_codesign' \
   $'\tCODE_SIGNING_ALLOWED=NO' \
   $'\tCODE_SIGNING_REQUIRED=NO' \
   $'\tCODE_SIGN_IDENTITY='; do

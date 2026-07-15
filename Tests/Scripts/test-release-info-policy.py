@@ -52,6 +52,20 @@ EXPECTED_ARCHIVED_APP_FIELDS = {
     "CFBundleVersion": "1",
     "LSMinimumSystemVersion": "14.0",
 }
+EXPECTED_ARCHIVE_GENERATED_KEYS = [
+    "BuildMachineOSBuild",
+    "CFBundleIconFile",
+    "CFBundleIconName",
+    "CFBundleSupportedPlatforms",
+    "DTCompiler",
+    "DTPlatformBuild",
+    "DTPlatformName",
+    "DTPlatformVersion",
+    "DTSDKBuild",
+    "DTSDKName",
+    "DTXcode",
+    "DTXcodeBuild",
+]
 
 
 def fail(reason: str) -> None:
@@ -180,7 +194,7 @@ expected_policy = {
     "sourceAppOwnedFields": EXPECTED_SOURCE_APP_FIELDS,
     "sourceProbeOwnedFields": EXPECTED_SOURCE_PROBE_FIELDS,
     "archivedAppOwnedFields": EXPECTED_ARCHIVED_APP_FIELDS,
-    "archiveGeneratedKeyAllowlist": [],
+    "archiveGeneratedKeyAllowlist": EXPECTED_ARCHIVE_GENERATED_KEYS,
 }
 if production_policy != expected_policy:
     fail("production policy does not lock the reviewed absent ATS evidence")
@@ -269,6 +283,9 @@ with tempfile.TemporaryDirectory(prefix="utterink-release-info-policy-tests-") a
     expect_failure(probe_widening, "ats-policy")
 
     extra_archive_field = make_fixture(fixtures, "extra-archive-field")
+    policy = read_policy(extra_archive_field)
+    policy["archiveGeneratedKeyAllowlist"] = []
+    write_policy(extra_archive_field, policy)
     archive = make_archive(extra_archive_field)
     value = read_plist(archive)
     value["BuildMachineOSBuild"] = "fixture"
