@@ -13,7 +13,7 @@ write_local_spy() {
   printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
-    "printf '%s\\t%s\\t%s\\n' 'local:$relative_path' \"\$*\" \"\${UTTERINK_NOTICE_SCRATCH_PATH:-}\" >> \"\${UTTERINK_MATRIX_LOG:?}\"" \
+    "printf '%s\\t%s\\t%s\\t%s\\n' 'local:$relative_path' \"\$*\" \"\${UTTERINK_NOTICE_SCRATCH_PATH:-}\" \"\${UTTERINK_XCODEGEN:-}\" >> \"\${UTTERINK_MATRIX_LOG:?}\"" \
     > "$repository/$relative_path"
   chmod +x "$repository/$relative_path"
 }
@@ -173,6 +173,10 @@ assert_required_gates() {
   local log="$1"
   local notice_scratch
   local repository="${log%/commands.log}"
+  local expected_ats_xcodegen=xcodegen
+  if [[ -x "$repository/Tools/bin/xcodegen" ]]; then
+    expected_ats_xcodegen="$(cd "$repository" && pwd)/Tools/bin/xcodegen"
+  fi
   assert_zero "$log" swift 'test --package-path LegacyParity ' 'LegacyParity package tests'
   assert_once "$log" local:Tests/Scripts/test-generate-legacy-defaults-map.sh '' 'legacy defaults generator tests'
   assert_once "$log" local:Tests/Scripts/test-check-parity-replacement.sh '' 'parity replacement checker tests'
@@ -213,6 +217,14 @@ assert_required_gates() {
   assert_once "$log" xcodebuild '-only-testing:UtterInkUITests/LaunchAndNavigationTests/testIdleScenarioShowsReadyStartActionAndSettingsRoutes' 'idle Settings UI smoke test'
   assert_once "$log" xcodebuild '-only-testing:UtterInkUITests/PipelineStateTests/testRecordingScenarioShowsStopAndCancelActions' 'recording UI smoke test'
   assert_once "$log" local:Tests/Scripts/test-ats-policy.sh '' 'signed ATS probe'
+  if ! awk -F '\t' -v expected="$expected_ats_xcodegen" '
+      $1 == "local:Tests/Scripts/test-ats-policy.sh" && $4 == expected { found = 1 }
+      END { exit !found }
+    ' "$log"; then
+    printf 'signed ATS probe did not receive the selected XcodeGen executable\n' >&2
+    sed 's/^/  /' "$log" >&2
+    exit 1
+  fi
   assert_once "$log" local:Tests/Scripts/test-ui-testing-release-boundary.sh '' 'Release UI-test boundary'
 
   assert_after \

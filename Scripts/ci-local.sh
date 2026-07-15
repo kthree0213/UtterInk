@@ -264,6 +264,7 @@ xcodebuild \
   -only-testing:UtterInkUITests/LaunchAndNavigationTests/testIdleScenarioShowsReadyStartActionAndSettingsRoutes \
   -only-testing:UtterInkUITests/PipelineStateTests/testRecordingScenarioShowsStopAndCancelActions
 
+UTTERINK_XCODEGEN="$XCODEGEN" \
 UTTERINK_CLONED_SOURCE_PACKAGES_DIR="$TMP/SourcePackages" \
   bash Tests/Scripts/test-ats-policy.sh
 

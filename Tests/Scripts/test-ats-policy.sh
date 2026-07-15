@@ -69,10 +69,11 @@ if [[ "$SOURCE_PACKAGES" == "$ROOT" || "$SOURCE_PACKAGES" == "$ROOT"/* ]]; then
 fi
 
 PORT_FILE="$TMP/fixture-port"
-python3 - "$PORT_FILE" >"$TMP/fixture.stdout" 2>"$TMP/fixture.stderr" <<'PY' &
+/usr/bin/python3 -I -u - "$PORT_FILE" >"$TMP/fixture.stdout" 2>"$TMP/fixture.stderr" <<'PY' &
 import http.server
 import json
 import pathlib
+import socketserver
 import sys
 
 
@@ -99,27 +100,65 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return
 
 
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-pathlib.Path(sys.argv[1]).write_text(str(server.server_port), encoding="ascii")
+class LoopbackHTTPServer(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer.server_bind performs a reverse-DNS lookup after binding.
+        # A hosted runner can block there indefinitely even though the process
+        # is alive, so this loopback-only fixture deliberately skips it.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = self.server_address[1]
+
+
+server = LoopbackHTTPServer(("127.0.0.1", 0), Handler)
+port_path = pathlib.Path(sys.argv[1])
+pending_path = port_path.with_name(f"{port_path.name}.pending")
+pending_path.write_text(str(server.server_port), encoding="ascii")
+pending_path.replace(port_path)
 server.serve_forever()
 PY
 FIXTURE_PID=$!
+
+report_fixture_stderr() {
+  if [[ -s "$TMP/fixture.stderr" ]]; then
+    printf 'ATS fixture stderr (first 40 lines):\n' >&2
+    /usr/bin/sed -n '1,40p' "$TMP/fixture.stderr" >&2
+  fi
+}
 
 for _ in {1..200}; do
   [[ -s "$PORT_FILE" ]] && break
   if ! kill -0 "$FIXTURE_PID" 2>/dev/null; then
     printf 'ATS fixture failed to start\n' >&2
+    report_fixture_stderr
     exit 1
   fi
   sleep 0.05
 done
 if [[ ! -s "$PORT_FILE" ]]; then
   printf 'ATS fixture did not publish a port\n' >&2
+  report_fixture_stderr
   exit 1
 fi
 PORT="$(<"$PORT_FILE")"
+if [[ ! "$PORT" =~ ^[0-9]{1,5}$ ]] \
+  || (( 10#$PORT < 1 || 10#$PORT > 65535 )); then
+  printf 'ATS fixture published an invalid port\n' >&2
+  report_fixture_stderr
+  exit 1
+fi
 
-xcodegen generate
+XCODEGEN="${UTTERINK_XCODEGEN:-xcodegen}"
+if [[ -n "${UTTERINK_XCODEGEN:-}" ]] \
+  && { [[ "$XCODEGEN" != /* ]] \
+    || [[ ! -f "$XCODEGEN" ]] \
+    || [[ ! -x "$XCODEGEN" ]] \
+    || [[ -L "$XCODEGEN" ]]; }; then
+  printf 'explicit ATS XcodeGen must be an absolute regular executable\n' >&2
+  exit 1
+fi
+
+"$XCODEGEN" generate
 xcodebuild \
   -project UtterInk.xcodeproj \
   -scheme ATSPolicyProbe \
@@ -218,6 +257,12 @@ for key in \
     exit 1
   fi
 done
+
+if ! kill -0 "$FIXTURE_PID" 2>/dev/null; then
+  printf 'ATS fixture exited before the loopback probe\n' >&2
+  report_fixture_stderr
+  exit 1
+fi
 
 printf 'ATS_LOOPBACK_PASS\n' >"$TMP/expected.stdout"
 set +e
