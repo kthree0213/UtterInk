@@ -4,9 +4,36 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-if [[ "$#" -ne 0 ]]; then
-  printf 'unknown ci-local argument: %s\n' "$1" >&2
-  exit 64
+CI_MODE=0
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --ci)
+      if [[ "$CI_MODE" -eq 1 ]]; then
+        printf 'duplicate ci-local argument: --ci\n' >&2
+        exit 64
+      fi
+      CI_MODE=1
+      ;;
+    *)
+      printf 'unknown ci-local argument: %s\n' "$1" >&2
+      exit 64
+      ;;
+  esac
+  shift
+done
+
+XCODEGEN=xcodegen
+if [[ "$CI_MODE" -eq 1 ]]; then
+  XCODEGEN="$ROOT/Tools/bin/xcodegen"
+  if [[ ! -f "$XCODEGEN" || ! -x "$XCODEGEN" || -L "$XCODEGEN" ]]; then
+    printf 'locked XcodeGen is unavailable; run ./Scripts/bootstrap-xcodegen.sh first\n' >&2
+    exit 65
+  fi
+  if [[ ! -f "$ROOT/Scripts/verify-toolchain.sh" || ! -x "$ROOT/Scripts/verify-toolchain.sh" || -L "$ROOT/Scripts/verify-toolchain.sh" ]]; then
+    printf 'toolchain verifier is unavailable\n' >&2
+    exit 65
+  fi
+  "$ROOT/Scripts/verify-toolchain.sh" --context ci
 fi
 
 if [[ -e LegacyParity || -L LegacyParity ]]; then
@@ -114,9 +141,13 @@ python3 Tests/Scripts/test-release-metadata.py
 python3 Tests/Scripts/test-release-entitlements.py
 python3 Tests/Scripts/test-release-info-policy.py
 bash Tests/Scripts/test-verify-candidate.sh
+python3 Tests/Scripts/test-verify-workflow.py
+bash Tests/Scripts/test-bootstrap-xcodegen.sh
+bash Tests/Scripts/test-clean-distribution-output.sh
 python3 Scripts/release/read-metadata.py --json
 python3 Scripts/release/verify-entitlements.py
 python3 Scripts/release/verify-info-policy.py
+python3 Scripts/verify-workflow.py
 swift Scripts/generate-legacy-defaults-map.swift \
   --check \
   --input docs/provenance/legacy-defaults-map.tsv \
@@ -129,7 +160,7 @@ swift test \
   --disable-sandbox \
   --force-resolved-versions
 
-xcodegen generate
+"$XCODEGEN" generate
 xcodebuild \
   -project UtterInk.xcodeproj \
   -scheme UtterInk \

@@ -47,6 +47,7 @@ new_repository() {
     Scripts/check-repo-hygiene.sh \
     Scripts/collect-third-party-notices.sh \
     Scripts/scan-public-history.sh \
+    Scripts/verify-toolchain.sh \
     Tests/Scripts/test-generate-import-manifest.sh \
     Tests/Scripts/test-scan-public-history.sh \
     Tests/Scripts/test-import-legacy-parity.sh \
@@ -54,6 +55,8 @@ new_repository() {
     Tests/Scripts/test-generate-legacy-defaults-map.sh \
     Tests/Scripts/test-check-parity-replacement.sh \
     Tests/Scripts/test-verify-candidate.sh \
+    Tests/Scripts/test-bootstrap-xcodegen.sh \
+    Tests/Scripts/test-clean-distribution-output.sh \
     Tests/Scripts/test-ats-policy.sh \
     Tests/Scripts/test-ui-testing-release-boundary.sh; do
     write_local_spy "$repository" "$relative_path"
@@ -156,9 +159,13 @@ assert_required_gates() {
   assert_once "$log" python3 'Tests/Scripts/test-release-entitlements.py' 'release entitlement tests'
   assert_once "$log" python3 'Tests/Scripts/test-release-info-policy.py' 'release Info policy tests'
   assert_once "$log" local:Tests/Scripts/test-verify-candidate.sh '' 'release candidate verifier tests'
+  assert_once "$log" python3 'Tests/Scripts/test-verify-workflow.py' 'workflow policy tests'
+  assert_once "$log" local:Tests/Scripts/test-bootstrap-xcodegen.sh '' 'locked XcodeGen bootstrap tests'
+  assert_once "$log" local:Tests/Scripts/test-clean-distribution-output.sh '' 'distribution cleanup tests'
   assert_once "$log" python3 'Scripts/release/read-metadata.py --json' 'release metadata validator'
   assert_once "$log" python3 'Scripts/release/verify-entitlements.py' 'release entitlement validator'
   assert_once "$log" python3 'Scripts/release/verify-info-policy.py' 'release Info policy validator'
+  assert_once "$log" python3 'Scripts/verify-workflow.py' 'workflow policy validator'
   assert_once "$log" swift 'Scripts/generate-legacy-defaults-map.swift --check ' 'legacy defaults generated-source check'
   assert_once "$log" local:Scripts/check-parity-replacement.sh '' 'parity replacement evidence checker'
   assert_once "$log" swift 'test --package-path Packages/UtterInkKit ' 'UtterInkKit package tests'
@@ -275,6 +282,70 @@ github_repository="$(run_case github-origin GITHUB_SERVER_URL=https://github.exa
 github_log="$github_repository/commands.log"
 if [[ "$(matching_count "$github_log" local:Scripts/scan-public-history.sh '--expected-origin https://github.example/owner/repo.git')" -ne 2 ]]; then
   printf 'GitHub origin was not propagated to both history scans\n' >&2
+  exit 1
+fi
+
+ci_repository="$(new_repository ci-mode)"
+ci_log="$ci_repository/commands.log"
+: > "$ci_log"
+write_local_spy "$ci_repository" Tools/bin/xcodegen
+(
+  cd "$ci_repository"
+  PATH="$ci_repository/bin:/usr/bin:/bin" \
+  UTTERINK_MATRIX_LOG="$ci_log" \
+    ./Scripts/ci-local.sh --ci \
+    >"$ci_repository/ci.stdout" \
+    2>"$ci_repository/ci.stderr"
+)
+assert_required_gates "$ci_log"
+assert_once "$ci_log" local:Scripts/verify-toolchain.sh '--context ci' 'locked CI toolchain verification'
+assert_once "$ci_log" local:Tools/bin/xcodegen 'generate' 'repository-local XcodeGen'
+assert_zero "$ci_log" xcodegen '' 'ordinary PATH XcodeGen in CI mode'
+
+missing_locked_repository="$(new_repository ci-mode-missing-locked-xcodegen)"
+missing_locked_log="$missing_locked_repository/commands.log"
+: > "$missing_locked_log"
+if (
+  cd "$missing_locked_repository"
+  PATH="$missing_locked_repository/bin:/usr/bin:/bin" \
+  UTTERINK_MATRIX_LOG="$missing_locked_log" \
+    ./Scripts/ci-local.sh --ci \
+    >"$missing_locked_repository/ci.stdout" \
+    2>"$missing_locked_repository/ci.stderr"
+); then
+  printf 'CI mode accepted a missing locked XcodeGen binary\n' >&2
+  exit 1
+fi
+if [[ -s "$missing_locked_log" ]]; then
+  printf 'CI mode consulted commands before rejecting missing locked XcodeGen\n' >&2
+  exit 1
+fi
+if ! grep -F 'locked XcodeGen is unavailable; run ./Scripts/bootstrap-xcodegen.sh first' \
+    "$missing_locked_repository/ci.stderr" >/dev/null; then
+  printf 'missing locked XcodeGen failure did not explain bootstrap recovery\n' >&2
+  exit 1
+fi
+
+duplicate_repository="$(new_repository duplicate-ci-argument)"
+duplicate_log="$duplicate_repository/commands.log"
+: > "$duplicate_log"
+if (
+  cd "$duplicate_repository"
+  PATH="$duplicate_repository/bin:/usr/bin:/bin" \
+  UTTERINK_MATRIX_LOG="$duplicate_log" \
+    ./Scripts/ci-local.sh --ci --ci \
+    >"$duplicate_repository/ci.stdout" \
+    2>"$duplicate_repository/ci.stderr"
+); then
+  printf 'duplicate ci-local argument was accepted\n' >&2
+  exit 1
+fi
+if [[ -s "$duplicate_log" ]]; then
+  printf 'duplicate CI argument executed commands before failing\n' >&2
+  exit 1
+fi
+if ! grep -F 'duplicate ci-local argument: --ci' "$duplicate_repository/ci.stderr" >/dev/null; then
+  printf 'duplicate CI argument failure did not explain the rejected argument\n' >&2
   exit 1
 fi
 

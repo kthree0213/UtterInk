@@ -48,6 +48,31 @@ Toolchain drift fails closed. A rolling runner-image update, dependency update,
 Action update, Xcode update, SDK update, Swift update, or XcodeGen update
 requires a dedicated reviewed lock change and fresh evidence.
 
+The reviewed immutable source identities for the pending lock are:
+
+- GitHub's official [`macos-26-arm64/20260630.0213` runner release](https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260630.0213)
+  and its [commit-pinned software inventory](https://github.com/actions/runner-images/blob/afadebc447d1a69fc726b50cd5aba055c0cfdf82/images/macos/macos-26-arm64-Readme.md);
+- XcodeGen [`2.45.4`](https://github.com/yonaskolb/XcodeGen/releases/tag/2.45.4)
+  at source commit
+  [`8d3d3476a69ae3e5d68e1adccc701c410c05eb36`](https://github.com/yonaskolb/XcodeGen/commit/8d3d3476a69ae3e5d68e1adccc701c410c05eb36);
+  and
+- `actions/checkout` at reviewed commit
+  [`de0fac2e4500dabe0009e67214ff5f5447ce83dd`](https://github.com/actions/checkout/commit/de0fac2e4500dabe0009e67214ff5f5447ce83dd).
+
+Those references prove source identity only. They do not replace the missing
+runner-observed SDK build, complete Swift version, source-built XcodeGen binary
+hash, or Release archive inventory. Until those facts are committed, the
+bootstrap, toolchain verification, CI mode, and candidate path must stop rather
+than fall back to Homebrew, an ordinary `PATH` executable, or guessed values.
+
+The pull-request workflow is source verification only. It has read-only
+repository permission, checks out full history without persisted credentials,
+uses only reviewed commit-pinned Actions, never receives Apple or provider
+secrets, never signs or notarizes, and never uploads its unsigned output. Its
+final cleanup runs even after a failed verification step. Updating a runner,
+Xcode, SDK, Swift, XcodeGen, dependency, or Action is a dedicated reviewable
+change; routine dependency updates must not silently move any release input.
+
 ## Contributor unsigned verification
 
 Contributors do not need an Apple Developer certificate, a notarization

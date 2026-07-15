@@ -1,0 +1,32 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.app/Contents/Developer
+      UTTERINK_CI_RUNNER_LABEL: macos-26
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bootstrap locked XcodeGen
+        run: ./Scripts/bootstrap-xcodegen.sh
+      - name: Verify toolchain
+        run: ./Scripts/verify-toolchain.sh --context ci
+      - name: Verify workflow policy
+        run: python3 Scripts/verify-workflow.py
+      - name: Run source, history, test, and build checks
+        run: ./Scripts/ci-local.sh --ci
+      - name: Remove unsigned outputs
+        if: always()
+        run: ./Scripts/clean-distribution-output.sh

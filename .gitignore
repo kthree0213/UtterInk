@@ -1,9 +1,13 @@
 .worktrees/
 .superpowers/
 .DS_Store
+__pycache__/
 .build/
+/build/
 .swiftpm/
 DerivedData/
+/Tools/bin/
+/.release-work/
 dist/
 *.dmg
 *.xcarchive
