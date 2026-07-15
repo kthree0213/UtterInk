@@ -76,6 +76,7 @@ PUBLIC_FIXTURE_PATHS = (
     "docs/RELEASING.md",
     "docs/privacy-data-flow.md",
     "docs/parity/accessibility-matrix.md",
+    "docs/release/0.1.0-finish-plan.md",
     "docs/release/evidence-packet-template.md",
     "docs/release/evidence-schema.json",
     "docs/release/manual-verification-matrix.md",
@@ -86,6 +87,7 @@ PUBLIC_FIXTURE_PATHS = (
 )
 RELEASE_PUBLIC_DOCS = (
     "docs/RELEASING.md",
+    "docs/release/0.1.0-finish-plan.md",
     "docs/release/evidence-packet-template.md",
     "docs/release/release-notes-0.1.0.md",
 )
