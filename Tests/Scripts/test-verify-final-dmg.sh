@@ -312,10 +312,7 @@ PY_PLIST
         case "${UTTERINK_FINAL_DMG_TEST_SCENARIO:-success}" in
           metadata-failure) exit 82 ;;
           metadata-malformed) /usr/bin/printf 'bad\tattribute\n' ;;
-          quarantine-absent) /usr/bin/printf 'com.apple.provenance\n' ;;
-          *)
-            /usr/bin/printf 'com.apple.provenance\ncom.apple.quarantine\n'
-            ;;
+          *) /usr/bin/xattr "$1" ;;
         esac
         ''',
         0o700,
