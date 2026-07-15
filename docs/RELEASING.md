@@ -354,6 +354,83 @@ manifest verification, and the final DMG hash. Raw Apple responses and local
 profile state remain ignored, owner-only local evidence; none of these steps
 publishes or transfers the DMG.
 
+### Final-DMG verification and release evidence
+
+After an accepted notarization result has been fully reviewed, the ticket has
+been stapled and validated, and the post-staple DMG hash has been recorded,
+verify that immutable final artifact without changing it:
+
+```bash
+FINAL_DMG="$WORK/candidate/UtterInk-0.1.0-arm64.dmg"
+FINAL_SHA256='<reviewed 64-character lowercase post-staple SHA-256>'
+EVIDENCE='.release-work/v0.1.0-evidence'
+
+./Scripts/release/verify-final-dmg.sh \
+  --dmg "$FINAL_DMG" \
+  --expected-sha256 "$FINAL_SHA256" \
+  --evidence "$EVIDENCE"
+```
+
+The verifier checks the current bytes before and after all inspection, validates
+the staple, mounts the image read-only, enforces the DMG content allowlist,
+strictly verifies the app and every nested signature, and assesses both the DMG
+and copied app with Gatekeeper. It never strips quarantine or mutates the
+release original. A local launch test instead uses an ephemeral byte-identical
+copy, verifies that copy against the final hash before applying quarantine, and
+records the copy as ephemeral.
+
+Complete the per-row records in
+[`release/manual-verification-matrix.md`](release/manual-verification-matrix.md).
+Every row is explicitly `pass`, `fail`, or `not-run` and records a tester label,
+coarse Apple Silicon model class, supported macOS version, timestamp, exact
+final post-staple SHA-256, locale, and sanitized observation. A successful
+macOS 14 deployment-target build is not minimum-runtime evidence: launch and
+the required product smoke must run on a real Apple Silicon Mac running macOS
+14.x.
+
+The second-Mac Gatekeeper gate requires a distinct physical supported Apple
+Silicon Mac, a clean user without the development certificate or a cached
+ticket/result for the artifact, quarantine preserved, and a first launch while
+offline. Another account, VM, volume, or partition on the development Mac is
+not a substitute. The user may run this on another Mac they own and return only
+the sanitized hash-bound result. Sending the DMG to another person or channel
+requires the separate Gate 3 beta-transfer approval before the transfer; these
+instructions do not grant it.
+
+After collecting all type-specific JSON records in one ignored evidence
+directory, produce the review packet with an explicit expected status:
+
+```bash
+python3 Scripts/release/collect-evidence.py \
+  --inputs "$EVIDENCE" \
+  --output "$EVIDENCE/final-evidence-packet.md" \
+  --expect-status NOT_RELEASE_READY
+```
+
+Use `--expect-status READY` only when every required class is present and
+passing. Before real signing, notarization, final-DMG, release-asset, and
+second-Mac evidence exists, the honest expected status is
+`NOT_RELEASE_READY`. A structurally valid missing or failed gate is listed under
+that status; malformed, contradictory, unsafe, stale, or candidate-mismatched
+evidence is rejected instead of being laundered as merely incomplete. An
+expected/computed status mismatch also exits nonzero.
+
+The release candidate record is the one record validated against
+[`release/evidence-schema.json`](release/evidence-schema.json). Other Task 6
+evidence classes use the collector's closed typed validators; they are not
+claimed to share the candidate JSON schema. Every record must agree on the
+approved repository/branch scope, exact commit and candidate record, with the
+notarization approval bound to the signed pre-staple hash and manual results
+bound to the immutable final post-staple hash.
+
+The generated packet's evidence requirements and reviewer worksheet are
+documented in
+[`release/evidence-packet-template.md`](release/evidence-packet-template.md).
+Its summary lists failures/missing gates first, passed automated and manual
+gates second, and outstanding external approvals third. A complete packet is
+evidence for the user's review only. It does not authorize a push, Apple upload,
+beta transfer, visibility change, public asset upload, or release publication.
+
 ## Immutable artifact rules
 
 - Build only from the exact clean candidate commit and committed

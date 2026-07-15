@@ -72,6 +72,7 @@ new_repository() {
     Tests/Scripts/test-verify-signatures.sh \
     Tests/Scripts/test-register-notary-profile.sh \
     Tests/Scripts/test-notarize-approved.sh \
+    Tests/Scripts/test-verify-final-dmg.sh \
     Tests/Scripts/test-bootstrap-xcodegen.sh \
     Tests/Scripts/test-clean-distribution-output.sh \
     Tests/Scripts/test-package-unsigned-smoke.sh \
@@ -184,6 +185,8 @@ assert_required_gates() {
   assert_once "$log" python3 'Tests/Scripts/test-notarization-gate.py' 'notarization approval gate tests'
   assert_once "$log" local:Tests/Scripts/test-register-notary-profile.sh '' 'notary profile binding tests'
   assert_once "$log" local:Tests/Scripts/test-notarize-approved.sh '' 'approved notarization wrapper tests'
+  assert_once "$log" local:Tests/Scripts/test-verify-final-dmg.sh '' 'final DMG verifier tests'
+  assert_once "$log" python3 'Tests/Scripts/test-collect-evidence.py' 'release evidence collector tests'
   assert_once "$log" python3 'Tests/Scripts/test-verify-workflow.py' 'workflow policy tests'
   assert_once "$log" local:Tests/Scripts/test-bootstrap-xcodegen.sh '' 'locked XcodeGen bootstrap tests'
   assert_once "$log" local:Tests/Scripts/test-clean-distribution-output.sh '' 'distribution cleanup tests'
@@ -237,6 +240,16 @@ assert_required_gates() {
     local:Tests/Scripts/test-register-notary-profile.sh '' \
     local:Tests/Scripts/test-notarize-approved.sh '' \
     'approved notarization tests after notary profile tests'
+  assert_after \
+    "$log" \
+    local:Tests/Scripts/test-notarize-approved.sh '' \
+    local:Tests/Scripts/test-verify-final-dmg.sh '' \
+    'final DMG tests after approved notarization tests'
+  assert_after \
+    "$log" \
+    local:Tests/Scripts/test-verify-final-dmg.sh '' \
+    python3 'Tests/Scripts/test-collect-evidence.py' \
+    'evidence collector tests after final DMG tests'
 
   notice_scratch="$(awk -F '\t' '
     $1 == "local:Scripts/collect-third-party-notices.sh" { print $3 }
