@@ -1,0 +1,178 @@
+name: Identity Toolchain Probe
+
+on:
+  push:
+    branches: [codex/identity-toolchain-probe]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.app/Contents/Developer
+      UTTERINK_CI_RUNNER_LABEL: macos-26
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Bootstrap and verify locked toolchain
+        run: |
+          ./Scripts/bootstrap-xcodegen.sh
+          ./Scripts/verify-toolchain.sh --context ci
+      - name: Compare locked identity regeneration
+        run: |
+          set -euo pipefail
+          git diff --quiet HEAD --
+          baseline_untracked="$(git ls-files --others --exclude-standard)"
+          test -z "$baseline_untracked"
+
+          probe_root="$RUNNER_TEMP/utterink-identity-toolchain-probe"
+          scratch_root="$RUNNER_TEMP/utterink-identity-toolchain-build"
+          mkdir -p "$probe_root" "$scratch_root/swift-module-cache" "$scratch_root/clang-module-cache"
+          cp Brand/identity-lock.json "$probe_root/identity-lock.before.json"
+
+          SWIFT_MODULECACHE_PATH="$scratch_root/swift-module-cache" \
+          CLANG_MODULE_CACHE_PATH="$scratch_root/clang-module-cache" \
+            "$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift" run \
+              --package-path Packages/UtterInkKit \
+              --scratch-path "$scratch_root/build" \
+              --disable-sandbox \
+              --force-resolved-versions \
+              UtterInkIdentityExporter \
+              --integrate \
+              --selection Brand/identity-selection.json \
+              --lock Brand/identity-lock.json \
+              --asset-catalog App/Resources/Assets.xcassets
+
+          /usr/bin/python3 -I - \
+            "$probe_root/identity-lock.before.json" \
+            Brand/identity-lock.json <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          from pathlib import Path
+          import subprocess
+          import sys
+
+
+          before_lock_path = Path(sys.argv[1])
+          after_lock_path = Path(sys.argv[2])
+          before_lock_raw = before_lock_path.read_bytes()
+          after_lock_raw = after_lock_path.read_bytes()
+          before_lock = json.loads(before_lock_raw)
+          after_lock = json.loads(after_lock_raw)
+
+
+          def pointer_token(value: str) -> str:
+              return value.replace("~", "~0").replace("/", "~1")
+
+
+          def changed_fields(before: object, after: object, prefix: str = "") -> list[str]:
+              if type(before) is not type(after):
+                  return [prefix or "/"]
+              if isinstance(before, dict):
+                  fields: list[str] = []
+                  for key in sorted(set(before) | set(after)):
+                      child = f"{prefix}/{pointer_token(str(key))}"
+                      if key not in before or key not in after:
+                          fields.append(child)
+                      else:
+                          fields.extend(changed_fields(before[key], after[key], child))
+                  return fields
+              if isinstance(before, list):
+                  if len(before) != len(after):
+                      return [prefix or "/"]
+                  fields: list[str] = []
+                  for index, (left, right) in enumerate(zip(before, after)):
+                      fields.extend(changed_fields(left, right, f"{prefix}/{index}"))
+                  return fields
+              return [] if before == after else [prefix or "/"]
+
+
+          changed_raw = subprocess.run(
+              ["/usr/bin/git", "diff", "HEAD", "--name-only", "-z", "--no-renames", "--"],
+              check=True,
+              stdout=subprocess.PIPE,
+          ).stdout
+          changed_paths = [
+              item.decode("utf-8", errors="strict")
+              for item in changed_raw.split(b"\0")
+              if item
+          ]
+          records = []
+          for relative in changed_paths:
+              before = subprocess.run(
+                  ["/usr/bin/git", "show", f"HEAD:{relative}"],
+                  check=True,
+                  stdout=subprocess.PIPE,
+              ).stdout
+              after = Path(relative).read_bytes()
+              records.append({
+                  "afterSHA256": hashlib.sha256(after).hexdigest(),
+                  "afterSize": len(after),
+                  "beforeSHA256": hashlib.sha256(before).hexdigest(),
+                  "beforeSize": len(before),
+                  "path": relative,
+              })
+
+          untracked_raw = subprocess.run(
+              ["/usr/bin/git", "ls-files", "--others", "--exclude-standard", "-z"],
+              check=True,
+              stdout=subprocess.PIPE,
+          ).stdout
+          untracked_paths = [
+              item.decode("utf-8", errors="strict")
+              for item in untracked_raw.split(b"\0")
+              if item
+          ]
+
+          fields = changed_fields(before_lock, after_lock)
+          before_contract = before_lock["renderer"]["toolchainContract"]
+          after_contract = after_lock["renderer"]["toolchainContract"]
+          replacement_matches = (
+              before_contract != after_contract
+              and before_lock_raw.count(before_contract.encode("utf-8")) == 1
+              and before_lock_raw.replace(
+                  before_contract.encode("utf-8"),
+                  after_contract.encode("utf-8"),
+              ) == after_lock_raw
+          )
+          if untracked_paths:
+              verdict = "unexpected-untracked"
+          elif any(path.startswith("App/Resources/Assets.xcassets/") for path in changed_paths):
+              verdict = "broader-asset-change"
+          elif (
+              changed_paths == ["Brand/identity-lock.json"]
+              and fields == ["/renderer/toolchainContract"]
+              and replacement_matches
+          ):
+              verdict = "lock-only"
+          elif not changed_paths and not fields:
+              verdict = "no-change"
+          else:
+              verdict = "broader-change"
+
+          result = {
+              "changedFiles": records,
+              "changedPaths": changed_paths,
+              "lockChangedFields": fields,
+              "schemaVersion": 1,
+              "stringReplacementMatches": replacement_matches,
+              "toolchainContract": after_contract,
+              "untrackedPaths": untracked_paths,
+              "verdict": verdict,
+          }
+          print("UTTERINK_IDENTITY_PROBE=" + json.dumps(result, sort_keys=True, separators=(",", ":")))
+
+          allowed_prefix = "App/Resources/Assets.xcassets/"
+          if any(
+              path != "Brand/identity-lock.json" and not path.startswith(allowed_prefix)
+              for path in changed_paths
+          ) or untracked_paths:
+              raise SystemExit("identity probe changed an unexpected tracked path")
+          PY
