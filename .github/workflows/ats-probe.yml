@@ -1,0 +1,34 @@
+name: ATS macOS 26 Probe
+
+on:
+  push:
+    branches: [codex/ats-fixture-probe]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-ats:
+    runs-on: macos-26
+    timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.app/Contents/Developer
+      UTTERINK_CI_RUNNER_LABEL: macos-26
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bootstrap locked XcodeGen
+        run: ./Scripts/bootstrap-xcodegen.sh
+      - name: Verify toolchain
+        run: ./Scripts/verify-toolchain.sh --context ci
+      - name: Run signed ATS loopback probe
+        run: |
+          mkdir -p "$RUNNER_TEMP/UtterInkATS/SourcePackages"
+          UTTERINK_XCODEGEN="$GITHUB_WORKSPACE/Tools/bin/xcodegen" \
+          UTTERINK_CLONED_SOURCE_PACKAGES_DIR="$RUNNER_TEMP/UtterInkATS/SourcePackages" \
+            bash Tests/Scripts/test-ats-policy.sh
+      - name: Remove probe outputs
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/UtterInkATS"
