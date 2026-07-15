@@ -582,7 +582,7 @@
     "linearSupersamplingScale" : 16,
     "pixelFormat" : "RGBA8-premultiplied-last-byte-order-32-big",
     "supersamplingSamplesPerPixel" : 256,
-    "toolchainContract" : "swift-driver version: 1.148.6 Apple Swift version 6.3 (swiftlang-6.3.0.123.5 clang-2100.0.123.102) Target: arm64-apple-macosx26.0 | CoreGraphics runtime: Version 26.3.1 (a) (Build 25D771280a)"
+    "toolchainContract" : "swift-driver version: 1.148.6 Apple Swift version 6.3.1 (swiftlang-6.3.1.1.2 clang-2100.0.123.102) Target: arm64-apple-macosx26.0 | CoreGraphics runtime: Version 26.4 (Build 25E246)"
   },
   "schemaVersion" : 1,
   "selection" : {
