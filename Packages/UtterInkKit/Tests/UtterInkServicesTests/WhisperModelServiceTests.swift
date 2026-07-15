@@ -79,6 +79,46 @@ final class WhisperModelServiceTests: XCTestCase {
         XCTAssertEqual(loadCount, 1)
     }
 
+    func testCachedOnlyPreparationLoadsCachedModelWithoutDownload() async throws {
+        let backend = ModelBackendFake(cachedIDs: ["base"])
+        let service = try makeService(backend: backend)
+
+        let states = await collect(
+            await service.prepareCached(modelID: "base", token: effectToken(generation: 1))
+        )
+
+        XCTAssertEqual(states, [.loading(modelID: "base"), .ready(modelID: "base")])
+        let downloadCount = await backend.downloadCount(for: "base")
+        let loadCount = await backend.loadCount(for: "base")
+        XCTAssertEqual(downloadCount, 0)
+        XCTAssertEqual(loadCount, 1)
+    }
+
+    func testCachedOnlyPreparationLeavesMissingModelWithoutDownload() async throws {
+        let backend = ModelBackendFake()
+        let service = try makeService(backend: backend)
+
+        let cachedOnlyStates = await collect(
+            await service.prepareCached(modelID: "base", token: effectToken(generation: 1))
+        )
+
+        XCTAssertEqual(cachedOnlyStates, [.missing(modelID: "base")])
+        var downloadCount = await backend.downloadCount(for: "base")
+        var loadCount = await backend.loadCount(for: "base")
+        XCTAssertEqual(downloadCount, 0)
+        XCTAssertEqual(loadCount, 0)
+
+        let explicitStates = await collect(
+            await service.prepare(modelID: "base", token: effectToken(generation: 2))
+        )
+
+        XCTAssertEqual(explicitStates.last, .ready(modelID: "base"))
+        downloadCount = await backend.downloadCount(for: "base")
+        loadCount = await backend.loadCount(for: "base")
+        XCTAssertEqual(downloadCount, 1)
+        XCTAssertEqual(loadCount, 1)
+    }
+
     func testCancellationFinishesCurrentGenerationAndLateBackendCannotBecomeReady() async throws {
         let gate = ModelGate()
         let backend = ModelBackendFake(downloadGates: ["base": gate])

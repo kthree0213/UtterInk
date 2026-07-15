@@ -541,14 +541,54 @@ final class DictationSessionControllerTests: XCTestCase {
         let models = ModelFake(state: .ready(modelID: "small"))
         let harness = Harness(settings: settings, models: models)
         await harness.bootstrapWithVolatileProbe()
+        await waitUntil { await models.cachedPrepareCount() == 1 }
+        await waitUntil { harness.controller.preparingSpeechModelID == nil }
 
         XCTAssertEqual(harness.controller.speechModelState, .missing(modelID: "base"))
         XCTAssertEqual(harness.controller.activeSpeechModelID, "small")
+        XCTAssertNil(harness.controller.preparingSpeechModelID)
+        let cachedPreparationCount = await models.cachedPrepareCount()
+        let explicitPreparationCount = await models.prepareCount()
+        let cachedPreparationIDs = await models.cachedPreparedModelIDs()
+        XCTAssertEqual(cachedPreparationCount, 1)
+        XCTAssertEqual(explicitPreparationCount, 0)
+        XCTAssertEqual(cachedPreparationIDs, ["base"])
 
         harness.controller.deleteCachedSpeechModel("small")
         await settle()
         let deletedModelIDs = await models.deletedModelIDs()
         XCTAssertTrue(deletedModelIDs.isEmpty)
+    }
+
+    func testBootstrapLoadsSelectedCachedModelWithoutExplicitPreparation() async {
+        var settings = rawSettings()
+        settings.speechModelID = "base"
+        let models = ModelFake(
+            state: .ready(modelID: "small"),
+            cachedModelIDs: ["base"]
+        )
+        let harness = Harness(settings: settings, models: models)
+
+        await harness.bootstrapWithVolatileProbe()
+        await waitUntil { await models.cachedPrepareCount() == 1 }
+
+        XCTAssertEqual(harness.controller.speechModelState, .missing(modelID: "base"))
+        XCTAssertEqual(harness.controller.preparingSpeechModelID, "base")
+        XCTAssertEqual(harness.controller.activeSpeechModelID, "small")
+        let explicitPreparationCount = await models.prepareCount()
+        let cachedPreparationIDs = await models.cachedPreparedModelIDs()
+        XCTAssertEqual(explicitPreparationCount, 0)
+        XCTAssertEqual(cachedPreparationIDs, ["base"])
+
+        await models.emit(call: 1, .loading(modelID: "base"))
+        await models.emit(call: 1, .ready(modelID: "base"))
+        await waitUntil {
+            harness.controller.speechModelState == .ready(modelID: "base")
+        }
+
+        XCTAssertEqual(harness.controller.speechModelState, .ready(modelID: "base"))
+        XCTAssertEqual(harness.controller.activeSpeechModelID, "base")
+        XCTAssertNil(harness.controller.preparingSpeechModelID)
     }
 
     func testPreviouslySelectedModelCanBeDeletedAfterFreshSelectionBecomesReady() async {
@@ -1152,7 +1192,10 @@ private actor AudioFake: AudioRecordingService {
 
 private actor ModelFake: SpeechModelService {
     private var current: SpeechModelState
-    private var prepares = 0
+    private var cachedModelIDs: Set<String>
+    private var explicitPreparationIDs: [String] = []
+    private var cachedPreparationIDs: [String] = []
+    private var streamCalls = 0
     private var cancels = 0
     private var acquires = 0
     private var releases = 0
@@ -1161,14 +1204,35 @@ private actor ModelFake: SpeechModelService {
     private let deleteGate: AsyncGate?
     private var continuations: [Int: AsyncStream<SpeechModelState>.Continuation] = [:]
 
-    init(state: SpeechModelState, deleteGate: AsyncGate? = nil) {
+    init(
+        state: SpeechModelState,
+        cachedModelIDs: Set<String> = [],
+        deleteGate: AsyncGate? = nil
+    ) {
         current = state
+        self.cachedModelIDs = cachedModelIDs
         self.deleteGate = deleteGate
     }
     func state() async -> SpeechModelState { current }
     func prepare(modelID: String, token: EffectToken) async -> AsyncStream<SpeechModelState> {
-        prepares += 1
-        let call = prepares
+        explicitPreparationIDs.append(modelID)
+        return makePreparationStream()
+    }
+    func prepareCached(modelID: String, token: EffectToken) async -> AsyncStream<SpeechModelState> {
+        cachedPreparationIDs.append(modelID)
+        guard cachedModelIDs.contains(modelID) else {
+            let missing = SpeechModelState.missing(modelID: modelID)
+            current = missing
+            return AsyncStream { continuation in
+                continuation.yield(missing)
+                continuation.finish()
+            }
+        }
+        return makePreparationStream()
+    }
+    private func makePreparationStream() -> AsyncStream<SpeechModelState> {
+        streamCalls += 1
+        let call = streamCalls
         var captured: AsyncStream<SpeechModelState>.Continuation?
         let stream = AsyncStream<SpeechModelState> { continuation in captured = continuation }
         continuations[call] = captured
@@ -1190,14 +1254,20 @@ private actor ModelFake: SpeechModelService {
     func deleteCachedModel(modelID: String) async throws {
         if let deleteGate { await deleteGate.wait() }
         if let deleteFailure { throw deleteFailure }
+        cachedModelIDs.remove(modelID)
         deleted.append(modelID)
     }
     func emit(call: Int, _ state: SpeechModelState) {
         continuations[call]?.yield(state)
         current = state
+        if case let .ready(modelID) = state {
+            cachedModelIDs.insert(modelID)
+        }
     }
     func finish(call: Int) { continuations[call]?.finish() }
-    func prepareCount() -> Int { prepares }
+    func prepareCount() -> Int { explicitPreparationIDs.count }
+    func cachedPrepareCount() -> Int { cachedPreparationIDs.count }
+    func cachedPreparedModelIDs() -> [String] { cachedPreparationIDs }
     func cancelCount() -> Int { cancels }
     func acquireCount() -> Int { acquires }
     func releaseCount() -> Int { releases }

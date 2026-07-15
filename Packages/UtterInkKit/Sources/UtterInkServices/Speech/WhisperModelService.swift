@@ -105,6 +105,21 @@ public actor WhisperModelService: SpeechModelService {
     }
 
     public func prepare(modelID: String, token: EffectToken) async -> AsyncStream<SpeechModelState> {
+        startPreparation(modelID: modelID, token: token, downloadIfMissing: true)
+    }
+
+    public func prepareCached(
+        modelID: String,
+        token: EffectToken
+    ) async -> AsyncStream<SpeechModelState> {
+        startPreparation(modelID: modelID, token: token, downloadIfMissing: false)
+    }
+
+    private func startPreparation(
+        modelID: String,
+        token: EffectToken,
+        downloadIfMissing: Bool
+    ) -> AsyncStream<SpeechModelState> {
         preparationTask?.cancel()
         preparation?.continuation.finish()
         preparation = nil
@@ -136,7 +151,12 @@ public actor WhisperModelService: SpeechModelService {
         )
         activeOperations[generation] = modelID
         preparationTask = Task { [weak self] in
-            await self?.runPreparation(entry: entry, token: token, generation: generation)
+            await self?.runPreparation(
+                entry: entry,
+                token: token,
+                generation: generation,
+                downloadIfMissing: downloadIfMissing
+            )
         }
         return pair.stream
     }
@@ -207,7 +227,8 @@ public actor WhisperModelService: SpeechModelService {
     private func runPreparation(
         entry: WhisperCatalogEntry,
         token: EffectToken,
-        generation: UInt64
+        generation: UInt64,
+        downloadIfMissing: Bool
     ) async {
         defer { activeOperations.removeValue(forKey: generation) }
         let cached = await backend.isCached(entry, root: root)
@@ -215,6 +236,10 @@ public actor WhisperModelService: SpeechModelService {
 
         do {
             if !cached {
+                guard downloadIfMissing else {
+                    finishMissing(modelID: entry.id, generation: generation)
+                    return
+                }
                 emit(.missing(modelID: entry.id), generation: generation)
                 setPhase(.downloading, generation: generation)
                 let progressPair = AsyncStream<Double>.makeStream()
@@ -298,6 +323,16 @@ public actor WhisperModelService: SpeechModelService {
         guard let current = preparation, current.generation == generation else { return }
         ready = ReadyRecord(modelID: entry.id, runtime: runtime)
         let state = SpeechModelState.ready(modelID: entry.id)
+        currentState = state
+        current.continuation.yield(state)
+        current.continuation.finish()
+        preparation = nil
+        preparationTask = nil
+    }
+
+    private func finishMissing(modelID: String, generation: UInt64) {
+        guard let current = preparation, current.generation == generation else { return }
+        let state = SpeechModelState.missing(modelID: modelID)
         currentState = state
         current.continuation.yield(state)
         current.continuation.finish()

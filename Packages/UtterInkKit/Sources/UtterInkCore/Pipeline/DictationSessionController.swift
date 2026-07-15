@@ -132,6 +132,16 @@ public final class DictationSessionController: DictationControlling {
         historyRecords = loadedHistory.filter { !tombstones.contains($0.sessionID) }
         currentHistoryGeneration = generation
         publishModelState(modelState, expectedModelID: loadedSettings.speechModelID)
+
+        let selectedModelIsReady: Bool
+        if case let .ready(modelID) = modelState {
+            selectedModelIsReady = modelID == loadedSettings.speechModelID
+        } else {
+            selectedModelIsReady = false
+        }
+        if !selectedModelIsReady {
+            prepareCachedSpeechModel(loadedSettings.speechModelID)
+        }
         bootstrapped = true
     }
 
@@ -163,6 +173,15 @@ public final class DictationSessionController: DictationControlling {
     }
 
     public func prepareSpeechModel(_ modelID: String) {
+        guard !bootstrapInProgress else { return }
+        beginSpeechModelPreparation(modelID, cachedOnly: false)
+    }
+
+    private func prepareCachedSpeechModel(_ modelID: String) {
+        beginSpeechModelPreparation(modelID, cachedOnly: true)
+    }
+
+    private func beginSpeechModelPreparation(_ modelID: String, cachedOnly: Bool) {
         guard speechModelCatalog.contains(where: { $0.id == modelID }),
               speechModelCacheActionStatus.deletingModelID != modelID,
               currentSnapshot == nil,
@@ -181,7 +200,12 @@ public final class DictationSessionController: DictationControlling {
             guard !Task.isCancelled,
                   self.preparationGeneration == generation,
                   self.preparingSpeechModelID == modelID else { return }
-            let stream = await self.models.prepare(modelID: modelID, token: token)
+            let stream: AsyncStream<SpeechModelState>
+            if cachedOnly {
+                stream = await self.models.prepareCached(modelID: modelID, token: token)
+            } else {
+                stream = await self.models.prepare(modelID: modelID, token: token)
+            }
             for await emitted in stream {
                 guard !Task.isCancelled else { return }
                 guard self.preparationGeneration == generation,
@@ -203,6 +227,7 @@ public final class DictationSessionController: DictationControlling {
     }
 
     public func cancelSpeechModelPreparation() {
+        guard !bootstrapInProgress else { return }
         guard preparingSpeechModelID != nil || preparationTask != nil else { return }
         let cancelledModelID = preparingSpeechModelID ?? speechModelState.modelID
         preparationGeneration &+= 1
@@ -227,7 +252,8 @@ public final class DictationSessionController: DictationControlling {
     }
 
     public func deleteCachedSpeechModel(_ modelID: String) {
-        guard speechModelCatalog.contains(where: { $0.id == modelID }),
+        guard !bootstrapInProgress,
+              speechModelCatalog.contains(where: { $0.id == modelID }),
               !speechModelCacheActionStatus.isDeleting,
               preparingSpeechModelID != modelID,
               currentSnapshot?.speechModelID != modelID,

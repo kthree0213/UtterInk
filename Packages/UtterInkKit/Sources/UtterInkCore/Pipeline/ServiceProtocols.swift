@@ -53,6 +53,7 @@ public protocol AudioRecordingService: Sendable {
 public protocol SpeechModelService: Sendable {
     func state() async -> SpeechModelState
     func prepare(modelID: String, token: EffectToken) async -> AsyncStream<SpeechModelState>
+    func prepareCached(modelID: String, token: EffectToken) async -> AsyncStream<SpeechModelState>
     func cancelPreparation() async
     func acquireReadyModel(modelID: String, token: EffectToken) async throws -> SpeechModelLease
     func release(_ lease: SpeechModelLease) async
