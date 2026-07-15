@@ -293,6 +293,32 @@ run_candidate() {
   set -e
 }
 
+run_candidate_with_output_fd() {
+  local repository="$1"
+  local output="$2"
+  local descriptor_path="$3"
+  local commit="$4"
+  shift 4
+  local log="$TMP/fixture.log"
+  : > "$log"
+  set +e
+  (
+    cd "$repository"
+    exec 9< "$descriptor_path"
+    env \
+      UTTERINK_RELEASE_TEST_MODE=1 \
+      UTTERINK_RELEASE_TEST_TOOL_ROOT="$repository/FixtureTools" \
+      UTTERINK_FIXTURE_LOG="$log" \
+      ./Scripts/release/verify-candidate.sh \
+        --commit "$commit" \
+        --output "$output" \
+        --output-dir-fd 9 \
+        "$@"
+  ) > "$TMP/stdout" 2> "$TMP/stderr"
+  CANDIDATE_STATUS=$?
+  set -e
+}
+
 expect_failure() {
   local repository="$1"
   local expected_status="$2"
@@ -447,6 +473,104 @@ git -C "$INFO_POLICY_FAILURE" add Scripts/release/verify-info-policy.py
 git -C "$INFO_POLICY_FAILURE" commit -q -m 'fail Info policy'
 expect_failure "$INFO_POLICY_FAILURE" 26 info-policy-failed "$(git -C "$INFO_POLICY_FAILURE" rev-parse HEAD)"
 
+HELPER_SWAP="$TMP/helper-swap-restore"
+git clone -q "$BASE" "$HELPER_SWAP"
+git -C "$HELPER_SWAP" config user.name 'UtterInk Test'
+git -C "$HELPER_SWAP" config user.email 'utterink-test@example.invalid'
+cat > "$HELPER_SWAP/Scripts/release/read-metadata.py" <<'PY'
+#!/usr/bin/env python3
+import json
+from pathlib import Path
+import subprocess
+
+root = Path(__file__).resolve().parents[2]
+target = root / "Scripts/release/verify-entitlements.py"
+original = target.with_name("verify-entitlements.original")
+target.rename(original)
+target.write_text("#!/usr/bin/env python3\nraise SystemExit(97)\n", encoding="utf-8")
+target.chmod(0o755)
+restorer = r'''
+from pathlib import Path
+import sys
+import time
+time.sleep(0.5)
+target = Path(sys.argv[1])
+original = Path(sys.argv[2])
+target.unlink()
+original.rename(target)
+'''
+subprocess.Popen(
+    ["/usr/bin/python3", "-I", "-c", restorer, str(target), str(original)],
+    close_fds=True,
+    start_new_session=True,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+print(json.dumps({
+    "product": "UtterInk",
+    "marketingVersion": "0.1.0",
+    "buildNumber": "1",
+    "bundleIdentifier": "dev.utterink.UtterInk",
+    "deploymentTarget": "14.0",
+    "architecture": "arm64",
+    "configuration": "Release",
+    "dmgFilename": "UtterInk-0.1.0-arm64.dmg",
+    "releaseTag": "v0.1.0",
+}, sort_keys=True, separators=(",", ":")))
+PY
+chmod 0755 "$HELPER_SWAP/Scripts/release/read-metadata.py"
+git -C "$HELPER_SWAP" add Scripts/release/read-metadata.py
+git -C "$HELPER_SWAP" commit -q -m 'transiently replace tracked helper'
+expect_failure "$HELPER_SWAP" 1 required-input-mismatch "$(git -C "$HELPER_SWAP" rev-parse HEAD)"
+for _ in {1..200}; do
+  [[ ! -e "$HELPER_SWAP/Scripts/release/verify-entitlements.original" ]] && break
+  /bin/sleep 0.01
+done
+[[ ! -e "$HELPER_SWAP/Scripts/release/verify-entitlements.original" ]] || fail 'transient helper replacement was not restored'
+git -C "$HELPER_SWAP" diff --quiet -- Scripts/release/verify-entitlements.py || fail 'transient helper replacement changed restored content'
+
+TMP_NAME_REBIND="$TMP/tmp-name-rebind-repository"
+TMP_NAME_REBIND_MARKER="$TMP/tmp-name-rebind-record"
+git clone -q "$BASE" "$TMP_NAME_REBIND"
+git -C "$TMP_NAME_REBIND" config user.name 'UtterInk Test'
+git -C "$TMP_NAME_REBIND" config user.email 'utterink-test@example.invalid'
+python3 - "$TMP_NAME_REBIND/Scripts/release/verify-info-policy.py" "$TMP_NAME_REBIND_MARKER" <<'PY'
+from pathlib import Path
+import sys
+
+helper = Path(sys.argv[1])
+marker = sys.argv[2]
+helper.write_text(f'''#!/usr/bin/env python3
+import os
+from pathlib import Path
+
+temporary = Path(os.environ['TMPDIR']).parent
+moved = temporary.with_name(temporary.name + '.held-original')
+temporary.rename(moved)
+temporary.mkdir(mode=0o700)
+(temporary / 'sentinel').write_text('replacement sentinel\\n', encoding='utf-8')
+Path({marker!r}).write_text(str(temporary) + '\\n' + str(moved) + '\\n', encoding='utf-8')
+with Path(os.environ['UTTERINK_FIXTURE_LOG']).open('a', encoding='utf-8') as handle:
+    handle.write('info-policy\\n')
+print('release Info policy valid')
+''', encoding="utf-8")
+helper.chmod(0o755)
+PY
+git -C "$TMP_NAME_REBIND" add Scripts/release/verify-info-policy.py
+git -C "$TMP_NAME_REBIND" commit -q -m 'replace verifier temporary directory name'
+run_candidate "$TMP_NAME_REBIND" "$TMP/tmp-name-rebind-output" "$(git -C "$TMP_NAME_REBIND" rev-parse HEAD)"
+[[ "$CANDIDATE_STATUS" -ne 0 ]] || fail 'temporary directory name replacement unexpectedly succeeded'
+[[ -f "$TMP_NAME_REBIND_MARKER" ]] || fail 'temporary directory name replacement did not run'
+TMP_NAME_REPLACEMENT_PATH="$(sed -n '1p' "$TMP_NAME_REBIND_MARKER")"
+TMP_NAME_HELD_PATH="$(sed -n '2p' "$TMP_NAME_REBIND_MARKER")"
+[[ "$TMP_NAME_REPLACEMENT_PATH" == /tmp/utterink-release-candidate.* ]] || fail 'temporary replacement path was unexpected'
+[[ "$TMP_NAME_HELD_PATH" == "$TMP_NAME_REPLACEMENT_PATH.held-original" ]] || fail 'held temporary path was unexpected'
+[[ "$(cat "$TMP_NAME_REPLACEMENT_PATH/sentinel")" == 'replacement sentinel' ]] || fail 'held cleanup changed the replacement sentinel'
+[[ -d "$TMP_NAME_HELD_PATH" ]] || fail 'renamed held temporary directory disappeared unsafely'
+[[ -z "$(find "$TMP_NAME_HELD_PATH" -mindepth 1 -print -quit)" ]] || fail 'held temporary directory was not cleared through its descriptor'
+rm -rf "$TMP_NAME_REPLACEMENT_PATH"
+rmdir "$TMP_NAME_HELD_PATH"
+
 WORKSPACE_MISMATCH="$TMP/workspace-mismatch"
 git clone -q "$BASE" "$WORKSPACE_MISMATCH"
 git -C "$WORKSPACE_MISMATCH" config user.name 'UtterInk Test'
@@ -520,8 +644,6 @@ fi
 
 SUCCESS_OUTPUT="$TMP/success-output"
 mkdir -p "$SUCCESS_OUTPUT"
-printf 'replace-me\n' > "$SUCCESS_OUTPUT/candidate.json"
-chmod 0644 "$SUCCESS_OUTPUT/candidate.json"
 run_candidate \
   "$BASE" \
   "$SUCCESS_OUTPUT" \
@@ -584,6 +706,154 @@ for expected in \
   fi
 done
 
+EXISTING_CANDIDATE_OUTPUT="$TMP/existing-candidate-output"
+mkdir -m 0700 "$EXISTING_CANDIDATE_OUTPUT"
+printf '{"priorEvidence":true}\n' > "$EXISTING_CANDIDATE_OUTPUT/candidate.json"
+chmod 0600 "$EXISTING_CANDIDATE_OUTPUT/candidate.json"
+EXISTING_CANDIDATE_RECORD="$(stat -f '%d:%i:%Lp:%l:%z' "$EXISTING_CANDIDATE_OUTPUT/candidate.json")"
+run_candidate "$BASE" "$EXISTING_CANDIDATE_OUTPUT" "$BASE_COMMIT"
+if [[ "$CANDIDATE_STATUS" -ne 29 || "$(cat "$TMP/stderr")" != 'release candidate error: unsafe-output' ]]; then
+  fail 'existing candidate evidence was not rejected fail-closed'
+fi
+[[ "$(cat "$EXISTING_CANDIDATE_OUTPUT/candidate.json")" == '{"priorEvidence":true}' ]] || fail 'existing candidate evidence content changed'
+[[ "$(stat -f '%d:%i:%Lp:%l:%z' "$EXISTING_CANDIDATE_OUTPUT/candidate.json")" == "$EXISTING_CANDIDATE_RECORD" ]] || fail 'existing candidate evidence identity or metadata changed'
+[[ -z "$(find "$EXISTING_CANDIDATE_OUTPUT" -maxdepth 1 -name '.candidate.json.*' -print -quit)" ]] || fail 'existing candidate rejection left a temporary file'
+
+LATE_FAILURE_REPOSITORY="$TMP/candidate-late-failure-repository"
+LATE_FAILURE_OUTPUT="$TMP/candidate-late-failure-output"
+LATE_FAILURE_MARKER="$TMP/candidate-late-failure-marker"
+git clone -q "$BASE" "$LATE_FAILURE_REPOSITORY"
+git -C "$LATE_FAILURE_REPOSITORY" config user.name 'UtterInk Test'
+git -C "$LATE_FAILURE_REPOSITORY" config user.email 'utterink-test@example.invalid'
+mkdir -m 0700 "$LATE_FAILURE_OUTPUT"
+printf 'prior sidecar evidence\n' > "$LATE_FAILURE_OUTPUT/prior-candidate.json"
+chmod 0600 "$LATE_FAILURE_OUTPUT/prior-candidate.json"
+LATE_FAILURE_PRIOR_RECORD="$(stat -f '%d:%i:%Lp:%l:%z' "$LATE_FAILURE_OUTPUT/prior-candidate.json")"
+python3 - \
+  "$LATE_FAILURE_REPOSITORY/Scripts/release/verify-info-policy.py" \
+  "$LATE_FAILURE_OUTPUT" \
+  "$LATE_FAILURE_REPOSITORY/Config/release-metadata.json" \
+  "$LATE_FAILURE_MARKER" <<'PY'
+from pathlib import Path
+import sys
+
+helper = Path(sys.argv[1])
+output, tracked_input, marker = sys.argv[2:]
+helper.write_text(f'''#!/usr/bin/env python3
+import os
+from pathlib import Path
+import signal
+import subprocess
+
+watcher = r"""
+import os
+from pathlib import Path
+import signal
+import sys
+import time
+
+pid = int(sys.argv[1])
+output = Path(sys.argv[2])
+tracked_input = Path(sys.argv[3])
+marker = Path(sys.argv[4])
+deadline = time.monotonic() + 30
+while time.monotonic() < deadline:
+    if (output / 'candidate.json').is_file():
+        stopped = False
+        try:
+            os.kill(pid, signal.SIGSTOP)
+            stopped = True
+            with tracked_input.open('a', encoding='utf-8') as handle:
+                handle.write('\\n')
+            marker.write_text('late input mutation\\n', encoding='utf-8')
+        finally:
+            if stopped:
+                os.kill(pid, signal.SIGCONT)
+        raise SystemExit(0)
+    time.sleep(0.0002)
+raise SystemExit(1)
+"""
+subprocess.Popen(
+    ['/usr/bin/python3', '-I', '-c', watcher, str(os.getppid()), {output!r}, {tracked_input!r}, {marker!r}],
+    close_fds=True,
+    start_new_session=True,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+with Path(os.environ['UTTERINK_FIXTURE_LOG']).open('a', encoding='utf-8') as handle:
+    handle.write('info-policy\\n')
+print('release Info policy valid')
+''', encoding="utf-8")
+helper.chmod(0o755)
+PY
+git -C "$LATE_FAILURE_REPOSITORY" add Scripts/release/verify-info-policy.py
+git -C "$LATE_FAILURE_REPOSITORY" commit -q -m 'mutate tracked input after candidate publication'
+run_candidate \
+  "$LATE_FAILURE_REPOSITORY" \
+  "$LATE_FAILURE_OUTPUT" \
+  "$(git -C "$LATE_FAILURE_REPOSITORY" rev-parse HEAD)"
+if [[ "$CANDIDATE_STATUS" -ne 20 || "$(cat "$TMP/stderr")" != 'release candidate error: dirty-checkout' ]]; then
+  fail 'late post-publication input mutation was not rejected'
+fi
+for _ in {1..200}; do
+  [[ -e "$LATE_FAILURE_MARKER" ]] && break
+  /bin/sleep 0.01
+done
+[[ -e "$LATE_FAILURE_MARKER" ]] || fail 'late post-publication input mutation did not run'
+[[ ! -e "$LATE_FAILURE_OUTPUT/candidate.json" && ! -L "$LATE_FAILURE_OUTPUT/candidate.json" ]] || fail 'late post-publication failure left candidate evidence'
+[[ "$(cat "$LATE_FAILURE_OUTPUT/prior-candidate.json")" == 'prior sidecar evidence' ]] || fail 'late post-publication rollback changed prior sidecar content'
+[[ "$(stat -f '%d:%i:%Lp:%l:%z' "$LATE_FAILURE_OUTPUT/prior-candidate.json")" == "$LATE_FAILURE_PRIOR_RECORD" ]] || fail 'late post-publication rollback changed prior sidecar identity or metadata'
+[[ -z "$(find "$LATE_FAILURE_OUTPUT" -maxdepth 1 -name '.candidate.json.*' -print -quit)" ]] || fail 'late post-publication failure left a temporary file'
+
+FD_SUCCESS_OUTPUT="$TMP/fd-success-output"
+mkdir -m 0700 "$FD_SUCCESS_OUTPUT"
+run_candidate_with_output_fd \
+  "$BASE" \
+  "$FD_SUCCESS_OUTPUT" \
+  "$FD_SUCCESS_OUTPUT" \
+  "$BASE_COMMIT"
+if [[ "$CANDIDATE_STATUS" -ne 0 || -s "$TMP/stdout" || -s "$TMP/stderr" ]]; then
+  fail 'inherited output directory FD was not accepted safely'
+fi
+if [[ ! -f "$FD_SUCCESS_OUTPUT/candidate.json" || -L "$FD_SUCCESS_OUTPUT/candidate.json" ]]; then
+  fail 'inherited output directory FD did not receive candidate.json'
+fi
+
+CLOSED_FD_OUTPUT="$TMP/closed-fd-output"
+run_candidate "$BASE" "$CLOSED_FD_OUTPUT" "$BASE_COMMIT" --output-dir-fd 19
+if [[ "$CANDIDATE_STATUS" -ne 29 || "$(cat "$TMP/stderr")" != 'release candidate error: unsafe-output' ]]; then
+  fail 'closed output directory FD was not rejected safely'
+fi
+[[ ! -e "$CLOSED_FD_OUTPUT/candidate.json" ]] || fail 'closed output directory FD emitted candidate.json'
+
+MISMATCHED_FD_OUTPUT="$TMP/mismatched-fd-output"
+MISMATCHED_FD_TARGET="$TMP/mismatched-fd-target"
+mkdir -m 0700 "$MISMATCHED_FD_OUTPUT" "$MISMATCHED_FD_TARGET"
+printf 'outside sentinel\n' > "$MISMATCHED_FD_TARGET/sentinel"
+run_candidate_with_output_fd \
+  "$BASE" \
+  "$MISMATCHED_FD_OUTPUT" \
+  "$MISMATCHED_FD_TARGET" \
+  "$BASE_COMMIT"
+if [[ "$CANDIDATE_STATUS" -ne 29 || "$(cat "$TMP/stderr")" != 'release candidate error: unsafe-output' ]]; then
+  fail 'mismatched output directory FD was not rejected safely'
+fi
+[[ ! -e "$MISMATCHED_FD_OUTPUT/candidate.json" ]] || fail 'mismatched output path received candidate.json'
+[[ ! -e "$MISMATCHED_FD_TARGET/candidate.json" ]] || fail 'mismatched output FD target received candidate.json'
+[[ "$(cat "$MISMATCHED_FD_TARGET/sentinel")" == 'outside sentinel' ]] || fail 'mismatched output FD changed outside sentinel'
+
+WORLD_WRITABLE_FD_OUTPUT="$TMP/world-writable-fd-output"
+mkdir -m 0777 "$WORLD_WRITABLE_FD_OUTPUT"
+run_candidate_with_output_fd \
+  "$BASE" \
+  "$WORLD_WRITABLE_FD_OUTPUT" \
+  "$WORLD_WRITABLE_FD_OUTPUT" \
+  "$BASE_COMMIT"
+if [[ "$CANDIDATE_STATUS" -ne 29 || "$(cat "$TMP/stderr")" != 'release candidate error: unsafe-output' ]]; then
+  fail 'world-writable output directory FD was not rejected safely'
+fi
+[[ ! -e "$WORLD_WRITABLE_FD_OUTPUT/candidate.json" ]] || fail 'world-writable output directory FD emitted candidate.json'
+
 expect_unsafe_output() {
   local output="$1"
   local description="$2"
@@ -627,6 +897,79 @@ fi
 if [[ -n "$(find "$CANDIDATE_SYMLINK_OUTPUT" -maxdepth 1 -name '.candidate.json.*' -print -quit)" ]]; then
   fail 'candidate symlink failure left a temporary file behind'
 fi
+
+OUTPUT_REBIND="$TMP/candidate-output-rebind-repository"
+git clone -q "$BASE" "$OUTPUT_REBIND"
+git -C "$OUTPUT_REBIND" config user.name 'UtterInk Test'
+git -C "$OUTPUT_REBIND" config user.email 'utterink-test@example.invalid'
+OUTPUT_REBIND_PATH="$TMP/candidate-output-rebind/live"
+OUTPUT_REBIND_ORIGINAL="$TMP/candidate-output-rebind/original"
+OUTPUT_REBIND_MARKER="$TMP/candidate-output-rebind/swapped"
+mkdir -p "$(dirname "$OUTPUT_REBIND_PATH")"
+python3 - \
+  "$OUTPUT_REBIND/Scripts/release/verify-info-policy.py" \
+  "$OUTPUT_REBIND_PATH" "$OUTPUT_REBIND_ORIGINAL" "$OUTPUT_REBIND_MARKER" <<'PY'
+from pathlib import Path
+import sys
+
+helper = Path(sys.argv[1])
+output, original, marker = sys.argv[2:]
+helper.write_text(f'''#!/usr/bin/env python3
+import os
+from pathlib import Path
+import signal
+import subprocess
+
+watcher = r"""
+import os
+from pathlib import Path
+import signal
+import sys
+import time
+pid = int(sys.argv[1])
+output = Path(sys.argv[2])
+original = Path(sys.argv[3])
+marker = Path(sys.argv[4])
+deadline = time.monotonic() + 30
+while time.monotonic() < deadline:
+    if (output / 'candidate.json').is_file():
+        os.kill(pid, signal.SIGSTOP)
+        output.rename(original)
+        output.mkdir(mode=0o700)
+        (output / 'sentinel').write_text('replacement sentinel\\n', encoding='utf-8')
+        marker.write_text('swapped\\n', encoding='utf-8')
+        os.kill(pid, signal.SIGCONT)
+        raise SystemExit(0)
+    time.sleep(0.0002)
+raise SystemExit(1)
+"""
+subprocess.Popen(
+    ['/usr/bin/python3', '-I', '-c', watcher, str(os.getppid()), {output!r}, {original!r}, {marker!r}],
+    close_fds=True,
+    start_new_session=True,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+with Path(os.environ['UTTERINK_FIXTURE_LOG']).open('a', encoding='utf-8') as handle:
+    handle.write('info-policy\\n')
+print('release Info policy valid')
+''', encoding="utf-8")
+helper.chmod(0o755)
+PY
+git -C "$OUTPUT_REBIND" add Scripts/release/verify-info-policy.py
+git -C "$OUTPUT_REBIND" commit -q -m 'rebind candidate output after publication'
+run_candidate "$OUTPUT_REBIND" "$OUTPUT_REBIND_PATH" "$(git -C "$OUTPUT_REBIND" rev-parse HEAD)"
+if [[ "$CANDIDATE_STATUS" -ne 29 || "$(cat "$TMP/stderr")" != 'release candidate error: unsafe-output' ]]; then
+  fail 'candidate output directory rebind was not rejected safely'
+fi
+for _ in {1..200}; do
+  [[ -e "$OUTPUT_REBIND_MARKER" ]] && break
+  /bin/sleep 0.01
+done
+[[ -e "$OUTPUT_REBIND_MARKER" ]] || fail 'candidate output directory rebind did not run'
+[[ ! -e "$OUTPUT_REBIND_ORIGINAL/candidate.json" ]] || fail 'candidate output rebind rollback left exact candidate behind'
+[[ "$(cat "$OUTPUT_REBIND_PATH/sentinel")" == 'replacement sentinel' ]] || fail 'candidate output rebind changed replacement sentinel'
+[[ ! -e "$OUTPUT_REBIND_PATH/candidate.json" ]] || fail 'candidate output rebind published into replacement directory'
 
 FORGED_MARKER_OUTPUT="$TMP/forged-marker-output"
 set +e

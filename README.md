@@ -42,17 +42,27 @@ Speech weights are not included in the repository or app. They are downloaded fr
 
 ## Build from Source
 
-Generate the Xcode project, then build an unsigned arm64 Debug app:
+Use XcodeGen 2.45.4, generate the project, and keep build products outside the
+checkout. The subshell preserves a failed build status while still removing
+its scratch directory:
 
 ```bash
-xcodegen generate
-xcodebuild \
-  -project UtterInk.xcodeproj \
-  -scheme UtterInk \
-  -configuration Debug \
-  -destination 'platform=macOS,arch=arm64' \
-  CODE_SIGNING_ALLOWED=NO \
-  build
+(
+  set -e
+  test "$(xcodegen --version | sed 's/^Version: //')" = '2.45.4'
+  xcodegen generate
+  BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/utterink-readme-build.XXXXXX")"
+  trap 'status=$?; trap - EXIT; rm -rf -- "$BUILD_ROOT" || status=$?; exit "$status"' EXIT
+  xcodebuild \
+    -project UtterInk.xcodeproj \
+    -scheme UtterInk \
+    -configuration Debug \
+    -destination 'platform=macOS,arch=arm64' \
+    -derivedDataPath "$BUILD_ROOT/DerivedData" \
+    -clonedSourcePackagesDirPath "$BUILD_ROOT/SourcePackages" \
+    CODE_SIGNING_ALLOWED=NO \
+    build
+)
 ```
 
 You can also open `UtterInk.xcodeproj` and run the `UtterInk` scheme from Xcode. On first launch, choose and download a speech model in onboarding or Settings.
@@ -62,22 +72,39 @@ You can also open `UtterInk.xcodeproj` and run the `UtterInk` scheme from Xcode.
 Run the Swift package tests:
 
 ```bash
-swift test --package-path Packages/UtterInkKit
+(
+  set -e
+  PACKAGE_TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/utterink-package-test.XXXXXX")"
+  trap 'status=$?; trap - EXIT; rm -rf -- "$PACKAGE_TEST_ROOT" || status=$?; exit "$status"' EXIT
+  swift test \
+    --package-path Packages/UtterInkKit \
+    --scratch-path "$PACKAGE_TEST_ROOT/UtterInkKit-build" \
+    --disable-sandbox \
+    --force-resolved-versions
+)
 ```
 
 Run the app unit tests without UI automation:
 
 ```bash
-xcodegen generate
-xcodebuild \
-  -project UtterInk.xcodeproj \
-  -scheme UtterInk \
-  -configuration Debug \
-  -destination 'platform=macOS,arch=arm64' \
-  -parallel-testing-enabled NO \
-  CODE_SIGNING_ALLOWED=NO \
-  test \
-  -only-testing:UtterInkAppTests
+(
+  set -e
+  test "$(xcodegen --version | sed 's/^Version: //')" = '2.45.4'
+  xcodegen generate
+  APP_TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/utterink-app-test.XXXXXX")"
+  trap 'status=$?; trap - EXIT; rm -rf -- "$APP_TEST_ROOT" || status=$?; exit "$status"' EXIT
+  xcodebuild \
+    -project UtterInk.xcodeproj \
+    -scheme UtterInk \
+    -configuration Debug \
+    -destination 'platform=macOS,arch=arm64' \
+    -derivedDataPath "$APP_TEST_ROOT/DerivedData" \
+    -clonedSourcePackagesDirPath "$APP_TEST_ROOT/SourcePackages" \
+    -parallel-testing-enabled NO \
+    CODE_SIGNING_ALLOWED=NO \
+    test \
+    -only-testing:UtterInkAppTests
+)
 ```
 
 Run the repository's complete local verification, including directed UI smoke tests:
@@ -88,7 +115,32 @@ Run the repository's complete local verification, including directed UI smoke te
 
 ## Unsigned Package
 
-The source command above produces an unsigned development build. It is not notarized or intended for redistribution, and this pre-release repository does not currently publish an installable package. Build and run from Xcode for local development.
+The source command above produces an unsigned development build. It is not
+notarized or intended for redistribution, and this pre-release repository does
+not currently publish an installable package.
+
+The fail-closed packaging path below requires the reviewed
+`Config/ci-toolchain.json` lock. That lock is intentionally not committed yet,
+so this checkout currently stops with `toolchain-lock-missing` before producing
+a package. After the lock is completed, contributors can run the same path
+without Apple credentials:
+
+```bash
+(
+  set -e
+  trap 'status=$?; trap - EXIT; ./Scripts/clean-distribution-output.sh || status=$?; exit "$status"' EXIT
+  ./Scripts/bootstrap-xcodegen.sh
+  UTTERINK_EXPECTED_ORIGIN='https://github.com/OWNER/UtterInk.git' \
+    ./Scripts/ci-local.sh --unsigned-package-smoke
+)
+```
+
+Replace the example origin with the separately reviewed canonical `origin`; if
+the checkout intentionally has no remote, omit `UTTERINK_EXPECTED_ORIGIN`.
+Any output is named `UNSIGNED-DO-NOT-DISTRIBUTE`, must remain local, and is
+removed by the exit cleanup. Signing, notarization, final verification, and
+publication are separate maintainer phases documented in
+[Releasing](docs/RELEASING.md); none is authorized by running these commands.
 
 ## Optional Provider Setup
 

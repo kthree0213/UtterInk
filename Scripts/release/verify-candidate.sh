@@ -31,14 +31,17 @@ fi
 while IFS= read -r -d '' environment_entry; do
   environment_name="${environment_entry%%=*}"
   case "$environment_name" in
-    PATH|LC_ALL|UTTERINK_RELEASE_ENV_CLEAN|UTTERINK_RELEASE_TEST_MODE|UTTERINK_RELEASE_TEST_TOOL_ROOT|UTTERINK_FIXTURE_LOG|PWD|SHLVL|_) ;;
+    PATH|LC_ALL|UTTERINK_RELEASE_ENV_CLEAN|UTTERINK_RELEASE_TEST_MODE|UTTERINK_RELEASE_TEST_TOOL_ROOT|UTTERINK_FIXTURE_LOG|UTTERINK_COMMIT_BOUND_SELF_FD|UTTERINK_COMMIT_BOUND_ROOT|FIXTURE_VERIFY_ENV_CLEAN|PWD|SHLVL|_) ;;
     *)
       printf 'release candidate error: unsafe-launch-environment\n' >&2
       exit 2
       ;;
   esac
 done < <(/usr/bin/env -0)
+COMMIT_BOUND_SELF_FD="${UTTERINK_COMMIT_BOUND_SELF_FD:-}"
+COMMIT_BOUND_ROOT="${UTTERINK_COMMIT_BOUND_ROOT:-}"
 unset UTTERINK_RELEASE_ENV_CLEAN
+unset UTTERINK_COMMIT_BOUND_SELF_FD UTTERINK_COMMIT_BOUND_ROOT FIXTURE_VERIFY_ENV_CLEAN
 
 set -euo pipefail
 
@@ -67,6 +70,7 @@ fail() {
 
 COMMIT=''
 OUTPUT=''
+OUTPUT_DIR_FD=''
 EXPECTED_ORIGIN=''
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
@@ -80,6 +84,11 @@ while [[ "$#" -gt 0 ]]; do
       OUTPUT="$2"
       shift 2
       ;;
+    --output-dir-fd)
+      [[ -z "$OUTPUT_DIR_FD" && "$#" -ge 2 && "$2" =~ ^[0-9]+$ ]] || fail invalid-arguments 2
+      OUTPUT_DIR_FD="$2"
+      shift 2
+      ;;
     --expected-origin)
       [[ -z "$EXPECTED_ORIGIN" && "$#" -ge 2 && -n "$2" ]] || fail invalid-arguments 2
       EXPECTED_ORIGIN="$2"
@@ -90,6 +99,15 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && -n "$OUTPUT" ]] || fail invalid-arguments 2
+if [[ -n "$OUTPUT_DIR_FD" ]]; then
+  [[ "$OUTPUT_DIR_FD" -ge 3 && "$OUTPUT_DIR_FD" -le 255 ]] || fail invalid-arguments 2
+  case "$OUTPUT_DIR_FD" in
+    40|41|50|51|52|53|54|55|56|57|58|59|60|61)
+      exec 39<&"$OUTPUT_DIR_FD" || fail invalid-arguments 2
+      OUTPUT_DIR_FD=39
+      ;;
+  esac
+fi
 
 for unsafe_name in \
   GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_NAMESPACE GIT_OBJECT_DIRECTORY \
@@ -107,16 +125,171 @@ done
 export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_SYSTEM=/dev/null
 
-ROOT="$($GIT rev-parse --show-toplevel 2>/dev/null)" || fail not-a-repository
-SCRIPT_ROOT="$(cd "$(/usr/bin/dirname "$0")/../.." && pwd -P)"
-[[ "$ROOT" == "$SCRIPT_ROOT" ]] || fail repository-mismatch
-cd "$ROOT"
+if [[ -n "$COMMIT_BOUND_SELF_FD" || -n "$COMMIT_BOUND_ROOT" ]]; then
+  [[ "$COMMIT_BOUND_SELF_FD" =~ ^[0-9]+$ && "$COMMIT_BOUND_SELF_FD" -ge 3 && "$COMMIT_BOUND_SELF_FD" -le 255 ]] || fail unsafe-launch-environment 2
+  [[ "$COMMIT_BOUND_ROOT" == /* && -d "$COMMIT_BOUND_ROOT" && ! -L "$COMMIT_BOUND_ROOT" ]] || fail unsafe-launch-environment 2
+  ROOT="$COMMIT_BOUND_ROOT"
+  cd "$ROOT"
+  [[ "$($GIT rev-parse --show-toplevel 2>/dev/null)" == "$ROOT" ]] || fail repository-mismatch
+  EXPECTED_SELF_BLOB="$($GIT rev-parse "$COMMIT:Scripts/release/verify-candidate.sh" 2>/dev/null)" || fail required-input-mismatch
+  EXPECTED_SELF_MODE="$($GIT ls-tree "$COMMIT" -- Scripts/release/verify-candidate.sh | /usr/bin/awk 'NR == 1 { print $1 }')" || fail required-input-mismatch
+  [[ "$EXPECTED_SELF_MODE" == 100755 ]] || fail required-input-mismatch
+  if ! "$PYTHON" -I - "$COMMIT_BOUND_SELF_FD" "$EXPECTED_SELF_BLOB" <<'PY' >/dev/null 2>&1
+import hashlib
+import os
+import stat
+import sys
 
-TMP="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/utterink-release-candidate.XXXXXX")"
+descriptor = int(sys.argv[1])
+expected = sys.argv[2]
+try:
+    metadata = os.fstat(descriptor)
+except OSError:
+    raise SystemExit(1)
+if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o755:
+    raise SystemExit(1)
+content = bytearray()
+offset = 0
+while offset < metadata.st_size:
+    chunk = os.pread(descriptor, min(1024 * 1024, metadata.st_size - offset), offset)
+    if not chunk:
+        raise SystemExit(1)
+    content.extend(chunk)
+    offset += len(chunk)
+digest = hashlib.sha1()
+digest.update(f"blob {len(content)}\0".encode("ascii"))
+digest.update(content)
+def fingerprint(value):
+    return (
+        value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_gid,
+        value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns,
+    )
+
+
+if digest.hexdigest() != expected or fingerprint(os.fstat(descriptor)) != fingerprint(metadata):
+    raise SystemExit(1)
+PY
+  then
+    fail required-input-mismatch
+  fi
+else
+  ROOT="$($GIT rev-parse --show-toplevel 2>/dev/null)" || fail not-a-repository
+  SCRIPT_ROOT="$(cd "$(/usr/bin/dirname "$0")/../.." && pwd -P)"
+  [[ "$ROOT" == "$SCRIPT_ROOT" ]] || fail repository-mismatch
+  cd "$ROOT"
+fi
+
+TMP="$(/usr/bin/mktemp -d /tmp/utterink-release-candidate.XXXXXX)"
+TMP_PARENT="${TMP%/*}"
+TMP_NAME="${TMP##*/}"
+exec 40< "$TMP_PARENT" || fail temporary-directory-failed
+exec 41< "$TMP" || fail temporary-directory-failed
+if ! TMP_RECORD="$($PYTHON -I - 40 41 "$TMP_NAME" <<'PY' 2>/dev/null
+import os
+import stat
+import sys
+
+parent_fd = int(sys.argv[1])
+temporary_fd = int(sys.argv[2])
+name = sys.argv[3]
+try:
+    opened = os.fstat(temporary_fd)
+    named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+except OSError:
+    raise SystemExit(1)
+if (
+    not stat.S_ISDIR(opened.st_mode)
+    or stat.S_ISLNK(named.st_mode)
+    or opened.st_uid != os.geteuid()
+    or stat.S_IMODE(opened.st_mode) != 0o700
+    or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+):
+    raise SystemExit(1)
+print(opened.st_dev, opened.st_ino)
+PY
+)"; then
+  fail temporary-directory-failed
+fi
+IFS=' ' read -r TMP_DEV TMP_INO <<< "$TMP_RECORD"
+[[ "$TMP_DEV" =~ ^[0-9]+$ && "$TMP_INO" =~ ^[0-9]+$ ]] || fail temporary-directory-failed
+OUTPUT_PUBLISHED=0
 cleanup() {
   local status=$?
   trap - EXIT
-  /bin/rm -rf "$TMP"
+  set +e
+  if [[ "$status" -ne 0 && "$OUTPUT_PUBLISHED" -eq 1 ]] && declare -F rollback_candidate_output >/dev/null; then
+    rollback_candidate_output
+  fi
+  "$PYTHON" -I - 40 41 "$TMP_NAME" "$TMP_DEV" "$TMP_INO" <<'PY' >/dev/null 2>&1
+import os
+import stat
+import sys
+
+parent_fd = int(sys.argv[1])
+temporary_fd = int(sys.argv[2])
+name = sys.argv[3]
+expected = (int(sys.argv[4]), int(sys.argv[5]))
+directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def identity(value):
+    return value.st_dev, value.st_ino
+
+
+def clear_directory(descriptor, device):
+    try:
+        names = os.listdir(descriptor)
+    except OSError:
+        return
+    for child_name in names:
+        try:
+            before = os.stat(child_name, dir_fd=descriptor, follow_symlinks=False)
+        except OSError:
+            continue
+        if stat.S_ISDIR(before.st_mode) and not stat.S_ISLNK(before.st_mode) and before.st_dev == device:
+            try:
+                child = os.open(child_name, directory_flags, dir_fd=descriptor)
+            except OSError:
+                continue
+            try:
+                opened = os.fstat(child)
+                if identity(opened) != identity(before):
+                    continue
+                clear_directory(child, device)
+            finally:
+                os.close(child)
+            try:
+                current = os.stat(child_name, dir_fd=descriptor, follow_symlinks=False)
+                if identity(current) == identity(before):
+                    os.rmdir(child_name, dir_fd=descriptor)
+            except OSError:
+                pass
+        else:
+            try:
+                current = os.stat(child_name, dir_fd=descriptor, follow_symlinks=False)
+                if identity(current) == identity(before):
+                    os.unlink(child_name, dir_fd=descriptor)
+            except OSError:
+                pass
+
+
+try:
+    opened = os.fstat(temporary_fd)
+except OSError:
+    raise SystemExit(0)
+if identity(opened) != expected or not stat.S_ISDIR(opened.st_mode):
+    raise SystemExit(0)
+clear_directory(temporary_fd, opened.st_dev)
+try:
+    named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if identity(named) == expected and stat.S_ISDIR(named.st_mode):
+        os.rmdir(name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+except OSError:
+    pass
+PY
+  exec 41<&-
+  exec 40<&-
   exit "$status"
 }
 trap cleanup EXIT
@@ -341,7 +514,128 @@ for required in "${REQUIRED_INPUTS[@]}"; do
 done
 assert_ignored_inventory
 
-if ! "$PYTHON" -I - Config/ci-toolchain.json "$TMP/expected-xcodegen-sha" <<'PY' > "$TMP/lock-preflight-output" 2>&1
+# Keep every tracked helper and direct policy/schema input used below open for
+# the duration of verification.  The worktree name must continue to identify
+# the same commit-bound inode, while execution and reads use the held FD.
+HISTORY_FD=50
+READ_METADATA_FD=51
+VERIFY_ENTITLEMENTS_FD=52
+VERIFY_INFO_FD=53
+TOOLCHAIN_LOCK_FD=54
+RELEASE_METADATA_FD=55
+RELEASE_ENTITLEMENTS_FD=56
+RELEASE_INFO_FD=57
+EVIDENCE_SCHEMA_FD=58
+PACKAGE_RESOLUTION_FD=59
+exec 50< Scripts/scan-public-history.sh
+exec 51< Scripts/release/read-metadata.py
+exec 52< Scripts/release/verify-entitlements.py
+exec 53< Scripts/release/verify-info-policy.py
+exec 54< Config/ci-toolchain.json
+exec 55< Config/release-metadata.json
+exec 56< Config/release-entitlements.json
+exec 57< Config/release-info-policy.json
+exec 58< docs/release/evidence-schema.json
+exec 59< "$PACKAGE_RESOLUTION"
+
+HELD_INPUT_PATHS=(
+  Scripts/scan-public-history.sh
+  Scripts/release/read-metadata.py
+  Scripts/release/verify-entitlements.py
+  Scripts/release/verify-info-policy.py
+  Config/ci-toolchain.json
+  Config/release-metadata.json
+  Config/release-entitlements.json
+  Config/release-info-policy.json
+  docs/release/evidence-schema.json
+  "$PACKAGE_RESOLUTION"
+)
+HELD_INPUT_FDS=(
+  "$HISTORY_FD"
+  "$READ_METADATA_FD"
+  "$VERIFY_ENTITLEMENTS_FD"
+  "$VERIFY_INFO_FD"
+  "$TOOLCHAIN_LOCK_FD"
+  "$RELEASE_METADATA_FD"
+  "$RELEASE_ENTITLEMENTS_FD"
+  "$RELEASE_INFO_FD"
+  "$EVIDENCE_SCHEMA_FD"
+  "$PACKAGE_RESOLUTION_FD"
+)
+
+assert_commit_bound_fd() {
+  local path="$1"
+  local descriptor="$2"
+  local expected_blob expected_mode
+  expected_blob="$($GIT rev-parse "$COMMIT:$path" 2>/dev/null)" || return 1
+  expected_mode="$($GIT ls-tree "$COMMIT" -- "$path" | /usr/bin/awk 'NR == 1 { print $1 }')" || return 1
+  "$PYTHON" -I - "$ROOT/$path" "$descriptor" "$expected_blob" "$expected_mode" <<'PY' >/dev/null 2>&1
+import hashlib
+import os
+import stat
+import sys
+
+path, descriptor_text, expected_blob, expected_mode = sys.argv[1:]
+descriptor = int(descriptor_text)
+try:
+    before = os.fstat(descriptor)
+    named = os.lstat(path)
+except OSError:
+    raise SystemExit(1)
+if (
+    not stat.S_ISREG(before.st_mode)
+    or stat.S_ISLNK(named.st_mode)
+    or before.st_uid != os.geteuid()
+    or before.st_nlink != 1
+    or (before.st_dev, before.st_ino) != (named.st_dev, named.st_ino)
+):
+    raise SystemExit(1)
+mode = "100755" if before.st_mode & stat.S_IXUSR else "100644"
+if mode != expected_mode:
+    raise SystemExit(1)
+content = bytearray()
+offset = 0
+while offset < before.st_size:
+    chunk = os.pread(descriptor, min(1024 * 1024, before.st_size - offset), offset)
+    if not chunk:
+        raise SystemExit(1)
+    content.extend(chunk)
+    offset += len(chunk)
+after = os.fstat(descriptor)
+digest = hashlib.sha1()
+digest.update(f"blob {len(content)}\0".encode("ascii"))
+digest.update(content)
+def fingerprint(value):
+    return (
+        value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_gid,
+        value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns,
+    )
+
+
+if fingerprint(before) != fingerprint(after) or digest.hexdigest() != expected_blob:
+    raise SystemExit(1)
+PY
+}
+
+assert_held_inputs() {
+  local index
+  for ((index = 0; index < ${#HELD_INPUT_PATHS[@]}; index++)); do
+    assert_commit_bound_fd "${HELD_INPUT_PATHS[$index]}" "${HELD_INPUT_FDS[$index]}" || fail required-input-mismatch
+  done
+}
+
+rewind_held_fd() {
+  "$PYTHON" -I - "$1" <<'PY' >/dev/null 2>&1
+import os
+import sys
+os.lseek(int(sys.argv[1]), 0, os.SEEK_SET)
+PY
+}
+
+assert_held_inputs
+
+rewind_held_fd "$TOOLCHAIN_LOCK_FD"
+if ! "$PYTHON" -I - "/dev/fd/$TOOLCHAIN_LOCK_FD" "$TMP/expected-xcodegen-sha" <<'PY' > "$TMP/lock-preflight-output" 2>&1
 from __future__ import annotations
 
 import json
@@ -498,7 +792,10 @@ fi
 /bin/mkdir -p "$TMP/empty-home" "$TMP/history-tmp"
 run_history_scan() {
   local output="$1"
+  local status=0
   shift
+  assert_commit_bound_fd Scripts/scan-public-history.sh "$HISTORY_FD" || return 1
+  rewind_held_fd "$HISTORY_FD" || return 1
   if [[ "$TEST_MODE" -eq 1 ]]; then
     [[ "${UTTERINK_FIXTURE_LOG:-}" == /* ]] || return 1
     /usr/bin/env -i \
@@ -507,15 +804,64 @@ run_history_scan() {
       TMPDIR="$TMP/history-tmp" \
       LC_ALL=C \
       UTTERINK_FIXTURE_LOG="$UTTERINK_FIXTURE_LOG" \
-      /bin/bash Scripts/scan-public-history.sh "$@" > "$output" 2>&1
+      /bin/bash "/dev/fd/$HISTORY_FD" "$@" > "$output" 2>&1 || status=$?
   else
     /usr/bin/env -i \
       PATH=/usr/bin:/bin:/usr/sbin:/sbin \
       HOME="$TMP/empty-home" \
       TMPDIR="$TMP/history-tmp" \
       LC_ALL=C \
-      /bin/bash Scripts/scan-public-history.sh "$@" > "$output" 2>&1
+      /bin/bash "/dev/fd/$HISTORY_FD" "$@" > "$output" 2>&1 || status=$?
   fi
+  assert_commit_bound_fd Scripts/scan-public-history.sh "$HISTORY_FD" || return 1
+  return "$status"
+}
+
+run_held_python() {
+  local descriptor="$1"
+  local logical_path="$2"
+  shift 2
+  "$PYTHON" -I - "$descriptor" "$logical_path" "$@" <<'PY'
+import os
+import stat
+import sys
+
+descriptor = int(sys.argv[1])
+logical_path = sys.argv[2]
+arguments = sys.argv[3:]
+before = os.fstat(descriptor)
+if not stat.S_ISREG(before.st_mode):
+    raise SystemExit(1)
+content = bytearray()
+offset = 0
+while offset < before.st_size:
+    chunk = os.pread(descriptor, min(1024 * 1024, before.st_size - offset), offset)
+    if not chunk:
+        raise SystemExit(1)
+    content.extend(chunk)
+    offset += len(chunk)
+def fingerprint(value):
+    return (
+        value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_gid,
+        value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns,
+    )
+
+
+if fingerprint(os.fstat(descriptor)) != fingerprint(before):
+    raise SystemExit(1)
+try:
+    source = bytes(content).decode("utf-8", errors="strict")
+except UnicodeDecodeError:
+    raise SystemExit(1)
+sys.argv = [logical_path, *arguments]
+namespace = {
+    "__name__": "__main__",
+    "__file__": logical_path,
+    "__package__": None,
+    "__cached__": None,
+}
+exec(compile(source, logical_path, "exec"), namespace, namespace)
+PY
 }
 
 if ! DEVELOPER_DIR="$DEVELOPER_DIR_VALUE" "$XCODEBUILD" -version > "$TMP/xcode-version" 2> "$TMP/tool-error"; then
@@ -538,8 +884,9 @@ if ! "$SHASUM" -a 256 "$XCODEGEN" > "$TMP/xcodegen-sha" 2> "$TMP/tool-error"; th
 fi
 [[ "$(/usr/bin/awk 'NR == 1 { print $1 }' "$TMP/xcodegen-sha")" == "$EXPECTED_XCODEGEN_HASH" ]] || fail toolchain-mismatch 24
 
+rewind_held_fd "$TOOLCHAIN_LOCK_FD"
 if ! "$PYTHON" -I - \
-  Config/ci-toolchain.json \
+  "/dev/fd/$TOOLCHAIN_LOCK_FD" \
   "$TMP/xcode-version" \
   "$TMP/sdk-version" \
   "$TMP/sdk-build" \
@@ -704,17 +1051,24 @@ else
   fi
 fi
 
-if ! "$PYTHON" -I Scripts/release/read-metadata.py --json > "$TMP/metadata.json" 2> "$TMP/metadata-error"; then
+assert_commit_bound_fd Scripts/release/read-metadata.py "$READ_METADATA_FD" || fail required-input-mismatch
+if ! run_held_python "$READ_METADATA_FD" "$ROOT/Scripts/release/read-metadata.py" --json > "$TMP/metadata.json" 2> "$TMP/metadata-error"; then
   fail metadata-mismatch 23
 fi
-if ! "$PYTHON" -I Scripts/release/verify-entitlements.py > "$TMP/entitlements-output" 2> "$TMP/entitlements-error"; then
+assert_commit_bound_fd Scripts/release/read-metadata.py "$READ_METADATA_FD" || fail required-input-mismatch
+assert_commit_bound_fd Scripts/release/verify-entitlements.py "$VERIFY_ENTITLEMENTS_FD" || fail required-input-mismatch
+if ! run_held_python "$VERIFY_ENTITLEMENTS_FD" "$ROOT/Scripts/release/verify-entitlements.py" > "$TMP/entitlements-output" 2> "$TMP/entitlements-error"; then
   fail entitlement-policy-failed 26
 fi
-if ! "$PYTHON" -I Scripts/release/verify-info-policy.py > "$TMP/info-output" 2> "$TMP/info-error"; then
+assert_commit_bound_fd Scripts/release/verify-entitlements.py "$VERIFY_ENTITLEMENTS_FD" || fail required-input-mismatch
+assert_commit_bound_fd Scripts/release/verify-info-policy.py "$VERIFY_INFO_FD" || fail required-input-mismatch
+if ! run_held_python "$VERIFY_INFO_FD" "$ROOT/Scripts/release/verify-info-policy.py" > "$TMP/info-output" 2> "$TMP/info-error"; then
   fail info-policy-failed 26
 fi
+assert_commit_bound_fd Scripts/release/verify-info-policy.py "$VERIFY_INFO_FD" || fail required-input-mismatch
 
-PACKAGE_HASH_BEFORE="$($SHASUM -a 256 "$PACKAGE_RESOLUTION" | /usr/bin/awk '{print $1}')" || fail package-resolution-mismatch 22
+rewind_held_fd "$PACKAGE_RESOLUTION_FD"
+PACKAGE_HASH_BEFORE="$($SHASUM -a 256 "/dev/fd/$PACKAGE_RESOLUTION_FD" | /usr/bin/awk '{print $1}')" || fail package-resolution-mismatch 22
 if ! DEVELOPER_DIR="$DEVELOPER_DIR_VALUE" "$SWIFT" package \
   --package-path Packages/UtterInkKit \
   --scratch-path "$TMP/SwiftPM" \
@@ -815,7 +1169,9 @@ PY
 then
   fail package-resolution-mismatch 22
 fi
-PACKAGE_HASH_AFTER="$($SHASUM -a 256 "$PACKAGE_RESOLUTION" | /usr/bin/awk '{print $1}')" || fail package-resolution-mismatch 22
+assert_commit_bound_fd "$PACKAGE_RESOLUTION" "$PACKAGE_RESOLUTION_FD" || fail package-resolution-mismatch 22
+rewind_held_fd "$PACKAGE_RESOLUTION_FD"
+PACKAGE_HASH_AFTER="$($SHASUM -a 256 "/dev/fd/$PACKAGE_RESOLUTION_FD" | /usr/bin/awk '{print $1}')" || fail package-resolution-mismatch 22
 [[ "$PACKAGE_HASH_AFTER" == "$PACKAGE_HASH_BEFORE" ]] || fail package-resolution-mismatch 22
 generated_tree_is_clean || fail package-resolution-mismatch 22
 
@@ -932,14 +1288,20 @@ verify_commit_file "$PACKAGE_RESOLUTION" || fail package-resolution-mismatch 22
 for required in "${REQUIRED_INPUTS[@]}"; do
   verify_commit_file "$required" || fail required-input-mismatch
 done
+assert_held_inputs
 TREE="$($GIT rev-parse "$COMMIT^{tree}")" || fail source-identity-failed
-LOCK_HASH="$($SHASUM -a 256 Config/ci-toolchain.json | /usr/bin/awk '{print $1}')" || fail evidence-generation-failed
-METADATA_POLICY_HASH="$($SHASUM -a 256 Config/release-metadata.json | /usr/bin/awk '{print $1}')" || fail evidence-generation-failed
-ENTITLEMENTS_POLICY_HASH="$($SHASUM -a 256 Config/release-entitlements.json | /usr/bin/awk '{print $1}')" || fail evidence-generation-failed
-INFO_POLICY_HASH="$($SHASUM -a 256 Config/release-info-policy.json | /usr/bin/awk '{print $1}')" || fail evidence-generation-failed
+rewind_held_fd "$TOOLCHAIN_LOCK_FD"
+LOCK_HASH="$($SHASUM -a 256 "/dev/fd/$TOOLCHAIN_LOCK_FD" | /usr/bin/awk '{print $1}')" || fail evidence-generation-failed
+rewind_held_fd "$RELEASE_METADATA_FD"
+METADATA_POLICY_HASH="$($SHASUM -a 256 "/dev/fd/$RELEASE_METADATA_FD" | /usr/bin/awk '{print $1}')" || fail evidence-generation-failed
+rewind_held_fd "$RELEASE_ENTITLEMENTS_FD"
+ENTITLEMENTS_POLICY_HASH="$($SHASUM -a 256 "/dev/fd/$RELEASE_ENTITLEMENTS_FD" | /usr/bin/awk '{print $1}')" || fail evidence-generation-failed
+rewind_held_fd "$RELEASE_INFO_FD"
+INFO_POLICY_HASH="$($SHASUM -a 256 "/dev/fd/$RELEASE_INFO_FD" | /usr/bin/awk '{print $1}')" || fail evidence-generation-failed
 
+rewind_held_fd "$EVIDENCE_SCHEMA_FD"
 if ! "$PYTHON" -I - \
-  docs/release/evidence-schema.json \
+  "/dev/fd/$EVIDENCE_SCHEMA_FD" \
   "$TMP/metadata.json" \
   "$TMP/toolchain.json" \
   "$TMP/candidate.json" \
@@ -1132,6 +1494,9 @@ PY
 then
   fail evidence-schema-mismatch 28
 fi
+assert_held_inputs
+CANDIDATE_SOURCE_FD=60
+exec 60< "$TMP/candidate.json" || fail evidence-generation-failed
 
 if ! OUTPUT_ABSOLUTE="$($PYTHON -I - "$OUTPUT" "$ROOT" <<'PY' 2>/dev/null
 from __future__ import annotations
@@ -1174,9 +1539,85 @@ verify_commit_file "$PACKAGE_RESOLUTION" || fail package-resolution-mismatch 22
 for required in "${REQUIRED_INPUTS[@]}"; do
   verify_commit_file "$required" || fail required-input-mismatch
 done
-if ! "$PYTHON" -I - "$OUTPUT_ABSOLUTE" "$TMP/candidate.json" <<'PY' >/dev/null 2>&1
+assert_held_inputs
+if ! OUTPUT_DIRECTORY_RECORD="$($PYTHON -I - "$OUTPUT_ABSOLUTE" "$OUTPUT_DIR_FD" <<'PY' 2>/dev/null
+import os
+from pathlib import Path
+import stat
+import sys
+
+output = Path(sys.argv[1])
+inherited = sys.argv[2]
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+if inherited:
+    try:
+        directory_fd = os.dup(int(inherited, 10))
+        opened = os.fstat(directory_fd)
+        named = os.lstat(output)
+    except (OSError, ValueError):
+        raise SystemExit(1)
+    if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+        raise SystemExit(1)
+else:
+    directory_fd = os.open(output.anchor, flags)
+    try:
+        for component in output.parts[1:]:
+            try:
+                next_fd = os.open(component, flags, dir_fd=directory_fd)
+            except FileNotFoundError:
+                parent = os.fstat(directory_fd)
+                if parent.st_uid != os.geteuid() or parent.st_mode & 0o022:
+                    raise SystemExit(1)
+                os.mkdir(component, 0o755, dir_fd=directory_fd)
+                next_fd = os.open(component, flags, dir_fd=directory_fd)
+                os.fsync(directory_fd)
+            os.close(directory_fd)
+            directory_fd = next_fd
+    except BaseException:
+        os.close(directory_fd)
+        raise
+opened = os.fstat(directory_fd)
+if (
+    not stat.S_ISDIR(opened.st_mode)
+    or opened.st_uid != os.geteuid()
+    or opened.st_mode & 0o022
+    or opened.st_nlink < 2
+):
+    raise SystemExit(1)
+print(opened.st_dev, opened.st_ino)
+os.close(directory_fd)
+PY
+)"; then
+  fail unsafe-output 29
+fi
+IFS=' ' read -r OUTPUT_DIRECTORY_DEV OUTPUT_DIRECTORY_INO <<< "$OUTPUT_DIRECTORY_RECORD"
+[[ "$OUTPUT_DIRECTORY_DEV" =~ ^[0-9]+$ && "$OUTPUT_DIRECTORY_INO" =~ ^[0-9]+$ ]] || fail unsafe-output 29
+OUTPUT_HOLD_FD=61
+exec 61< "$OUTPUT_ABSOLUTE" || fail unsafe-output 29
+if ! "$PYTHON" -I - "$OUTPUT_ABSOLUTE" "$OUTPUT_HOLD_FD" "$OUTPUT_DIRECTORY_DEV" "$OUTPUT_DIRECTORY_INO" <<'PY' >/dev/null 2>&1
+import os
+import stat
+import sys
+path, descriptor_text, device_text, inode_text = sys.argv[1:]
+descriptor = int(descriptor_text)
+opened = os.fstat(descriptor)
+named = os.lstat(path)
+if (
+    not stat.S_ISDIR(opened.st_mode)
+    or stat.S_ISLNK(named.st_mode)
+    or (opened.st_dev, opened.st_ino) != (int(device_text), int(inode_text))
+    or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino)
+):
+    raise SystemExit(1)
+PY
+then
+  fail unsafe-output 29
+fi
+
+if ! OUTPUT_RECORD="$($PYTHON -I - "$OUTPUT_ABSOLUTE" "$CANDIDATE_SOURCE_FD" "$OUTPUT_HOLD_FD" <<'PY' 2>/dev/null
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 import secrets
@@ -1189,13 +1630,13 @@ def abort() -> None:
 
 
 output = Path(sys.argv[1])
-source = Path(sys.argv[2])
-if not output.is_absolute() or not source.is_absolute() or output == Path(output.anchor):
+source_number = int(sys.argv[2])
+inherited_directory = sys.argv[3]
+if not output.is_absolute() or output == Path(output.anchor):
     abort()
 
-read_flags = os.O_RDONLY | os.O_NOFOLLOW
 try:
-    source_fd = os.open(source, read_flags)
+    source_fd = os.dup(source_number)
 except OSError:
     abort()
 try:
@@ -1211,37 +1652,75 @@ try:
         chunks.append(chunk)
         remaining -= len(chunk)
     content = b"".join(chunks)
+    def fingerprint(value):
+        return (
+            value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_gid,
+            value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns,
+        )
+    if fingerprint(os.fstat(source_fd)) != fingerprint(metadata) or os.pread(source_fd, 1, metadata.st_size):
+        abort()
 finally:
     os.close(source_fd)
 
 directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-try:
-    directory_fd = os.open(output.anchor, directory_flags)
-except OSError:
-    abort()
 created = False
-temporary_name: str | None = None
-try:
-    for component in output.parts[1:]:
-        try:
-            next_fd = os.open(component, directory_flags, dir_fd=directory_fd)
-        except FileNotFoundError:
-            parent = os.fstat(directory_fd)
-            if parent.st_uid != os.geteuid() or parent.st_mode & 0o022:
-                abort()
+if inherited_directory:
+    try:
+        inherited_number = int(inherited_directory, 10)
+        if inherited_number < 3 or inherited_number > 255:
+            abort()
+        directory_fd = os.dup(inherited_number)
+        directory = os.fstat(directory_fd)
+        named = os.lstat(output)
+    except (OSError, ValueError):
+        abort()
+    if (
+        not stat.S_ISDIR(directory.st_mode)
+        or not stat.S_ISDIR(named.st_mode)
+        or stat.S_ISLNK(named.st_mode)
+        or directory.st_uid != os.geteuid()
+        or directory.st_mode & 0o022
+        or directory.st_nlink < 2
+        or (directory.st_dev, directory.st_ino) != (named.st_dev, named.st_ino)
+    ):
+        os.close(directory_fd)
+        abort()
+else:
+    try:
+        directory_fd = os.open(output.anchor, directory_flags)
+    except OSError:
+        abort()
+    try:
+        for component in output.parts[1:]:
             try:
-                os.mkdir(component, 0o755, dir_fd=directory_fd)
                 next_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+            except FileNotFoundError:
+                parent = os.fstat(directory_fd)
+                if parent.st_uid != os.geteuid() or parent.st_mode & 0o022:
+                    abort()
+                try:
+                    os.mkdir(component, 0o755, dir_fd=directory_fd)
+                    next_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+                except OSError:
+                    abort()
+                created = True
             except OSError:
                 abort()
-            created = True
-        except OSError:
-            abort()
+            os.close(directory_fd)
+            directory_fd = next_fd
+    except BaseException:
         os.close(directory_fd)
-        directory_fd = next_fd
+        raise
 
+temporary_name: str | None = None
+try:
     directory = os.fstat(directory_fd)
-    if directory.st_uid != os.geteuid() or directory.st_mode & 0o022:
+    if (
+        not stat.S_ISDIR(directory.st_mode)
+        or directory.st_uid != os.geteuid()
+        or directory.st_mode & 0o022
+        or directory.st_nlink < 2
+    ):
         abort()
     if created:
         os.fchmod(directory_fd, 0o755)
@@ -1252,11 +1731,10 @@ try:
         existing = None
     except OSError:
         abort()
-    if existing is not None and (
-        not stat.S_ISREG(existing.st_mode)
-        or existing.st_uid != os.geteuid()
-        or existing.st_mode & 0o022
-    ):
+    # candidate.json is immutable release evidence.  Never replace an existing
+    # name: a later repository/input check could fail after publication, and
+    # deleting the new inode would otherwise destroy the prior evidence.
+    if existing is not None:
         abort()
 
     for _ in range(32):
@@ -1289,13 +1767,54 @@ try:
     finally:
         os.close(temporary_fd)
 
-    os.replace(
-        temporary_name,
-        "candidate.json",
-        src_dir_fd=directory_fd,
-        dst_dir_fd=directory_fd,
+    linked = False
+    try:
+        os.link(
+            temporary_name,
+            "candidate.json",
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        linked = True
+        temporary_entry = os.stat(temporary_name, dir_fd=directory_fd, follow_symlinks=False)
+        published_entry = os.stat("candidate.json", dir_fd=directory_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(temporary_entry.st_mode)
+            or (temporary_entry.st_dev, temporary_entry.st_ino)
+            != (published_entry.st_dev, published_entry.st_ino)
+        ):
+            abort()
+        os.unlink(temporary_name, dir_fd=directory_fd)
+        temporary_name = None
+    except BaseException:
+        if linked:
+            try:
+                current = os.stat("candidate.json", dir_fd=directory_fd, follow_symlinks=False)
+                temporary_entry = os.stat(temporary_name, dir_fd=directory_fd, follow_symlinks=False)
+                if (current.st_dev, current.st_ino) == (temporary_entry.st_dev, temporary_entry.st_ino):
+                    os.unlink("candidate.json", dir_fd=directory_fd)
+            except OSError:
+                pass
+        raise
+    os.fsync(directory_fd)
+    final = os.stat("candidate.json", dir_fd=directory_fd, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(final.st_mode)
+        or final.st_uid != os.geteuid()
+        or final.st_nlink != 1
+        or stat.S_IMODE(final.st_mode) != 0o644
+        or final.st_size != len(content)
+    ):
+        abort()
+    directory = os.fstat(directory_fd)
+    print(
+        directory.st_dev,
+        directory.st_ino,
+        final.st_dev,
+        final.st_ino,
+        hashlib.sha256(content).hexdigest(),
     )
-    temporary_name = None
 finally:
     if temporary_name is not None:
         try:
@@ -1304,8 +1823,115 @@ finally:
             pass
     os.close(directory_fd)
 PY
-then
+)"; then
   fail unsafe-output 29
 fi
+
+IFS=' ' read -r \
+  OUTPUT_DIRECTORY_DEV_AFTER OUTPUT_DIRECTORY_INO_AFTER \
+  OUTPUT_FILE_DEV OUTPUT_FILE_INO OUTPUT_FILE_SHA256 <<< "$OUTPUT_RECORD"
+[[ \
+  "$OUTPUT_DIRECTORY_DEV_AFTER" == "$OUTPUT_DIRECTORY_DEV" && \
+  "$OUTPUT_DIRECTORY_INO_AFTER" == "$OUTPUT_DIRECTORY_INO" && \
+  "$OUTPUT_FILE_DEV" =~ ^[0-9]+$ && "$OUTPUT_FILE_INO" =~ ^[0-9]+$ && \
+  "$OUTPUT_FILE_SHA256" =~ ^[0-9a-f]{64}$ \
+]] || fail unsafe-output 29
+OUTPUT_PUBLISHED=1
+
+rollback_candidate_output() {
+  "$PYTHON" -I - "$OUTPUT_HOLD_FD" "$OUTPUT_FILE_DEV" "$OUTPUT_FILE_INO" <<'PY' >/dev/null 2>&1 || true
+import os
+import stat
+import sys
+directory_fd = int(sys.argv[1])
+expected = (int(sys.argv[2]), int(sys.argv[3]))
+try:
+    current = os.stat("candidate.json", dir_fd=directory_fd, follow_symlinks=False)
+    if (
+        (current.st_dev, current.st_ino) == expected
+        and stat.S_ISREG(current.st_mode)
+        and not stat.S_ISLNK(current.st_mode)
+    ):
+        os.unlink("candidate.json", dir_fd=directory_fd)
+        os.fsync(directory_fd)
+except OSError:
+    pass
+PY
+}
+
+assert_candidate_output_bound() {
+  "$PYTHON" -I - \
+    "$OUTPUT_ABSOLUTE" "$OUTPUT_HOLD_FD" \
+    "$OUTPUT_DIRECTORY_DEV" "$OUTPUT_DIRECTORY_INO" \
+    "$OUTPUT_FILE_DEV" "$OUTPUT_FILE_INO" "$OUTPUT_FILE_SHA256" \
+    "$CANDIDATE_SOURCE_FD" <<'PY' >/dev/null 2>&1
+import hashlib
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+directory_fd = int(sys.argv[2])
+expected_directory = (int(sys.argv[3]), int(sys.argv[4]))
+expected_file = (int(sys.argv[5]), int(sys.argv[6]))
+expected_hash = sys.argv[7]
+source_fd = int(sys.argv[8])
+opened_directory = os.fstat(directory_fd)
+named_directory = os.lstat(path)
+if (
+    (opened_directory.st_dev, opened_directory.st_ino) != expected_directory
+    or (named_directory.st_dev, named_directory.st_ino) != expected_directory
+    or not stat.S_ISDIR(opened_directory.st_mode)
+    or stat.S_ISLNK(named_directory.st_mode)
+):
+    raise SystemExit(1)
+named_file = os.stat("candidate.json", dir_fd=directory_fd, follow_symlinks=False)
+if (
+    (named_file.st_dev, named_file.st_ino) != expected_file
+    or not stat.S_ISREG(named_file.st_mode)
+    or stat.S_ISLNK(named_file.st_mode)
+    or named_file.st_nlink != 1
+    or stat.S_IMODE(named_file.st_mode) != 0o644
+):
+    raise SystemExit(1)
+output_fd = os.open("candidate.json", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+try:
+    if (os.fstat(output_fd).st_dev, os.fstat(output_fd).st_ino) != expected_file:
+        raise SystemExit(1)
+    digests = []
+    for descriptor in (output_fd, source_fd):
+        value = hashlib.sha256()
+        metadata = os.fstat(descriptor)
+        offset = 0
+        while offset < metadata.st_size:
+            chunk = os.pread(descriptor, min(1024 * 1024, metadata.st_size - offset), offset)
+            if not chunk:
+                raise SystemExit(1)
+            value.update(chunk)
+            offset += len(chunk)
+        current = os.fstat(descriptor)
+        fingerprint = lambda value: (
+            value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_gid,
+            value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns,
+        )
+        if fingerprint(current) != fingerprint(metadata):
+            raise SystemExit(1)
+        digests.append(value.hexdigest())
+    if digests != [expected_hash, expected_hash]:
+        raise SystemExit(1)
+finally:
+    os.close(output_fd)
+PY
+}
+
+assert_candidate_output_bound || fail unsafe-output 29
+assert_clean_index
+assert_ignored_inventory
+verify_commit_file "$PACKAGE_RESOLUTION" || fail package-resolution-mismatch 22
+for required in "${REQUIRED_INPUTS[@]}"; do
+  verify_commit_file "$required" || fail required-input-mismatch
+done
+assert_held_inputs
+assert_candidate_output_bound || fail unsafe-output 29
 
 exit 0

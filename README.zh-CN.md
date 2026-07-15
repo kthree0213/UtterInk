@@ -42,17 +42,25 @@ _品牌标识图，不是产品截图。_
 
 ## 从源码构建
 
-先生成 Xcode 项目，再构建未签名的 arm64 Debug 应用：
+使用 XcodeGen 2.45.4 生成项目，并把构建产物放在仓库外。子 shell 会在保留构建失败状态的同时清理临时目录：
 
 ```bash
-xcodegen generate
-xcodebuild \
-  -project UtterInk.xcodeproj \
-  -scheme UtterInk \
-  -configuration Debug \
-  -destination 'platform=macOS,arch=arm64' \
-  CODE_SIGNING_ALLOWED=NO \
-  build
+(
+  set -e
+  test "$(xcodegen --version | sed 's/^Version: //')" = '2.45.4'
+  xcodegen generate
+  BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/utterink-readme-build.XXXXXX")"
+  trap 'status=$?; trap - EXIT; rm -rf -- "$BUILD_ROOT" || status=$?; exit "$status"' EXIT
+  xcodebuild \
+    -project UtterInk.xcodeproj \
+    -scheme UtterInk \
+    -configuration Debug \
+    -destination 'platform=macOS,arch=arm64' \
+    -derivedDataPath "$BUILD_ROOT/DerivedData" \
+    -clonedSourcePackagesDirPath "$BUILD_ROOT/SourcePackages" \
+    CODE_SIGNING_ALLOWED=NO \
+    build
+)
 ```
 
 也可以打开 `UtterInk.xcodeproj`，在 Xcode 中运行 `UtterInk` scheme。首次启动后，请在引导页或设置中选择并下载语音模型。
@@ -62,22 +70,39 @@ xcodebuild \
 运行 Swift package 测试：
 
 ```bash
-swift test --package-path Packages/UtterInkKit
+(
+  set -e
+  PACKAGE_TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/utterink-package-test.XXXXXX")"
+  trap 'status=$?; trap - EXIT; rm -rf -- "$PACKAGE_TEST_ROOT" || status=$?; exit "$status"' EXIT
+  swift test \
+    --package-path Packages/UtterInkKit \
+    --scratch-path "$PACKAGE_TEST_ROOT/UtterInkKit-build" \
+    --disable-sandbox \
+    --force-resolved-versions
+)
 ```
 
 运行不含 UI 自动化的 App 单元测试：
 
 ```bash
-xcodegen generate
-xcodebuild \
-  -project UtterInk.xcodeproj \
-  -scheme UtterInk \
-  -configuration Debug \
-  -destination 'platform=macOS,arch=arm64' \
-  -parallel-testing-enabled NO \
-  CODE_SIGNING_ALLOWED=NO \
-  test \
-  -only-testing:UtterInkAppTests
+(
+  set -e
+  test "$(xcodegen --version | sed 's/^Version: //')" = '2.45.4'
+  xcodegen generate
+  APP_TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/utterink-app-test.XXXXXX")"
+  trap 'status=$?; trap - EXIT; rm -rf -- "$APP_TEST_ROOT" || status=$?; exit "$status"' EXIT
+  xcodebuild \
+    -project UtterInk.xcodeproj \
+    -scheme UtterInk \
+    -configuration Debug \
+    -destination 'platform=macOS,arch=arm64' \
+    -derivedDataPath "$APP_TEST_ROOT/DerivedData" \
+    -clonedSourcePackagesDirPath "$APP_TEST_ROOT/SourcePackages" \
+    -parallel-testing-enabled NO \
+    CODE_SIGNING_ALLOWED=NO \
+    test \
+    -only-testing:UtterInkAppTests
+)
 ```
 
 运行仓库完整的本地验证，其中包含定向 UI 冒烟测试：
@@ -88,7 +113,21 @@ xcodebuild \
 
 ## 未签名构建
 
-以上源码命令只会生成未签名的开发构建。它没有经过公证，也不用于再分发；当前预发布仓库尚未发布可安装的软件包。请在本地开发时通过 Xcode 构建并运行。
+以上源码命令只会生成未签名的开发构建。它没有经过公证，也不用于再分发；当前预发布仓库尚未发布可安装的软件包。
+
+下方故障闭合的打包路径依赖已审核的 `Config/ci-toolchain.json` 锁。该锁目前有意尚未提交，因此当前检出会先以 `toolchain-lock-missing` 停止，不会生成软件包。锁完成后，贡献者无需 Apple 凭据即可运行同一验证路径：
+
+```bash
+(
+  set -e
+  trap 'status=$?; trap - EXIT; ./Scripts/clean-distribution-output.sh || status=$?; exit "$status"' EXIT
+  ./Scripts/bootstrap-xcodegen.sh
+  UTTERINK_EXPECTED_ORIGIN='https://github.com/OWNER/UtterInk.git' \
+    ./Scripts/ci-local.sh --unsigned-package-smoke
+)
+```
+
+请把示例地址替换为另行审核过的规范 `origin`；如果这个检出有意不配置远程仓库，则省略 `UTTERINK_EXPECTED_ORIGIN`。任何产物的名称都包含 `UNSIGNED-DO-NOT-DISTRIBUTE`，只能留在本地，并由退出清理删除。签名、公证、最终验证和发布属于互相独立的维护者阶段，详见[发布流程](docs/RELEASING.md)；运行上述命令不会授权其中任何操作。
 
 ## 可选服务商设置
 

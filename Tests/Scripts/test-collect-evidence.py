@@ -42,6 +42,41 @@ ACCESSIBILITY_CHECKS = (
 )
 LOCAL_GATEKEEPER_CHECKS = ("LG-01", "LG-02", "LG-03")
 SECOND_MAC_CHECKS = ("SM-01", "SM-02", "SM-03", "SM-04", "SM-05", "SM-06", "SM-07")
+BASE_NOT_RUN_FILES = (
+    "accessibility-matrix.json",
+    "approval-consumed.json",
+    "automated-checks.json",
+    "candidate.json",
+    "documentation-review.json",
+    "final-dmg-verification.json",
+    "history-scan.json",
+    "identity-review.json",
+    "legal-review.json",
+    "local-gatekeeper.json",
+    "manual-verification-matrix.json",
+    "notarization-approval.json",
+    "notarization-request.json",
+    "notarization-result.json",
+    "public-file-list.json",
+    "release-assets-evidence.json",
+    "repository-scope.json",
+    "second-mac-gatekeeper.json",
+    "signature-verification.json",
+    "signing-evidence.json",
+    "support-scope.json",
+    "unsigned-build-evidence.json",
+)
+BASE_EXTERNAL_APPROVALS = (
+    "apple-notarization-upload",
+    "beta-transfer",
+    "github-release-publication",
+    "private-first-push",
+    "public-visibility",
+)
+BASE_STATEMENT = (
+    "This baseline records only not-run release evidence and grants no permission "
+    "to sign, submit, transfer, publish, or release."
+)
 
 
 def fail(message: str) -> None:
@@ -168,6 +203,19 @@ def make_candidate() -> dict[str, object]:
             "xcodegenBinarySHA256": "76" * 32,
             "xcodegenVersion": "2.45.4",
         },
+    }
+
+
+def make_base(*, commit: str = COMMIT) -> dict[str, object]:
+    return {
+        "candidateCommit": commit,
+        "evidenceType": "incomplete-release-status",
+        "notRunEvidenceFiles": list(BASE_NOT_RUN_FILES),
+        "outstandingExternalApprovals": list(BASE_EXTERNAL_APPROVALS),
+        "product": "UtterInk",
+        "schemaVersion": 1,
+        "statement": BASE_STATEMENT,
+        "status": "NOT_RELEASE_READY",
     }
 
 
@@ -554,12 +602,135 @@ with tempfile.TemporaryDirectory(prefix="utterink-collect-evidence-tests-") as t
         if forbidden in encoded:
             fail("packet leaked reviewer, device, or log details")
 
+    complete_with_base = clone(complete, temp / "complete-with-base")
+    write_json(complete_with_base / "base-evidence.json", make_base())
+    complete_with_base_output = temp / "complete-with-base.md"
+    result = run(complete_with_base, complete_with_base_output, "NOT_RELEASE_READY")
+    if result.returncode != 0 or result.stdout != "NOT_RELEASE_READY\n" or result.stderr:
+        fail(f"complete evidence with active baseline was not held NOT_RELEASE_READY: {result.stderr.strip()}")
+    complete_with_base_text = complete_with_base_output.read_text(encoding="utf-8")
+    if (
+        "Computed status: NOT_RELEASE_READY\n" not in complete_with_base_text
+        or "| `incomplete-release-baseline` | `not-run` |" not in complete_with_base_text
+        or "| `candidate` | `pass` |" not in complete_with_base_text
+    ):
+        fail("active baseline did not prevent READY while preserving real candidate evidence")
+
+    base_only = temp / "base-only"
+    base_only.mkdir(mode=0o700)
+    write_json(base_only / "base-evidence.json", make_base(), 0o600)
+    base_only_output = temp / "base-only.md"
+    result = run(base_only, base_only_output, "NOT_RELEASE_READY")
+    if result.returncode != 0 or result.stdout != "NOT_RELEASE_READY\n" or result.stderr:
+        fail(f"valid incomplete baseline failed: {result.stderr.strip()}")
+    base_only_text = base_only_output.read_text(encoding="utf-8")
+    if "`missing`" in base_only_text:
+        fail("complete baseline registry left an unclassified missing gate")
+    for gate in (
+        "signing",
+        "candidate",
+        "toolchain",
+        "dependency-lock",
+        "notarization-approval",
+        "notarization-submission",
+        "staple-validation",
+        "immutable-final-dmg",
+        "local-gatekeeper:LG-01",
+        "second-mac-gatekeeper:SM-01",
+        "release-assets-inventory",
+    ):
+        if f"| `{gate}` | `not-run` |" not in base_only_text:
+            fail(f"incomplete baseline omitted stable not-run gate {gate}")
+
+    malformed_with_base = clone(base_only, temp / "malformed-with-base")
+    write_json(malformed_with_base / "signature-verification.json", {"status": "pass"})
+    malformed_with_base_output = temp / "malformed-with-base.md"
+    expect_rejected(
+        run(malformed_with_base, malformed_with_base_output, "NOT_RELEASE_READY"),
+        malformed_with_base_output,
+        "baseline laundering malformed present evidence",
+    )
+
+    malformed_candidate_with_base = clone(base_only, temp / "malformed-candidate-with-base")
+    write_json(malformed_candidate_with_base / "candidate.json", {"status": "pass"})
+    malformed_candidate_output = temp / "malformed-candidate-with-base.md"
+    expect_rejected(
+        run(malformed_candidate_with_base, malformed_candidate_output, "NOT_RELEASE_READY"),
+        malformed_candidate_output,
+        "baseline laundering malformed present candidate",
+    )
+
+    baseline_mutations = []
+    extra_field = make_base()
+    extra_field["overrideStatus"] = "pass"
+    baseline_mutations.append(("baseline-extra-pass-field", extra_field))
+    pass_status = make_base()
+    pass_status["status"] = "pass"
+    baseline_mutations.append(("baseline-pass-status", pass_status))
+    wrong_files = make_base()
+    wrong_files["notRunEvidenceFiles"] = list(BASE_NOT_RUN_FILES[:-1])
+    baseline_mutations.append(("baseline-incomplete-file-list", wrong_files))
+    reordered_files = make_base()
+    reordered_files["notRunEvidenceFiles"] = list(reversed(BASE_NOT_RUN_FILES))
+    baseline_mutations.append(("baseline-unsorted-file-list", reordered_files))
+    wrong_approvals = make_base()
+    wrong_approvals["outstandingExternalApprovals"] = list(BASE_EXTERNAL_APPROVALS[:-1])
+    baseline_mutations.append(("baseline-incomplete-approval-list", wrong_approvals))
+    wrong_statement = make_base()
+    wrong_statement["statement"] = "NOT_RELEASE_READY"
+    baseline_mutations.append(("baseline-wrong-statement", wrong_statement))
+    for label, baseline in baseline_mutations:
+        case = clone(base_only, temp / label)
+        write_json(case / "base-evidence.json", baseline)
+        output = temp / f"{label}.md"
+        expect_rejected(run(case, output, "NOT_RELEASE_READY"), output, label)
+
+    baseline_wrong_commit = clone(complete_with_base, temp / "baseline-wrong-commit")
+    write_json(baseline_wrong_commit / "base-evidence.json", make_base(commit="9a" * 20))
+    baseline_wrong_commit_output = temp / "baseline-wrong-commit.md"
+    expect_rejected(
+        run(baseline_wrong_commit, baseline_wrong_commit_output, "NOT_RELEASE_READY"),
+        baseline_wrong_commit_output,
+        "baseline commit conflicting with present candidate",
+    )
+
+    duplicate_base = clone(base_only, temp / "duplicate-base-key")
+    duplicate_base_path = duplicate_base / "base-evidence.json"
+    duplicate_base_path.write_bytes(
+        b'{"candidateCommit":"'
+        + COMMIT.encode("ascii")
+        + b'","candidateCommit":"'
+        + COMMIT.encode("ascii")
+        + b'"}\n'
+    )
+    duplicate_base_path.chmod(0o600)
+    duplicate_base_output = temp / "duplicate-base-key.md"
+    expect_rejected(
+        run(duplicate_base, duplicate_base_output, "NOT_RELEASE_READY"),
+        duplicate_base_output,
+        "duplicate baseline key",
+    )
+
     in_place = clone(complete, temp / "in-place")
     in_place_output = in_place / "final-evidence-packet.md"
-    result = run(in_place, in_place_output, "READY")
-    if result.returncode != 0 or "Computed status: READY\n" not in in_place_output.read_text(encoding="utf-8"):
-        fail("documented output-inside-input-directory invocation failed")
-    if any(path.name.startswith(".collect-evidence.") for path in in_place.iterdir()):
+    expect_rejected(
+        run(in_place, in_place_output, "READY"),
+        in_place_output,
+        "output inside evidence input directory",
+    )
+
+    repeatable = clone(complete, temp / "repeatable-inputs")
+    for review in (1, 2):
+        repeatable_output = temp / f"final-evidence-packet.review-{review}.md"
+        result = run(repeatable, repeatable_output, "READY")
+        if (
+            result.returncode != 0
+            or result.stdout != "READY\n"
+            or result.stderr
+            or "Computed status: READY\n" not in repeatable_output.read_text(encoding="utf-8")
+        ):
+            fail("fresh packet path outside the input directory was not repeatable")
+    if any(path.name.startswith(".collect-evidence.") for path in temp.iterdir()):
         fail("atomic packet publication left a temporary file")
 
     raced = clone(complete, temp / "raced-after-read")

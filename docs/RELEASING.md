@@ -361,9 +361,10 @@ been stapled and validated, and the post-staple DMG hash has been recorded,
 verify that immutable final artifact without changing it:
 
 ```bash
-FINAL_DMG="$WORK/candidate/UtterInk-0.1.0-arm64.dmg"
+ROOT="$(pwd -P)"
+FINAL_DMG="$ROOT/.release-work/v0.1.0-candidate/candidate/UtterInk-0.1.0-arm64.dmg"
 FINAL_SHA256='<reviewed 64-character lowercase post-staple SHA-256>'
-EVIDENCE='.release-work/v0.1.0-evidence'
+EVIDENCE="$ROOT/.release-work/v0.1.0-evidence"
 
 ./Scripts/release/verify-final-dmg.sh \
   --dmg "$FINAL_DMG" \
@@ -397,13 +398,112 @@ the sanitized hash-bound result. Sending the DMG to another person or channel
 requires the separate Gate 3 beta-transfer approval before the transfer; these
 instructions do not grant it.
 
+### Exact-commit source archives and local release assets
+
+Only after the immutable final DMG and its reviewed lowercase SHA-256 exist,
+assemble the local five-file release inventory. All asset paths below are
+physical absolute paths beneath the ignored `.release-work` directory:
+
+```bash
+ROOT="$(pwd -P)"
+COMMIT="$(git rev-parse --verify HEAD)"
+FINAL_DMG="$ROOT/.release-work/v0.1.0-candidate/candidate/UtterInk-0.1.0-arm64.dmg"
+FINAL_SHA256='<reviewed 64-character lowercase post-staple SHA-256>'
+SOURCE_ARCHIVES="$ROOT/.release-work/v0.1.0-source"
+ASSETS="$ROOT/.release-work/v0.1.0-assets"
+EVIDENCE="$ROOT/.release-work/v0.1.0-evidence"
+ASSET_EVIDENCE="$EVIDENCE/release-assets-evidence.json"
+
+./Scripts/release/create-source-archives.sh \
+  --commit "$COMMIT" \
+  --output "$SOURCE_ARCHIVES"
+
+./Scripts/release/assemble-release-assets.sh \
+  --dmg "$FINAL_DMG" \
+  --source-archives "$SOURCE_ARCHIVES" \
+  --commit "$COMMIT" \
+  --expected-final-dmg-sha256 "$FINAL_SHA256" \
+  --output "$ASSETS"
+
+./Scripts/release/verify-release-assets.sh \
+  --assets "$ASSETS" \
+  --commit "$COMMIT" \
+  --expected-final-dmg-sha256 "$FINAL_SHA256" \
+  --output "$ASSET_EVIDENCE"
+```
+
+If this checkout has an `origin`, pass its separately reviewed canonical URL
+to `create-source-archives.sh` with `--expected-origin`; do not derive the
+expected value from the remote configuration being checked. Archive creation
+uses only the verified tracked tree at `COMMIT`, never the mutable working
+tree. If local tag `v0.1.0` already exists it must resolve to that commit; if it
+does not exist, the archive command creates a local lightweight tag only after
+both archives pass verification. It never moves or pushes a tag.
+
+The asset directory contains exactly `UtterInk-0.1.0-arm64.dmg`, the `.tar.gz`
+and `.zip` source archives, `release-notes-0.1.0.md`, and `SHA256SUMS`.
+`SHA256SUMS` covers the other four files in byte-sorted filename order. The
+verifier independently reconstructs the exact-commit archives, checks the tag,
+DMG hash, notes contract, checksums, names, modes, and absence of extra files,
+then emits the candidate-bound `release-assets-evidence.json`. That evidence
+file stays outside the public asset directory and is not listed in the public
+checksums. `EVIDENCE` is the same consolidated directory populated by the
+final-DMG, signing, notarization, automated, and manual phases; do not create a
+parallel asset-only evidence directory. These commands contain no GitHub
+client, push, upload, message, or publication operation.
+
+### Safe incomplete-status initialization
+
+Before real signing and final-release evidence exists, initialize an honest
+local status directory from the exact clean candidate commit:
+
+```bash
+ROOT="$(pwd -P)"
+COMMIT="$(git rev-parse --verify HEAD)"
+STATUS_EVIDENCE="$ROOT/.release-work/incomplete-evidence"
+STATUS_PACKET="$ROOT/.release-work/incomplete-evidence-packet.review-1.md"
+
+python3 Scripts/release/prepare-incomplete-evidence.py \
+  --commit "$COMMIT" \
+  --output "$STATUS_EVIDENCE"
+python3 Scripts/release/collect-evidence.py \
+  --inputs "$STATUS_EVIDENCE" \
+  --output "$STATUS_PACKET" \
+  --expect-status NOT_RELEASE_READY
+```
+
+For a checkout with an `origin`, also pass the separately reviewed canonical
+URL through `--expected-origin` to the initializer. The initializer has no
+status override: it writes only a canonical `base-evidence.json`, bound to the
+exact clean `HEAD`, that classifies every absent real evidence file—including
+`candidate.json`, toolchain, and dependency-lock evidence—as `not-run`. It does
+not run dependency resolution, XcodeGen, Xcodebuild, or any network operation,
+and it does not invent a candidate, signature, artifact hash, approval, tester,
+device, timestamp, or pass result. The active baseline itself keeps the packet
+`NOT_RELEASE_READY`; after every real evidence class has been supplied and
+validated, remove the baseline before requesting a `READY` packet.
+
+Keep every packet outside its `--inputs` directory so a previous packet cannot
+be mistaken for an evidence record on the next review. The collector refuses
+an output inside the input directory and never overwrites a path. For a later
+review, choose a fresh path such as
+`.release-work/incomplete-evidence-packet.review-2.md`.
+
+Run exact candidate verification separately when the reviewed toolchain lock
+and all candidate prerequisites exist. The initializer never turns an absent
+or failed candidate verification into a weaker synthetic candidate record.
+
 After collecting all type-specific JSON records in one ignored evidence
 directory, produce the review packet with an explicit expected status:
 
 ```bash
+ROOT="$(pwd -P)"
+EVIDENCE="$ROOT/.release-work/v0.1.0-evidence"
+PACKET="$ROOT/.release-work/v0.1.0-final-evidence-packet.review-1.md"
+
 python3 Scripts/release/collect-evidence.py \
   --inputs "$EVIDENCE" \
-  --output "$EVIDENCE/final-evidence-packet.md" \
+  --output "$PACKET" \
   --expect-status NOT_RELEASE_READY
 ```
 
@@ -414,6 +514,9 @@ second-Mac evidence exists, the honest expected status is
 that status; malformed, contradictory, unsafe, stale, or candidate-mismatched
 evidence is rejected instead of being laundered as merely incomplete. An
 expected/computed status mismatch also exits nonzero.
+Use a fresh outside-input packet path for each later collection, for example
+`v0.1.0-final-evidence-packet.review-2.md`; do not place a generated packet
+among the typed JSON evidence records.
 
 The release candidate record is the one record validated against
 [`release/evidence-schema.json`](release/evidence-schema.json). Other Task 6

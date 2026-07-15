@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[2]
 CANDIDATE_SCHEMA = ROOT / "docs/release/evidence-schema.json"
 MANUAL_MATRIX = ROOT / "docs/release/manual-verification-matrix.md"
 PUBLIC_README = ROOT / "README.md"
+BOUND_POLICY_FDS: dict[str, int] = {}
+BOUND_IO_FDS: tuple[int, int] | None = None
 DMG_NAME = "UtterInk-0.1.0-arm64.dmg"
 MANIFEST = ["Applications -> /Applications", "UtterInk.app directory"]
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -79,7 +81,23 @@ FIXED_GATES = {
     "support-scope.json": ("known-issues-reviewed", "support-scope-reviewed"),
     "release-assets-evidence.json": ("release-assets-inventory",),
 }
-KNOWN_FILES = set(FIXED_GATES) | set(GENERIC_CHECKS) | set(MANUAL_RECORDS)
+REQUIRED_EVIDENCE_FILES = set(FIXED_GATES) | set(GENERIC_CHECKS) | set(MANUAL_RECORDS)
+BASE_EVIDENCE_FILENAME = "base-evidence.json"
+BASE_NOT_RUN_FILES = tuple(
+    sorted(REQUIRED_EVIDENCE_FILES, key=lambda item: item.encode("utf-8"))
+)
+BASE_EXTERNAL_APPROVALS = (
+    "apple-notarization-upload",
+    "beta-transfer",
+    "github-release-publication",
+    "private-first-push",
+    "public-visibility",
+)
+BASE_STATEMENT = (
+    "This baseline records only not-run release evidence and grants no permission "
+    "to sign, submit, transfer, publish, or release."
+)
+KNOWN_FILES = REQUIRED_EVIDENCE_FILES | {BASE_EVIDENCE_FILENAME}
 
 FORBIDDEN_KEY_MARKERS = {
     "username", "loginname", "accountname", "hostname", "machinename", "serialnumber", "hardwareuuid",
@@ -294,6 +312,45 @@ def read_regular(path: Path, category: str, maximum: int, *, canonical_json: boo
             os.close(descriptor)
 
 
+def read_policy_regular(
+    key: str,
+    path: Path,
+    category: str,
+    maximum: int,
+) -> tuple[bytes, object | None]:
+    descriptor = BOUND_POLICY_FDS.get(key)
+    if descriptor is None:
+        return read_regular(path, category, maximum, canonical_json=False)
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or before.st_nlink != 1
+            or before.st_mode & 0o022
+            or before.st_size <= 0
+            or before.st_size > maximum
+        ):
+            reject(category)
+        chunks: list[bytes] = []
+        offset = 0
+        while offset <= maximum:
+            chunk = os.pread(descriptor, min(1024 * 1024, maximum + 1 - offset), offset)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            offset += len(chunk)
+        after = os.fstat(descriptor)
+        data = b"".join(chunks)
+        if fingerprint(before) != fingerprint(after) or not data or len(data) > maximum:
+            reject(category)
+        return data, None
+    except EvidenceError:
+        raise
+    except OSError:
+        reject(category)
+
+
 def read_regular_at(directory: int, name: str, category: str, maximum: int) -> tuple[bytes, object, tuple[int, ...]]:
     descriptor = -1
     try:
@@ -340,7 +397,7 @@ def read_regular_at(directory: int, name: str, category: str, maximum: int) -> t
 
 
 def read_schema() -> dict[str, object]:
-    data, _ = read_regular(CANDIDATE_SCHEMA, "unsafe-candidate-schema", 1024 * 1024, canonical_json=False)
+    data, _ = read_policy_regular("schema", CANDIDATE_SCHEMA, "unsafe-candidate-schema", 1024 * 1024)
     try:
         value = json.loads(data.decode("utf-8", errors="strict"), object_pairs_hook=unique_object)
     except EvidenceError:
@@ -396,7 +453,7 @@ def validate_schema(value: object, schema: object, category: str, *, root: bool 
 
 
 def verify_manual_matrix_contract() -> None:
-    data, _ = read_regular(MANUAL_MATRIX, "unsafe-manual-matrix", 2 * 1024 * 1024, canonical_json=False)
+    data, _ = read_policy_regular("matrix", MANUAL_MATRIX, "unsafe-manual-matrix", 2 * 1024 * 1024)
     try:
         text = data.decode("utf-8", errors="strict")
     except UnicodeError:
@@ -408,7 +465,7 @@ def verify_manual_matrix_contract() -> None:
 
 
 def reviewed_known_issues() -> list[str]:
-    data, _ = read_regular(PUBLIC_README, "unsafe-public-readme", 2 * 1024 * 1024, canonical_json=False)
+    data, _ = read_policy_regular("readme", PUBLIC_README, "unsafe-public-readme", 2 * 1024 * 1024)
     try:
         text = data.decode("utf-8", errors="strict")
         section = text.split("## Current Limitations\n", 1)[1].split("\n## ", 1)[0]
@@ -452,6 +509,7 @@ class Collector:
         self.signature_macho_count: int | None = None
         self.signing_macho_count: int | None = None
         self.final_signature_component_count: int | None = None
+        self.baseline_not_run_files: set[str] = set()
 
     def automated_pass(self, *gates: str) -> None:
         self.passed_automated.update(gates)
@@ -510,6 +568,44 @@ class Collector:
         self.tree(source["tree"], "invalid-candidate")
         self.automated_pass("candidate", "toolchain", "dependency-lock")
         self.candidate_hash_refs.add(hashlib.sha256(raw).hexdigest())
+
+    def validate_base(self, value: dict[str, object]) -> None:
+        record = exact(
+            value,
+            {
+                "candidateCommit",
+                "evidenceType",
+                "notRunEvidenceFiles",
+                "outstandingExternalApprovals",
+                "product",
+                "schemaVersion",
+                "statement",
+                "status",
+            },
+            "invalid-incomplete-release-status",
+        )
+        if (
+            record["schemaVersion"] != 1
+            or type(record["schemaVersion"]) is not int
+            or record["evidenceType"] != "incomplete-release-status"
+            or record["product"] != "UtterInk"
+            or record["status"] != "NOT_RELEASE_READY"
+            or record["statement"] != BASE_STATEMENT
+        ):
+            reject("invalid-incomplete-release-status")
+        self.commit(record["candidateCommit"], "invalid-incomplete-release-status")
+        filenames = sorted_unique_text(
+            record["notRunEvidenceFiles"],
+            "invalid-incomplete-release-status",
+            exact_names=set(BASE_NOT_RUN_FILES),
+        )
+        sorted_unique_text(
+            record["outstandingExternalApprovals"],
+            "invalid-incomplete-release-status",
+            exact_names=set(BASE_EXTERNAL_APPROVALS),
+        )
+        self.baseline_not_run_files = set(filenames)
+        self.gap("incomplete-release-baseline", "not-run")
 
     def validate_unsigned(self, value: dict[str, object], raw: bytes) -> None:
         record = exact(
@@ -889,15 +985,21 @@ class Collector:
         for filename, gates in FIXED_GATES.items():
             if filename not in self.values:
                 for gate in gates:
-                    self.gap(gate, "missing")
+                    self.gap(gate, "not-run" if filename in self.baseline_not_run_files else "missing")
         for filename, (evidence_type, checks) in GENERIC_CHECKS.items():
             if filename not in self.values:
                 for check in checks:
-                    self.gap(f"{evidence_type}:{check}", "missing")
+                    self.gap(
+                        f"{evidence_type}:{check}",
+                        "not-run" if filename in self.baseline_not_run_files else "missing",
+                    )
         for filename, (evidence_type, rows) in MANUAL_RECORDS.items():
             if filename not in self.values:
                 for row in rows:
-                    self.gap(f"{evidence_type}:{row}", "missing")
+                    self.gap(
+                        f"{evidence_type}:{row}",
+                        "not-run" if filename in self.baseline_not_run_files else "missing",
+                    )
 
     @staticmethod
     def same_or_absent(values: set[str], category: str) -> None:
@@ -982,6 +1084,31 @@ def read_inputs(path: Path, collector: Collector) -> None:
             os.close(directory)
 
 
+def read_inputs_from_fd(directory: int, collector: Collector) -> None:
+    try:
+        opened = os.fstat(directory)
+        if not stat.S_ISDIR(opened.st_mode) or opened.st_uid != os.geteuid() or opened.st_mode & 0o022:
+            reject("unsafe-input-directory")
+        names = tuple(sorted(os.listdir(directory), key=lambda item: item.encode("utf-8")))
+        if names != (BASE_EVIDENCE_FILENAME,):
+            reject("invalid-bound-evidence-set")
+        raw, parsed, item_fingerprint = read_regular_at(
+            directory, BASE_EVIDENCE_FILENAME, "unsafe-evidence-file", MAX_RECORD_BYTES
+        )
+        if type(parsed) is not dict:
+            reject("invalid-evidence-set")
+        collector.raw[BASE_EVIDENCE_FILENAME] = raw
+        collector.values[BASE_EVIDENCE_FILENAME] = parsed
+        collector.input_fingerprints[BASE_EVIDENCE_FILENAME] = item_fingerprint
+        collector.input_sha256[BASE_EVIDENCE_FILENAME] = hashlib.sha256(raw).hexdigest()
+        collector.input_directory_fingerprint = fingerprint(os.fstat(directory))
+        collector.input_names = names
+    except EvidenceError:
+        raise
+    except OSError:
+        reject("unsafe-input-directory")
+
+
 def revalidate_inputs(path: Path, collector: Collector) -> None:
     directory = -1
     try:
@@ -1020,6 +1147,28 @@ def revalidate_inputs(path: Path, collector: Collector) -> None:
             os.close(directory)
 
 
+def revalidate_inputs_from_fd(directory: int, collector: Collector) -> None:
+    try:
+        if collector.input_directory_fingerprint is None or fingerprint(os.fstat(directory)) != collector.input_directory_fingerprint:
+            reject("evidence-set-mutated-after-read")
+        names = tuple(sorted(os.listdir(directory), key=lambda item: item.encode("utf-8")))
+        if names != collector.input_names:
+            reject("evidence-set-mutated-after-read")
+        for name in names:
+            raw, _, item_fingerprint = read_regular_at(directory, name, "evidence-mutated-after-read", MAX_RECORD_BYTES)
+            if (
+                item_fingerprint != collector.input_fingerprints.get(name)
+                or hashlib.sha256(raw).hexdigest() != collector.input_sha256.get(name)
+            ):
+                reject("evidence-mutated-after-read")
+        if fingerprint(os.fstat(directory)) != collector.input_directory_fingerprint:
+            reject("evidence-set-mutated-after-read")
+    except EvidenceError:
+        raise
+    except OSError:
+        reject("evidence-set-mutated-after-read")
+
+
 def test_after_read_barrier() -> None:
     notify_text = os.environ.get("UTTERINK_EVIDENCE_TEST_NOTIFY_FD")
     continue_text = os.environ.get("UTTERINK_EVIDENCE_TEST_CONTINUE_FD")
@@ -1047,6 +1196,10 @@ def test_after_read_barrier() -> None:
 
 def validate_records(collector: Collector) -> None:
     validators: dict[str, Callable[[], None]] = {}
+    if BASE_EVIDENCE_FILENAME in collector.values:
+        validators[BASE_EVIDENCE_FILENAME] = lambda: collector.validate_base(
+            collector.values[BASE_EVIDENCE_FILENAME]
+        )
     if "candidate.json" in collector.values:
         validators["candidate.json"] = lambda: collector.validate_candidate(collector.values["candidate.json"], collector.raw["candidate.json"])
     if "unsigned-build-evidence.json" in collector.values:
@@ -1269,6 +1422,61 @@ def atomic_write(path: Path, data: bytes) -> None:
             os.close(directory_descriptor)
 
 
+def atomic_write_at(directory: int, name: str, data: bytes) -> None:
+    descriptor = -1
+    identity: tuple[int, int] | None = None
+    try:
+        if re.fullmatch(r"[.]prepare-incomplete-evidence-packet[.][0-9a-f]{32}[.]md", name) is None:
+            reject("unsafe-output")
+        try:
+            os.stat(name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            reject("unsafe-output")
+        descriptor = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory,
+        )
+        opened = os.fstat(descriptor)
+        identity = (opened.st_dev, opened.st_ino)
+        offset = 0
+        while offset < len(data):
+            written = os.write(descriptor, data[offset:])
+            if written <= 0:
+                reject("output-write-failed")
+            offset += written
+        os.fchmod(descriptor, 0o600)
+        os.fsync(descriptor)
+        final = os.fstat(descriptor)
+        named = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if (
+            (final.st_dev, final.st_ino) != identity
+            or (named.st_dev, named.st_ino) != identity
+            or final.st_nlink != 1
+            or final.st_size != len(data)
+            or stat.S_IMODE(final.st_mode) != 0o600
+        ):
+            reject("output-write-failed")
+        os.fsync(directory)
+    except EvidenceError:
+        raise
+    except OSError:
+        reject("output-write-failed")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if sys.exc_info()[0] is not None and identity is not None:
+            try:
+                current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if (current.st_dev, current.st_ino) == identity:
+                    os.unlink(name, dir_fd=directory)
+            except OSError:
+                pass
+
+
 class Parser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         del message
@@ -1276,15 +1484,57 @@ class Parser(argparse.ArgumentParser):
 
 
 def parse_arguments() -> argparse.Namespace:
+    global BOUND_IO_FDS
+    BOUND_POLICY_FDS.clear()
+    BOUND_IO_FDS = None
     arguments = sys.argv[1:]
     flags = ("--inputs", "--output", "--expect-status")
-    if len(arguments) != 6 or any(arguments.count(flag) != 1 for flag in flags):
+    bound = "--bound-policy-fds" in arguments
+    bound_io = "--bound-io-fds" in arguments
+    if bound != bound_io or len(arguments) != (10 if bound else 6) or any(arguments.count(flag) != 1 for flag in flags):
+        reject("invalid-arguments")
+    if bound and (arguments.count("--bound-policy-fds") != 1 or arguments.count("--bound-io-fds") != 1):
         reject("invalid-arguments")
     parser = Parser(add_help=False)
     parser.add_argument("--inputs", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--expect-status", required=True, choices=("READY", "NOT_RELEASE_READY"))
-    return parser.parse_args()
+    parser.add_argument("--bound-policy-fds")
+    parser.add_argument("--bound-io-fds")
+    result = parser.parse_args()
+    if result.bound_policy_fds is not None:
+        values = result.bound_policy_fds.split(",")
+        if len(values) != 3 or any(re.fullmatch(r"[0-9]+", item) is None for item in values):
+            reject("invalid-bound-policy-fds")
+        descriptors = [int(item) for item in values]
+        if any(item < 3 for item in descriptors) or len(set(descriptors)) != 3:
+            reject("invalid-bound-policy-fds")
+        for descriptor in descriptors:
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    reject("invalid-bound-policy-fds")
+            except OSError:
+                reject("invalid-bound-policy-fds")
+        BOUND_POLICY_FDS.update(zip(("schema", "matrix", "readme"), descriptors))
+        io_values = result.bound_io_fds.split(",")
+        if len(io_values) != 2 or any(re.fullmatch(r"[0-9]+", item) is None for item in io_values):
+            reject("invalid-bound-io-fds")
+        io_descriptors = tuple(int(item) for item in io_values)
+        if any(item < 3 for item in io_descriptors) or len(set(io_descriptors + tuple(descriptors))) != 5:
+            reject("invalid-bound-io-fds")
+        try:
+            if any(not stat.S_ISDIR(os.fstat(item).st_mode) for item in io_descriptors):
+                reject("invalid-bound-io-fds")
+        except OSError:
+            reject("invalid-bound-io-fds")
+        if (
+            result.expect_status != "NOT_RELEASE_READY"
+            or result.inputs != f"/dev/fd/{io_descriptors[0]}"
+            or not result.output.startswith(f"/dev/fd/{io_descriptors[1]}/")
+        ):
+            reject("invalid-bound-io-fds")
+        BOUND_IO_FDS = io_descriptors
+    return result
 
 
 def main() -> int:
@@ -1293,12 +1543,22 @@ def main() -> int:
         verify_manual_matrix_contract()
         collector = Collector(read_schema())
         inputs = Path(os.path.abspath(arguments.inputs))
-        read_inputs(inputs, collector)
+        if BOUND_IO_FDS is None:
+            output = Path(os.path.abspath(arguments.output))
+            if output.parent == inputs:
+                reject("unsafe-output")
+            read_inputs(inputs, collector)
+        else:
+            read_inputs_from_fd(BOUND_IO_FDS[0], collector)
         test_after_read_barrier()
         validate_records(collector)
         status, packet = markdown_packet(collector)
-        revalidate_inputs(inputs, collector)
-        atomic_write(Path(arguments.output), packet)
+        if BOUND_IO_FDS is None:
+            revalidate_inputs(inputs, collector)
+            atomic_write(output, packet)
+        else:
+            revalidate_inputs_from_fd(BOUND_IO_FDS[0], collector)
+            atomic_write_at(BOUND_IO_FDS[1], PurePosixPath(arguments.output).name, packet)
         if status != arguments.expect_status:
             print("evidence collector error: expectation-mismatch", file=sys.stderr)
             return 2

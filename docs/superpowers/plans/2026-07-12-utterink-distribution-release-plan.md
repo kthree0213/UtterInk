@@ -686,7 +686,7 @@ git commit -m "test: add final distribution evidence gates"
 - Create: `Scripts/release/verify-release-assets.sh`
 - Create: `Scripts/release/prepare-incomplete-evidence.py`
 - Generate locally: `.release-work/evidence/release-assets-evidence.json` (ignored)
-- Generate locally after asset verification: `.release-work/evidence/final-evidence-packet.md` (ignored)
+- Generate locally after asset verification: `.release-work/incomplete-evidence-packet.review-1.md` (ignored and outside the evidence input directory)
 - Create: `Tests/Scripts/test-create-source-archives.sh`
 - Create: `Tests/Scripts/test-verify-release-assets.sh`
 - Create: `Tests/Scripts/test-prepare-incomplete-evidence.py`
@@ -770,9 +770,9 @@ git commit -m "docs: prepare UtterInk 0.1.0 release assets"
 ./Scripts/verify-toolchain.sh --context local
 ./Scripts/ci-local.sh --ci --unsigned-package-smoke
 ./Scripts/clean-distribution-output.sh
-python3 Scripts/release/prepare-incomplete-evidence.py --commit "$(git rev-parse HEAD)" --output .release-work/evidence
-python3 Scripts/release/collect-evidence.py --inputs .release-work/evidence --output .release-work/evidence/final-evidence-packet.md --expect-status NOT_RELEASE_READY
-test -f .release-work/evidence/final-evidence-packet.md
+python3 Scripts/release/prepare-incomplete-evidence.py --commit "$(git rev-parse HEAD)" --output .release-work/incomplete-evidence
+python3 Scripts/release/collect-evidence.py --inputs .release-work/incomplete-evidence --output .release-work/incomplete-evidence-packet.review-1.md --expect-status NOT_RELEASE_READY
+test -f .release-work/incomplete-evidence-packet.review-1.md
 test -z "$(git status --short)"
 ```
 

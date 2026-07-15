@@ -73,6 +73,8 @@ new_repository() {
     Tests/Scripts/test-register-notary-profile.sh \
     Tests/Scripts/test-notarize-approved.sh \
     Tests/Scripts/test-verify-final-dmg.sh \
+    Tests/Scripts/test-create-source-archives.sh \
+    Tests/Scripts/test-verify-release-assets.sh \
     Tests/Scripts/test-bootstrap-xcodegen.sh \
     Tests/Scripts/test-clean-distribution-output.sh \
     Tests/Scripts/test-package-unsigned-smoke.sh \
@@ -187,6 +189,9 @@ assert_required_gates() {
   assert_once "$log" local:Tests/Scripts/test-notarize-approved.sh '' 'approved notarization wrapper tests'
   assert_once "$log" local:Tests/Scripts/test-verify-final-dmg.sh '' 'final DMG verifier tests'
   assert_once "$log" python3 'Tests/Scripts/test-collect-evidence.py' 'release evidence collector tests'
+  assert_once "$log" local:Tests/Scripts/test-create-source-archives.sh '' 'deterministic source archive tests'
+  assert_once "$log" local:Tests/Scripts/test-verify-release-assets.sh '' 'release asset verifier tests'
+  assert_once "$log" python3 'Tests/Scripts/test-prepare-incomplete-evidence.py' 'incomplete release evidence tests'
   assert_once "$log" python3 'Tests/Scripts/test-verify-workflow.py' 'workflow policy tests'
   assert_once "$log" local:Tests/Scripts/test-bootstrap-xcodegen.sh '' 'locked XcodeGen bootstrap tests'
   assert_once "$log" local:Tests/Scripts/test-clean-distribution-output.sh '' 'distribution cleanup tests'
@@ -250,6 +255,26 @@ assert_required_gates() {
     local:Tests/Scripts/test-verify-final-dmg.sh '' \
     python3 'Tests/Scripts/test-collect-evidence.py' \
     'evidence collector tests after final DMG tests'
+  assert_after \
+    "$log" \
+    python3 'Tests/Scripts/test-collect-evidence.py' \
+    local:Tests/Scripts/test-create-source-archives.sh '' \
+    'source archive tests after evidence collector tests'
+  assert_after \
+    "$log" \
+    local:Tests/Scripts/test-create-source-archives.sh '' \
+    local:Tests/Scripts/test-verify-release-assets.sh '' \
+    'release asset tests after source archive tests'
+  assert_after \
+    "$log" \
+    local:Tests/Scripts/test-verify-release-assets.sh '' \
+    python3 'Tests/Scripts/test-prepare-incomplete-evidence.py' \
+    'incomplete evidence tests after release asset tests'
+  assert_after \
+    "$log" \
+    python3 'Tests/Scripts/test-prepare-incomplete-evidence.py' \
+    python3 'Tests/Scripts/test-verify-workflow.py' \
+    'workflow tests after incomplete evidence tests'
 
   notice_scratch="$(awk -F '\t' '
     $1 == "local:Scripts/collect-third-party-notices.sh" { print $3 }

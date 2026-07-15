@@ -50,6 +50,9 @@ PUBLIC_TEXT_FILES = (
     "NOTICE",
     "LICENSE",
     "docs/privacy-data-flow.md",
+    "docs/RELEASING.md",
+    "docs/release/evidence-packet-template.md",
+    "docs/release/release-notes-0.1.0.md",
     ".github/ISSUE_TEMPLATE/bug_report.yml",
     ".github/ISSUE_TEMPLATE/feature_request.yml",
     ".github/pull_request_template.md",
@@ -177,6 +180,9 @@ PRODUCT_CLAIM_FILES = frozenset(
         "CONTRIBUTING.md",
         "CHANGELOG.md",
         "docs/privacy-data-flow.md",
+        "docs/RELEASING.md",
+        "docs/release/evidence-packet-template.md",
+        "docs/release/release-notes-0.1.0.md",
         ".github/ISSUE_TEMPLATE/bug_report.yml",
         ".github/ISSUE_TEMPLATE/feature_request.yml",
         ".github/pull_request_template.md",
@@ -320,6 +326,16 @@ AUDIO_NEGATED = re.compile(
     r"(?:不|无|未|没有|不会|绝不)(?:保存|保留|存储)(?:任何)?(?:音频|录音)|"
     r"(?:音频|录音).{0,20}(?:不|无|未|没有|不会|绝不).{0,10}(?:保存|保留|存储|历史|恢复)",
     re.IGNORECASE | re.DOTALL,
+)
+
+INTEL_NEGATED = re.compile(
+    r"\b(?:no|not|without)\b[^\r\n]{0,80}\bintel\b|"
+    r"(?:不|无|未|没有|不会|暂不|尚不)(?:支持|提供|包含)?[^\r\n]{0,30}\bintel\b",
+    re.IGNORECASE,
+)
+RELEASE_NON_GOAL_LIST = re.compile(
+    r"\bno\s+intel\s*/\s*cloud\s+sync\s*/\s*live\s+transcription\s*/\s*audio\s+history\b",
+    re.IGNORECASE,
 )
 
 CAPABILITY_RULES = (
@@ -506,10 +522,26 @@ class Validator:
                 continue
             for category, pattern in always_forbidden:
                 for match in pattern.finditer(text):
+                    if category == "intel-claim":
+                        line_start = text.rfind("\n", 0, match.start()) + 1
+                        line_end = text.find("\n", match.end())
+                        if line_end < 0:
+                            line_end = len(text)
+                        if INTEL_NEGATED.search(text[line_start:line_end]):
+                            continue
                     self.add(category, relative, text.count("\n", 0, match.start()) + 1)
             for statement, line_number in self.statements(text):
                 for category, term, negated in CAPABILITY_RULES:
-                    if term.search(statement) and not negated.search(statement):
+                    release_non_goals = (
+                        category
+                        in {
+                            "positive-cloud-sync-claim",
+                            "positive-live-transcription-claim",
+                            "positive-audio-retention-claim",
+                        }
+                        and RELEASE_NON_GOAL_LIST.search(statement) is not None
+                    )
+                    if term.search(statement) and not negated.search(statement) and not release_non_goals:
                         self.add(category, relative, line_number)
 
     def check_document_commands(self) -> None:

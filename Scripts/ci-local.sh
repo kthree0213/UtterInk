@@ -177,6 +177,9 @@ bash Tests/Scripts/test-register-notary-profile.sh
 bash Tests/Scripts/test-notarize-approved.sh
 bash Tests/Scripts/test-verify-final-dmg.sh
 python3 Tests/Scripts/test-collect-evidence.py
+bash Tests/Scripts/test-create-source-archives.sh
+bash Tests/Scripts/test-verify-release-assets.sh
+python3 Tests/Scripts/test-prepare-incomplete-evidence.py
 python3 Tests/Scripts/test-verify-workflow.py
 bash Tests/Scripts/test-bootstrap-xcodegen.sh
 bash Tests/Scripts/test-clean-distribution-output.sh

@@ -73,11 +73,21 @@ PUBLIC_FIXTURE_PATHS = (
     "NOTICE",
     "LICENSE",
     "Brand/wordmark-lockup.svg",
+    "docs/RELEASING.md",
     "docs/privacy-data-flow.md",
     "docs/parity/accessibility-matrix.md",
+    "docs/release/evidence-packet-template.md",
+    "docs/release/evidence-schema.json",
+    "docs/release/manual-verification-matrix.md",
+    "docs/release/release-notes-0.1.0.md",
     ".github/ISSUE_TEMPLATE/bug_report.yml",
     ".github/ISSUE_TEMPLATE/feature_request.yml",
     ".github/pull_request_template.md",
+)
+RELEASE_PUBLIC_DOCS = (
+    "docs/RELEASING.md",
+    "docs/release/evidence-packet-template.md",
+    "docs/release/release-notes-0.1.0.md",
 )
 DIAGNOSTIC = re.compile(
     r"^finding category=(?P<category>[a-z0-9-]+) "
@@ -369,6 +379,40 @@ with tempfile.TemporaryDirectory(prefix="utterink-public-docs-") as temporary:
         fixture = make_fixture(temp_root, name)
         write_fixture(fixture, "README.md", f"\n{token}\n", append=True)
         expect_failure(fixture, name, category, "README.md", secret=token)
+
+    for index, relative in enumerate(RELEASE_PUBLIC_DOCS, 1):
+        release_path = "/" + "Users" + f"/release-fixture-{index}/private.txt"
+        personal_release = make_fixture(temp_root, f"release-doc-personal-{index}")
+        write_fixture(personal_release, relative, f"\nLocal note: {release_path}\n", append=True)
+        expect_failure(
+            personal_release,
+            f"release-doc-personal-{index}",
+            "personal-path",
+            relative,
+            secret=release_path,
+        )
+
+        release_token = "sk-" + chr(ord("A") + index) * 32
+        credential_release = make_fixture(temp_root, f"release-doc-credential-{index}")
+        write_fixture(credential_release, relative, f"\n{release_token}\n", append=True)
+        expect_failure(
+            credential_release,
+            f"release-doc-credential-{index}",
+            "provider-credential",
+            relative,
+            secret=release_token,
+        )
+
+        false_release_claim = "Download https://example.org/UtterInk.dmg now."
+        claim_release = make_fixture(temp_root, f"release-doc-claim-{index}")
+        write_fixture(claim_release, relative, f"\n{false_release_claim}\n", append=True)
+        expect_failure(
+            claim_release,
+            f"release-doc-claim-{index}",
+            "prerelease-dmg-url",
+            relative,
+            secret=false_release_claim,
+        )
 
     api_key_value = "fixture-private-value-0123456789"
     hardcoded_key = make_fixture(temp_root, "hardcoded-api-key")

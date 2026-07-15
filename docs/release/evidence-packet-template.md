@@ -18,6 +18,19 @@ are checked by the collector's closed typed validators. This template is not a
 general JSON Schema and must not be used to coerce an unrelated record into a
 passing evidence class.
 
+`prepare-incomplete-evidence.py` may create the collector's one optional
+`base-evidence.json` record before a real candidate exists. That record has one
+fixed `NOT_RELEASE_READY` form and only classifies the complete closed registry
+of absent evidence files, including `candidate.json`, as `not-run`; a later
+present real record is still validated normally. The baseline cannot contain a
+pass, replace candidate verification, excuse malformed evidence, or produce
+`READY`. It must be removed after real evidence is complete and before
+collecting a `READY` packet.
+
+The generated Markdown packet is not an evidence input. Write it to a fresh
+path outside the `--inputs` directory for each review. The collector rejects an
+output inside the evidence directory and does not overwrite an existing path.
+
 ## Packet identity
 
 | Field | Required value |
@@ -25,20 +38,23 @@ passing evidence class.
 | Computed status | `NOT_RELEASE_READY` until every required gate is present and passing |
 | Expected status supplied to collector | `READY` or `NOT_RELEASE_READY` |
 | Product/version/build | `UtterInk 0.1.0 (1)` |
-| Repository scope | `<approved owner/repository or approved local no-origin scope>` |
-| Branch | `<approved branch>` |
+| Repository scope | `<approved owner/repository or approved local no-origin scope>`; base-only: `not-recorded` |
+| Branch | `<approved branch>`; base-only: `not-recorded` |
 | Candidate commit | `<40 lowercase hexadecimal characters>` |
-| Candidate tree | `<40 lowercase hexadecimal characters>` |
-| Candidate record SHA-256 | `<64 lowercase hexadecimal characters>` |
+| Candidate tree | `<40 lowercase hexadecimal characters>`; base-only: `not-recorded` |
+| Candidate record SHA-256 | `<64 lowercase hexadecimal characters>`; base-only: `not-recorded` |
 | Final DMG filename | `UtterInk-0.1.0-arm64.dmg` |
-| Signed pre-staple approved SHA-256 | `<64 lowercase hexadecimal characters>` |
-| Notarization approval record SHA-256 | `<64 lowercase hexadecimal characters>` |
-| Final post-staple DMG SHA-256 | `<64 lowercase hexadecimal characters>` |
-| Final post-staple DMG size | `<integer bytes>` |
+| Signed pre-staple approved SHA-256 | `<64 lowercase hexadecimal characters>`; base-only: `not-recorded` |
+| Notarization approval record SHA-256 | `<64 lowercase hexadecimal characters>`; base-only: `not-recorded` |
+| Final post-staple DMG SHA-256 | `<64 lowercase hexadecimal characters>`; base-only: `not-recorded` |
+| Final post-staple DMG size | `<integer bytes>`; base-only: `not-recorded` |
 | Packet generation timestamp | `<RFC 3339 UTC timestamp>` |
 
 Every evidence record must bind to the same approved repository/branch scope,
 candidate commit, candidate record, and applicable pre- or post-staple hash.
+The base-only initializer is the deliberate exception: it binds only the exact
+clean commit and prints `not-recorded` for evidence that does not exist. Those
+values are gaps, never passing evidence.
 The notarization approval hash must bind the signed pre-staple bytes. Manual and
 Gatekeeper results must bind the immutable final post-staple bytes. A hash or
 commit mismatch is malformed evidence, not a failed gate that can be waived.
@@ -46,7 +62,8 @@ commit mismatch is malformed evidence, not a failed gate that can be waived.
 ## Computed status rules
 
 - `READY` is possible only when every required evidence class is present,
-  structurally valid, mutually consistent, current, and passing.
+  structurally valid, mutually consistent, current, and passing, and no
+  incomplete-status baseline remains.
 - A structurally valid packet with any recognized missing, `fail`, or
   `not-run` gate computes `NOT_RELEASE_READY` and lists every gap.
 - Malformed, contradictory, unsafe, stale, unknown, or candidate-mismatched

@@ -37,3 +37,7 @@ indicate that an installable package has been published.
   Only, explicit Copy, and Paste Again delivery paths.
 - Sanitized local diagnostics, explicit permission status, privacy and security
   documentation, third-party notices, and separate trademark guidance.
+- Fail-closed local distribution tooling for exact-commit unsigned checks,
+  guarded signing and one-use notarization approval, immutable final-DMG
+  verification, deterministic source archives, fixed release-asset inventory,
+  and review-only evidence collection. These tools do not publish a package.
