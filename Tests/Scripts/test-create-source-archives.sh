@@ -849,6 +849,11 @@ deadline = time.monotonic() + 30
 while time.monotonic() < deadline:
     if archive.is_file():
         os.kill(pid, signal.SIGSTOP)
+        # Publication is performed by a command-substitution child. Let that
+        # child finish returning the verified inode record while its parent is
+        # stopped, so this fixture exercises the post-publication integrity
+        # gate instead of racing the publication helper itself.
+        time.sleep(0.1)
         descriptor = os.open(archive, os.O_RDWR | os.O_NOFOLLOW)
         try:
             original = os.pread(descriptor, 1, 0)
