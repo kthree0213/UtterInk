@@ -30,10 +30,16 @@ printf 'utterink-offline-toolchain-fixture-v1\n' > "$FIXTURE/FixtureTools/.utter
 
 SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567
 SOURCE_ROOT="$FIXTURE/FixtureSource/archive-root/XcodeGen-$SOURCE_COMMIT"
-mkdir -p "$SOURCE_ROOT/Sources"
+mkdir -p \
+  "$SOURCE_ROOT/Sources" \
+  "$SOURCE_ROOT/SettingPresets/Configs" \
+  "$SOURCE_ROOT/SettingPresets/Platforms"
 printf '// swift-tools-version: 6.0\n' > "$SOURCE_ROOT/Package.swift"
 printf '{"pins":[],"version":3}\n' > "$SOURCE_ROOT/Package.resolved"
 printf 'locked source marker\n' > "$SOURCE_ROOT/Sources/marker.txt"
+printf 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG\n' > "$SOURCE_ROOT/SettingPresets/Configs/debug.yml"
+printf 'SUPPORTED_PLATFORMS: macosx\n' > "$SOURCE_ROOT/SettingPresets/Platforms/macOS.yml"
+printf 'SDKROOT: auto\n' > "$SOURCE_ROOT/SettingPresets/base.yml"
 
 cat > "$FIXTURE/FixtureBinary/xcodegen" <<'EOF'
 #!/bin/bash
@@ -43,6 +49,30 @@ printf 'Version: 2.45.4\n'
 EOF
 chmod 0755 "$FIXTURE/FixtureBinary/xcodegen"
 BINARY_SHA="$(/usr/bin/shasum -a 256 "$FIXTURE/FixtureBinary/xcodegen" | /usr/bin/awk '{print $1}')"
+
+SETTING_PRESETS_SHA="$(/usr/bin/python3 -I - "$SOURCE_ROOT/SettingPresets" <<'PY'
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+import struct
+import sys
+
+root = Path(sys.argv[1])
+items = sorted(
+    (path.relative_to(root).as_posix().encode("utf-8"), path.read_bytes())
+    for path in root.rglob("*")
+    if path.is_file()
+)
+digest = hashlib.sha256()
+for relative, content in items:
+    digest.update(struct.pack(">Q", len(relative)))
+    digest.update(relative)
+    digest.update(struct.pack(">Q", len(content)))
+    digest.update(content)
+print(digest.hexdigest())
+PY
+)"
 
 ARCHIVE="$FIXTURE/FixtureSource/XcodeGen-$SOURCE_COMMIT.tar.gz"
 (cd "$FIXTURE/FixtureSource/archive-root" && COPYFILE_DISABLE=1 /usr/bin/tar -czf "$ARCHIVE" "XcodeGen-$SOURCE_COMMIT")
@@ -127,7 +157,7 @@ esac
 EOF
 chmod 0755 "$FIXTURE/FixtureTools/"*
 
-python3 - "$FIXTURE/Config/ci-toolchain.json" "$SOURCE_COMMIT" "$ARCHIVE_SHA" "$BINARY_SHA" <<'PY'
+python3 - "$FIXTURE/Config/ci-toolchain.json" "$SOURCE_COMMIT" "$ARCHIVE_SHA" "$BINARY_SHA" "$SETTING_PRESETS_SHA" <<'PY'
 from __future__ import annotations
 
 import json
@@ -135,7 +165,7 @@ from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
-commit, archive_sha, binary_sha = sys.argv[2:]
+commit, archive_sha, binary_sha, setting_presets_sha = sys.argv[2:]
 lock = {
     "schemaVersion": 1,
     "runnerImage": {
@@ -162,6 +192,7 @@ lock = {
         "archiveURL": f"https://github.com/yonaskolb/XcodeGen/archive/{commit}.tar.gz",
         "archiveSHA256": archive_sha,
         "binarySHA256": binary_sha,
+        "settingPresetsSHA256": setting_presets_sha,
     },
     "sources": {
         "runnerRelease": "https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260630.0213",
@@ -258,13 +289,34 @@ run_verify ci \
 grep -q 'repository-xcodegen-missing' "$TMP/stderr" || fail "pre-bootstrap CI failure was not actionable: $(tr '\n' ' ' < "$TMP/stderr")"
 [[ ! -e "$FIXTURE/path-fallback-used" ]] || fail 'ordinary PATH fallback ran before bootstrap'
 
+/bin/mkdir -p "$FIXTURE/Tools/bin"
+cat > "$FIXTURE/Tools/bin/xcodegen" <<EOF
+#!/bin/bash
+/usr/bin/touch '$FIXTURE/untrusted-existing-xcodegen-ran'
+printf 'Version: 2.45.4\n'
+EOF
+/bin/chmod 0755 "$FIXTURE/Tools/bin/xcodegen"
 run_bootstrap
 [[ "$STATUS" -eq 0 ]] || fail "bootstrap failed: $(tr '\n' ' ' < "$TMP/stderr")"
+[[ ! -e "$FIXTURE/untrusted-existing-xcodegen-ran" ]] ||
+  fail 'bootstrap executed an existing XcodeGen binary before verifying its hash and companion resources'
 [[ -x "$FIXTURE/Tools/bin/xcodegen" && ! -L "$FIXTURE/Tools/bin/xcodegen" ]] || fail 'bootstrap did not install a regular executable'
+INSTALLED_BUNDLE="$FIXTURE/Tools/bin/XcodeGen_XcodeGenKit.bundle"
+INSTALLED_SETTING_PRESETS="$INSTALLED_BUNDLE/SettingPresets"
+[[ -d "$INSTALLED_BUNDLE" && ! -L "$INSTALLED_BUNDLE" ]] || fail 'bootstrap did not install a regular companion bundle'
+[[ -d "$INSTALLED_SETTING_PRESETS" && ! -L "$INSTALLED_SETTING_PRESETS" ]] || fail 'bootstrap did not install regular setting presets'
+diff -r "$SOURCE_ROOT/SettingPresets" "$INSTALLED_SETTING_PRESETS" >/dev/null || fail 'installed setting presets drifted'
 ACTUAL_BINARY_SHA="$(/usr/bin/shasum -a 256 "$FIXTURE/Tools/bin/xcodegen" | /usr/bin/awk '{print $1}')"
 [[ "$ACTUAL_BINARY_SHA" == "$BINARY_SHA" ]] || fail 'installed binary hash drifted'
 [[ ! -e "$FIXTURE/path-fallback-used" ]] || fail 'bootstrap consulted ordinary PATH'
 grep -q -- '--force-resolved-versions' "$FIXTURE/fixture-tools.log" || fail 'source build did not force resolved versions'
+
+BUILDS_BEFORE_EARLY_RETURN="$(grep -c '^swift:build ' "$FIXTURE/fixture-tools.log")"
+run_bootstrap
+[[ "$STATUS" -eq 0 ]] || fail "complete-install early return failed: $(tr '\n' ' ' < "$TMP/stderr")"
+grep -q 'locked XcodeGen already installed' "$TMP/stdout" || fail 'complete install did not report an early return'
+[[ "$(grep -c '^swift:build ' "$FIXTURE/fixture-tools.log")" -eq "$BUILDS_BEFORE_EARLY_RETURN" ]] ||
+  fail 'complete-install early return rebuilt XcodeGen'
 
 run_verify local
 [[ "$STATUS" -eq 0 ]] || fail "local verification failed: $(tr '\n' ' ' < "$TMP/stderr")"
@@ -297,6 +349,43 @@ grep '^swift:build ' "$FIXTURE/fixture-tools.log" \
 grep '^swift:build ' "$FIXTURE/fixture-tools.log" \
   | grep -F -- "-debug-prefix-map -Xswiftc $CANONICAL_BUILD_ROOT=/__UTTERINK_XCODEGEN_BUILD__" >/dev/null \
   || fail 'Swift source paths were not prefix-mapped'
+
+assert_resource_rejected_and_repaired() {
+  local expected_category="$1"
+  local description="$2"
+  run_verify local
+  [[ "$STATUS" -ne 0 ]] || fail "verification accepted $description"
+  grep -q "$expected_category" "$TMP/stderr" ||
+    fail "$description did not produce $expected_category: $(tr '\n' ' ' < "$TMP/stderr")"
+  run_bootstrap
+  [[ "$STATUS" -eq 0 ]] || fail "bootstrap did not repair $description: $(tr '\n' ' ' < "$TMP/stderr")"
+  diff -r "$SOURCE_ROOT/SettingPresets" "$INSTALLED_SETTING_PRESETS" >/dev/null ||
+    fail "bootstrap repair drifted after $description"
+  run_verify local
+  [[ "$STATUS" -eq 0 ]] || fail "verification failed after repairing $description: $(tr '\n' ' ' < "$TMP/stderr")"
+}
+
+rm "$INSTALLED_SETTING_PRESETS/Configs/debug.yml"
+assert_resource_rejected_and_repaired repository-xcodegen-unusable 'a missing setting preset resource'
+
+printf 'drifted setting preset\n' > "$INSTALLED_SETTING_PRESETS/Configs/debug.yml"
+assert_resource_rejected_and_repaired repository-xcodegen-mismatch 'a modified setting preset resource'
+
+printf 'unexpected setting preset\n' > "$INSTALLED_SETTING_PRESETS/extra.yml"
+assert_resource_rejected_and_repaired repository-xcodegen-mismatch 'an extra setting preset resource'
+
+mkdir "$INSTALLED_SETTING_PRESETS/empty-extra-directory"
+assert_resource_rejected_and_repaired repository-xcodegen-unusable 'an extra empty setting preset directory'
+
+printf 'unexpected bundle resource\n' > "$INSTALLED_BUNDLE/extra.txt"
+assert_resource_rejected_and_repaired repository-xcodegen-unusable 'an extra companion bundle resource'
+
+rm "$INSTALLED_SETTING_PRESETS/Configs/debug.yml"
+ln -s ../base.yml "$INSTALLED_SETTING_PRESETS/Configs/debug.yml"
+assert_resource_rejected_and_repaired repository-xcodegen-unusable 'a symlinked setting preset resource'
+
+/usr/bin/mkfifo "$INSTALLED_SETTING_PRESETS/unexpected.fifo"
+assert_resource_rejected_and_repaired repository-xcodegen-unusable 'a special setting preset resource'
 
 run_verify ci \
   RUNNER_OS=macOS RUNNER_ARCH=ARM64 ImageOS=macos26 ImageVersion=drifted \
@@ -373,5 +462,26 @@ STATUS=$?
 set -e
 [[ "$STATUS" -ne 0 ]] || fail 'test mode accepted a source archive outside the fixture repository'
 grep -q 'invalid-test-source' "$TMP/stderr" || fail 'outside-source diagnostic was not stable'
+
+rm "$SOURCE_ROOT/SettingPresets/Platforms/macOS.yml"
+ln -s ../base.yml "$SOURCE_ROOT/SettingPresets/Platforms/macOS.yml"
+(cd "$FIXTURE/FixtureSource/archive-root" && COPYFILE_DISABLE=1 /usr/bin/tar -czf "$ARCHIVE" "XcodeGen-$SOURCE_COMMIT")
+SYMLINK_ARCHIVE_SHA="$(/usr/bin/shasum -a 256 "$ARCHIVE" | /usr/bin/awk '{print $1}')"
+python3 - "$FIXTURE/Config/ci-toolchain.json" "$SYMLINK_ARCHIVE_SHA" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+value = json.loads(path.read_text(encoding="utf-8"))
+value["xcodegen"]["archiveSHA256"] = sys.argv[2]
+path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+rm -rf "$FIXTURE/Tools"
+run_bootstrap
+[[ "$STATUS" -ne 0 ]] || fail 'bootstrap accepted a symlinked source setting preset'
+grep -q 'source-setting-presets-invalid' "$TMP/stderr" || fail 'source resource symlink diagnostic was not stable'
+[[ ! -e "$FIXTURE/Tools/bin/xcodegen" ]] || fail 'source resource symlink installed a binary'
+[[ ! -e "$FIXTURE/Tools/bin/XcodeGen_XcodeGenKit.bundle" ]] || fail 'source resource symlink installed a companion bundle'
 
 printf 'XcodeGen bootstrap tests passed\n'

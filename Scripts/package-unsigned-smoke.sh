@@ -106,12 +106,14 @@ cd "$ROOT"
 
 LOCK="$ROOT/Config/ci-toolchain.json"
 XCODEGEN="$ROOT/Tools/bin/xcodegen"
+XCODEGEN_RESOURCE_BUNDLE="$ROOT/Tools/bin/XcodeGen_XcodeGenKit.bundle"
+XCODEGEN_SETTING_PRESETS="$XCODEGEN_RESOURCE_BUNDLE/SettingPresets"
 VERIFIER="$ROOT/Scripts/release/verify-candidate.sh"
 CREATE_DMG="$ROOT/Scripts/create-dmg.sh"
 INSPECT_DMG="$ROOT/Scripts/inspect-dmg.sh"
 
 [[ -f "$LOCK" && ! -L "$LOCK" ]] || fail toolchain-lock-missing 24
-[[ ! -L "$ROOT/Tools" && ! -L "$ROOT/Tools/bin" && ! -L "$XCODEGEN" ]] || fail repository-xcodegen-unusable 24
+[[ ! -L "$ROOT/Tools" && ! -L "$ROOT/Tools/bin" && ! -L "$XCODEGEN" && ! -L "$XCODEGEN_RESOURCE_BUNDLE" && ! -L "$XCODEGEN_SETTING_PRESETS" ]] || fail repository-xcodegen-unusable 24
 [[ -f "$XCODEGEN" && -x "$XCODEGEN" ]] || fail repository-xcodegen-missing 24
 for script in "$VERIFIER" "$CREATE_DMG" "$INSPECT_DMG"; do
   [[ -f "$script" && -x "$script" && ! -L "$script" ]] || fail required-script-unavailable
@@ -436,20 +438,24 @@ xcode = lock["xcode"]
 xcodegen = lock["xcodegen"]
 if type(xcode) is not dict or set(xcode) != {"version", "build", "developerDir"}:
     abort()
-if type(xcodegen) is not dict or set(xcodegen) != {"version", "sourceCommit", "archiveURL", "archiveSHA256", "binarySHA256"}:
+if type(xcodegen) is not dict or set(xcodegen) != {"version", "sourceCommit", "archiveURL", "archiveSHA256", "binarySHA256", "settingPresetsSHA256"}:
     abort()
 developer_dir = xcode.get("developerDir")
 version = xcodegen.get("version")
 binary_hash = xcodegen.get("binarySHA256")
+presets_hash = xcodegen.get("settingPresetsSHA256")
 if type(developer_dir) is not str or re.fullmatch(r"/Applications/Xcode_[A-Za-z0-9.]+[.]app/Contents/Developer", developer_dir) is None:
     abort()
 if type(version) is not str or re.fullmatch(r"[0-9]+(?:[.][0-9]+)+", version) is None:
     abort()
 if type(binary_hash) is not str or re.fullmatch(r"[0-9a-f]{64}", binary_hash) is None:
     abort()
+if type(presets_hash) is not str or re.fullmatch(r"[0-9a-f]{64}", presets_hash) is None:
+    abort()
 (output / "developer-dir").write_text(developer_dir, encoding="utf-8")
 (output / "xcodegen-version").write_text(version, encoding="utf-8")
 (output / "xcodegen-sha").write_text(binary_hash, encoding="utf-8")
+(output / "xcodegen-presets-sha").write_text(presets_hash, encoding="utf-8")
 PY
 then
   fail toolchain-lock-invalid 24
@@ -458,6 +464,199 @@ fi
 DEVELOPER_DIR_LOCKED="$(/bin/cat "$PREFLIGHT_TMP/developer-dir")"
 EXPECTED_XCODEGEN_VERSION="$(/bin/cat "$PREFLIGHT_TMP/xcodegen-version")"
 EXPECTED_XCODEGEN_SHA="$(/bin/cat "$PREFLIGHT_TMP/xcodegen-sha")"
+EXPECTED_XCODEGEN_PRESETS_SHA="$(/bin/cat "$PREFLIGHT_TMP/xcodegen-presets-sha")"
+
+verify_xcodegen_setting_presets() {
+  /usr/bin/python3 -I - "$1" "$2" <<'PY' >/dev/null 2>&1
+from __future__ import annotations
+
+import hashlib
+import os
+from pathlib import Path
+import re
+import stat
+import struct
+import sys
+
+
+root = Path(sys.argv[1])
+expected = sys.argv[2]
+if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+    raise SystemExit(1)
+
+flags = os.O_RDONLY | os.O_DIRECTORY
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+try:
+    root_fd = os.open(root, flags)
+except OSError:
+    raise SystemExit(1)
+
+files: list[tuple[bytes, bytes]] = []
+directories: set[str] = {""}
+total_size = 0
+
+
+def identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+        value.st_gid,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def walk(directory_fd: int, prefix: str, depth: int) -> None:
+    global total_size
+    if depth > 8:
+        raise ValueError
+    with os.scandir(directory_fd) as iterator:
+        entries = list(iterator)
+    if len(entries) > 256:
+        raise ValueError
+    for entry in entries:
+        name = entry.name
+        try:
+            name_bytes = name.encode("utf-8", errors="strict")
+        except UnicodeError:
+            raise ValueError
+        if not name or name in (".", "..") or b"\x00" in name_bytes or b"/" in name_bytes:
+            raise ValueError
+        relative = f"{prefix}/{name}" if prefix else name
+        relative_bytes = relative.encode("utf-8", errors="strict")
+        if len(relative_bytes) > 512:
+            raise ValueError
+        before = entry.stat(follow_symlinks=False)
+        if stat.S_ISLNK(before.st_mode):
+            raise ValueError
+        if stat.S_ISDIR(before.st_mode):
+            if before.st_mode & 0o022:
+                raise ValueError
+            child_flags = os.O_RDONLY | os.O_DIRECTORY
+            if hasattr(os, "O_NOFOLLOW"):
+                child_flags |= os.O_NOFOLLOW
+            child_fd = os.open(name, child_flags, dir_fd=directory_fd)
+            try:
+                if identity(os.fstat(child_fd)) != identity(before):
+                    raise ValueError
+                directories.add(relative)
+                walk(child_fd, relative, depth + 1)
+                if identity(os.fstat(child_fd)) != identity(before):
+                    raise ValueError
+            finally:
+                os.close(child_fd)
+            continue
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_mode & 0o133:
+            raise ValueError
+        if before.st_size < 0 or before.st_size > 1024 * 1024:
+            raise ValueError
+        file_flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            file_flags |= os.O_NOFOLLOW
+        file_fd = os.open(name, file_flags, dir_fd=directory_fd)
+        try:
+            current = os.fstat(file_fd)
+            if identity(current) != identity(before):
+                raise ValueError
+            content = bytearray()
+            offset = 0
+            while offset < current.st_size:
+                chunk = os.pread(file_fd, min(1024 * 1024, current.st_size - offset), offset)
+                if not chunk:
+                    raise ValueError
+                content.extend(chunk)
+                offset += len(chunk)
+            if identity(os.fstat(file_fd)) != identity(before):
+                raise ValueError
+        finally:
+            os.close(file_fd)
+        total_size += len(content)
+        if total_size > 8 * 1024 * 1024 or len(files) >= 256:
+            raise ValueError
+        files.append((relative_bytes, bytes(content)))
+
+
+try:
+    root_metadata = os.fstat(root_fd)
+    if not stat.S_ISDIR(root_metadata.st_mode) or root_metadata.st_mode & 0o022:
+        raise ValueError
+    walk(root_fd, "", 0)
+finally:
+    os.close(root_fd)
+
+if not files:
+    raise SystemExit(1)
+required_directories = {""}
+for path_bytes, _ in files:
+    parts = path_bytes.decode("utf-8").split("/")
+    required_directories.update("/".join(parts[:index]) for index in range(1, len(parts)))
+if directories != required_directories:
+    raise SystemExit(1)
+
+digest = hashlib.sha256()
+for relative_bytes, content in sorted(files, key=lambda value: value[0]):
+    digest.update(struct.pack(">Q", len(relative_bytes)))
+    digest.update(relative_bytes)
+    digest.update(struct.pack(">Q", len(content)))
+    digest.update(content)
+if digest.hexdigest() != expected:
+    raise SystemExit(1)
+PY
+}
+
+verify_xcodegen_resource_bundle() {
+  local bundle="$1"
+  local expected_hash="$2"
+  if ! /usr/bin/python3 -I - "$bundle" <<'PY' >/dev/null 2>&1
+import os
+import stat
+import sys
+
+bundle = sys.argv[1]
+flags = os.O_RDONLY | os.O_DIRECTORY
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+try:
+    descriptor = os.open(bundle, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_mode & 0o022
+        ):
+            raise ValueError
+        with os.scandir(descriptor) as iterator:
+            entries = list(iterator)
+        if len(entries) != 1:
+            raise ValueError
+        entry = entries[0]
+        child = entry.stat(follow_symlinks=False)
+        if entry.name != "SettingPresets" or not stat.S_ISDIR(child.st_mode):
+            raise ValueError
+    finally:
+        os.close(descriptor)
+except (OSError, UnicodeError, ValueError):
+    raise SystemExit(1)
+PY
+  then
+    return 1
+  fi
+  verify_xcodegen_setting_presets "$bundle/SettingPresets" "$expected_hash"
+}
+
+verify_xcodegen_resource_bundle "$XCODEGEN_RESOURCE_BUNDLE" "$EXPECTED_XCODEGEN_PRESETS_SHA" ||
+  fail repository-xcodegen-mismatch 24
+VERIFIED_XCODEGEN_RESOURCE_BUNDLE="$PREFLIGHT_TMP/XcodeGen_XcodeGenKit.bundle"
+/usr/bin/env COPYFILE_DISABLE=1 /bin/cp -R "$XCODEGEN_RESOURCE_BUNDLE" "$VERIFIED_XCODEGEN_RESOURCE_BUNDLE" ||
+  fail repository-xcodegen-unusable 24
+verify_xcodegen_resource_bundle "$VERIFIED_XCODEGEN_RESOURCE_BUNDLE" "$EXPECTED_XCODEGEN_PRESETS_SHA" ||
+  fail repository-xcodegen-mismatch 24
 VERIFIED_XCODEGEN="$PREFLIGHT_TMP/xcodegen"
 /bin/cp "$XCODEGEN" "$VERIFIED_XCODEGEN" || fail repository-xcodegen-unusable 24
 /bin/chmod 0700 "$VERIFIED_XCODEGEN" || fail repository-xcodegen-unusable 24

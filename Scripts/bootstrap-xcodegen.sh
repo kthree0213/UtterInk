@@ -32,7 +32,8 @@ case "${UTTERINK_TOOLCHAIN_TEST_MODE:-}" in
 esac
 
 TMP="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/utterink-xcodegen.XXXXXX")"
-INSTALL_TEMP=''
+INSTALL_BINARY_TEMP=''
+INSTALL_RESOURCE_TEMP=''
 CANONICAL_ROOT=''
 CANONICAL_LOCK=''
 CANONICAL_OWNED=0
@@ -40,8 +41,11 @@ CANONICAL_LOCK_OWNED=0
 cleanup() {
   local status=$?
   trap - EXIT
-  if [[ -n "$INSTALL_TEMP" ]]; then
-    /bin/rm -f "$INSTALL_TEMP"
+  if [[ -n "$INSTALL_BINARY_TEMP" ]]; then
+    /bin/rm -f "$INSTALL_BINARY_TEMP"
+  fi
+  if [[ -n "$INSTALL_RESOURCE_TEMP" ]]; then
+    /bin/rm -rf "$INSTALL_RESOURCE_TEMP"
   fi
   if [[ "$CANONICAL_OWNED" -eq 1 && "$CANONICAL_ROOT" == /private/tmp/utterink-xcodegen-bootstrap-* && ! -L "$CANONICAL_ROOT" ]]; then
     /bin/rm -rf "$CANONICAL_ROOT"
@@ -108,7 +112,10 @@ runner = exact(top["runnerImage"], {"label", "releaseTag", "commit", "imageVersi
 xcode = exact(top["xcode"], {"version", "build", "developerDir"})
 sdk = exact(top["sdk"], {"version", "build"})
 swift = exact(top["swift"], {"version"})
-xcodegen = exact(top["xcodegen"], {"version", "sourceCommit", "archiveURL", "archiveSHA256", "binarySHA256"})
+xcodegen = exact(
+    top["xcodegen"],
+    {"version", "sourceCommit", "archiveURL", "archiveSHA256", "binarySHA256", "settingPresetsSHA256"},
+)
 sources = exact(top["sources"], {"runnerRelease", "runnerReadme", "xcodegenRelease", "xcodegenCommit"})
 
 if runner["label"] != "macos-26" or runner["architecture"] != "arm64":
@@ -146,6 +153,7 @@ if xcodegen["archiveURL"] != archive_url:
     abort()
 archive_sha = locked_string(xcodegen["archiveSHA256"], r"[0-9a-f]{64}")
 binary_sha = locked_string(xcodegen["binarySHA256"], r"[0-9a-f]{64}")
+setting_presets_sha = locked_string(xcodegen["settingPresetsSHA256"], r"[0-9a-f]{64}")
 if not test_mode:
     if source_commit != "8d3d3476a69ae3e5d68e1adccc701c410c05eb36":
         abort()
@@ -167,6 +175,7 @@ fields = {
     "binary-sha": binary_sha,
     "developer-dir": xcode["developerDir"],
     "source-commit": source_commit,
+    "setting-presets-sha": setting_presets_sha,
     "version": xcodegen["version"],
 }
 for name, value in fields.items():
@@ -181,6 +190,7 @@ ARCHIVE_SHA="$(/bin/cat "$TMP/lock/archive-sha")"
 BINARY_SHA="$(/bin/cat "$TMP/lock/binary-sha")"
 DEVELOPER_DIR_LOCKED="$(/bin/cat "$TMP/lock/developer-dir")"
 SOURCE_COMMIT="$(/bin/cat "$TMP/lock/source-commit")"
+SETTING_PRESETS_SHA="$(/bin/cat "$TMP/lock/setting-presets-sha")"
 XCODEGEN_VERSION="$(/bin/cat "$TMP/lock/version")"
 
 if [[ "$TEST_MODE" -eq 1 ]]; then
@@ -226,17 +236,147 @@ fi
 TOOLS_ROOT="$ROOT/Tools"
 TOOLS_BIN="$TOOLS_ROOT/bin"
 DESTINATION="$TOOLS_BIN/xcodegen"
-[[ ! -L "$TOOLS_ROOT" && ! -L "$TOOLS_BIN" && ! -L "$DESTINATION" ]] || fail unsafe-install-path
+RESOURCE_BUNDLE_NAME='XcodeGen_XcodeGenKit.bundle'
+DESTINATION_BUNDLE="$TOOLS_BIN/$RESOURCE_BUNDLE_NAME"
+DESTINATION_SETTING_PRESETS="$DESTINATION_BUNDLE/SettingPresets"
+[[ ! -L "$TOOLS_ROOT" \
+  && ! -L "$TOOLS_BIN" \
+  && ! -L "$DESTINATION" \
+  && ! -L "$DESTINATION_BUNDLE" \
+  && ! -L "$DESTINATION_SETTING_PRESETS" ]] || fail unsafe-install-path
 /bin/mkdir -p "$TOOLS_BIN"
-[[ -d "$TOOLS_ROOT" && -d "$TOOLS_BIN" && ! -L "$TOOLS_ROOT" && ! -L "$TOOLS_BIN" ]] || fail unsafe-install-path
+[[ -d "$TOOLS_ROOT" \
+  && -d "$TOOLS_BIN" \
+  && ! -L "$TOOLS_ROOT" \
+  && ! -L "$TOOLS_BIN" ]] || fail unsafe-install-path
+if [[ -e "$DESTINATION_BUNDLE" && ! -d "$DESTINATION_BUNDLE" ]]; then
+  fail unsafe-install-path
+fi
+
+setting_presets_tree_hash() {
+  /usr/bin/python3 -I - "$1" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import os
+from pathlib import Path
+import stat
+import struct
+import sys
+
+
+def abort() -> None:
+    raise SystemExit(1)
+
+
+settings = Path(sys.argv[1])
+try:
+    if not stat.S_ISDIR(settings.lstat().st_mode):
+        abort()
+
+    files: list[tuple[bytes, Path, tuple[int, int, int, int]]] = []
+    directories: set[bytes] = set()
+    stack = [settings]
+    while stack:
+        directory = stack.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode):
+                    directories.add(path.relative_to(settings).as_posix().encode("utf-8"))
+                    stack.append(path)
+                elif stat.S_ISREG(info.st_mode):
+                    relative = path.relative_to(settings).as_posix().encode("utf-8")
+                    files.append((relative, path, (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)))
+                else:
+                    abort()
+    if not files:
+        abort()
+    required_directories: set[bytes] = set()
+    for _, path, _ in files:
+        for parent in path.relative_to(settings).parents:
+            if parent == Path("."):
+                break
+            required_directories.add(parent.as_posix().encode("utf-8"))
+    if directories != required_directories:
+        abort()
+
+    digest = hashlib.sha256()
+    for relative, path, expected in sorted(files, key=lambda item: item[0]):
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags)
+        try:
+            before = os.fstat(descriptor)
+            actual = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            if not stat.S_ISREG(before.st_mode) or actual != expected:
+                abort()
+            digest.update(struct.pack(">Q", len(relative)))
+            digest.update(relative)
+            digest.update(struct.pack(">Q", before.st_size))
+            remaining = before.st_size
+            while remaining:
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                if not chunk:
+                    abort()
+                digest.update(chunk)
+                remaining -= len(chunk)
+            if os.read(descriptor, 1):
+                abort()
+            after = os.fstat(descriptor)
+            if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != actual:
+                abort()
+        finally:
+            os.close(descriptor)
+except (OSError, UnicodeError, ValueError):
+    abort()
+
+print(digest.hexdigest())
+PY
+}
+
+companion_bundle_tree_hash() {
+  if ! /usr/bin/python3 -I - "$1" <<'PY'
+import os
+from pathlib import Path
+import stat
+import sys
+
+bundle = Path(sys.argv[1])
+try:
+    if not stat.S_ISDIR(bundle.lstat().st_mode):
+        raise ValueError
+    with os.scandir(bundle) as iterator:
+        entries = list(iterator)
+    if len(entries) != 1:
+        raise ValueError
+    entry = entries[0]
+    if entry.name != "SettingPresets" or not stat.S_ISDIR(entry.stat(follow_symlinks=False).st_mode):
+        raise ValueError
+except (OSError, UnicodeError, ValueError):
+    raise SystemExit(1)
+PY
+  then
+    return 1
+  fi
+  setting_presets_tree_hash "$1/SettingPresets"
+}
 
 if [[ -f "$DESTINATION" && -x "$DESTINATION" && ! -L "$DESTINATION" ]]; then
   EXISTING_SHA="$(/usr/bin/shasum -a 256 "$DESTINATION" | /usr/bin/awk 'NR == 1 { print $1 }')" || fail repository-xcodegen-unreadable
-  EXISTING_VERSION="$(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C HOME="$TMP" \
-    "$DESTINATION" --version 2>/dev/null)" || EXISTING_VERSION=''
-  if [[ "$EXISTING_SHA" == "$BINARY_SHA" && "$EXISTING_VERSION" == "Version: $XCODEGEN_VERSION" ]]; then
-    printf 'locked XcodeGen already installed: Tools/bin/xcodegen\n'
-    exit 0
+  if [[ "$EXISTING_SHA" == "$BINARY_SHA" ]]; then
+    EXISTING_SETTING_PRESETS_SHA="$(companion_bundle_tree_hash "$DESTINATION_BUNDLE" 2>/dev/null)" ||
+      EXISTING_SETTING_PRESETS_SHA=''
+    if [[ "$EXISTING_SETTING_PRESETS_SHA" == "$SETTING_PRESETS_SHA" ]]; then
+      EXISTING_VERSION="$(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C HOME="$TMP" \
+        "$DESTINATION" --version 2>/dev/null)" || EXISTING_VERSION=''
+      if [[ "$EXISTING_VERSION" == "Version: $XCODEGEN_VERSION" ]]; then
+        printf 'locked XcodeGen already installed: Tools/bin/xcodegen + Tools/bin/%s/SettingPresets\n' "$RESOURCE_BUNDLE_NAME"
+        exit 0
+      fi
+    fi
   fi
 elif [[ -e "$DESTINATION" ]]; then
   fail unsafe-install-path
@@ -375,6 +515,9 @@ COPYFILE_DISABLE=1 /usr/bin/tar -xzf "$ARCHIVE_FILE" -C "$CANONICAL_ROOT/source"
 SOURCE_ROOT="$CANONICAL_ROOT/source/XcodeGen-$SOURCE_COMMIT"
 [[ -d "$SOURCE_ROOT" && ! -L "$SOURCE_ROOT" && -f "$SOURCE_ROOT/Package.swift" && ! -L "$SOURCE_ROOT/Package.swift" ]] || fail source-layout-mismatch
 [[ -f "$SOURCE_ROOT/Package.resolved" && ! -L "$SOURCE_ROOT/Package.resolved" ]] || fail source-resolution-missing
+SOURCE_SETTING_PRESETS="$SOURCE_ROOT/SettingPresets"
+ACTUAL_SETTING_PRESETS_SHA="$(setting_presets_tree_hash "$SOURCE_SETTING_PRESETS")" || fail source-setting-presets-invalid
+[[ "$ACTUAL_SETTING_PRESETS_SHA" == "$SETTING_PRESETS_SHA" ]] || fail source-setting-presets-hash-mismatch
 
 /usr/bin/env -i "${SWIFT_BUILD_ENV[@]}" \
   "$SWIFT" build \
@@ -426,14 +569,33 @@ ACTUAL_VERSION="$(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C HO
   "$BUILT_BINARY" --version 2>/dev/null)" || fail built-binary-version-unavailable
 [[ "$ACTUAL_VERSION" == "Version: $XCODEGEN_VERSION" ]] || fail built-binary-version-mismatch
 
-INSTALL_TEMP="$(/usr/bin/mktemp "$TOOLS_BIN/.xcodegen.XXXXXX")"
-/bin/cp "$BUILT_BINARY" "$INSTALL_TEMP" || fail install-copy-failed
-/bin/chmod 0755 "$INSTALL_TEMP" || fail install-mode-failed
-INSTALLED_TEMP_SHA="$(/usr/bin/shasum -a 256 "$INSTALL_TEMP" | /usr/bin/awk 'NR == 1 { print $1 }')" || fail install-hash-unavailable
+INSTALL_BINARY_TEMP="$(/usr/bin/mktemp "$TOOLS_BIN/.xcodegen.XXXXXX")"
+INSTALL_RESOURCE_TEMP="$(/usr/bin/mktemp -d "$TOOLS_BIN/.xcodegen-bundle.XXXXXX")"
+STAGED_BUNDLE="$INSTALL_RESOURCE_TEMP/$RESOURCE_BUNDLE_NAME"
+STAGED_SETTING_PRESETS="$STAGED_BUNDLE/SettingPresets"
+/bin/cp "$BUILT_BINARY" "$INSTALL_BINARY_TEMP" || fail install-copy-failed
+/bin/chmod 0755 "$INSTALL_BINARY_TEMP" || fail install-mode-failed
+/bin/mkdir -m 0700 "$STAGED_BUNDLE" || fail install-resource-copy-failed
+COPYFILE_DISABLE=1 /bin/cp -Rp "$SOURCE_SETTING_PRESETS" "$STAGED_BUNDLE/" || fail install-resource-copy-failed
+INSTALLED_TEMP_SHA="$(/usr/bin/shasum -a 256 "$INSTALL_BINARY_TEMP" | /usr/bin/awk 'NR == 1 { print $1 }')" || fail install-hash-unavailable
 [[ "$INSTALLED_TEMP_SHA" == "$BINARY_SHA" ]] || fail install-hash-mismatch
-/bin/mv -f "$INSTALL_TEMP" "$DESTINATION" || fail install-replace-failed
+STAGED_SETTING_PRESETS_SHA="$(companion_bundle_tree_hash "$STAGED_BUNDLE")" || fail install-resource-verification-failed
+[[ "$STAGED_SETTING_PRESETS_SHA" == "$SETTING_PRESETS_SHA" ]] || fail install-resource-verification-failed
+
+[[ ! -L "$DESTINATION_BUNDLE" ]] || fail unsafe-install-path
+if [[ -e "$DESTINATION_BUNDLE" ]]; then
+  [[ -d "$DESTINATION_BUNDLE" ]] || fail unsafe-install-path
+  /bin/rm -rf "$DESTINATION_BUNDLE" || fail install-resource-replace-failed
+fi
+/bin/mv "$STAGED_BUNDLE" "$DESTINATION_BUNDLE" || fail install-resource-replace-failed
+/bin/rmdir "$INSTALL_RESOURCE_TEMP" || fail install-resource-replace-failed
+INSTALL_RESOURCE_TEMP=''
+/bin/mv -f "$INSTALL_BINARY_TEMP" "$DESTINATION" || fail install-replace-failed
+INSTALL_BINARY_TEMP=''
 [[ -f "$DESTINATION" && -x "$DESTINATION" && ! -L "$DESTINATION" ]] || fail install-verification-failed
 FINAL_SHA="$(/usr/bin/shasum -a 256 "$DESTINATION" | /usr/bin/awk 'NR == 1 { print $1 }')" || fail install-verification-failed
 [[ "$FINAL_SHA" == "$BINARY_SHA" ]] || fail install-verification-failed
+FINAL_SETTING_PRESETS_SHA="$(companion_bundle_tree_hash "$DESTINATION_BUNDLE")" || fail install-verification-failed
+[[ "$FINAL_SETTING_PRESETS_SHA" == "$SETTING_PRESETS_SHA" ]] || fail install-verification-failed
 
-printf 'locked XcodeGen installed: Tools/bin/xcodegen\n'
+printf 'locked XcodeGen installed: Tools/bin/xcodegen + Tools/bin/%s/SettingPresets\n' "$RESOURCE_BUNDLE_NAME"

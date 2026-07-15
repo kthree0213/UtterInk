@@ -244,6 +244,9 @@ case "${1-}" in
     [[ "$PWD" == */.release-work/.build-candidate.*/.transient/exact-source ]]
     [[ -n "${USER:-}" && "${LOGNAME:-}" == "$USER" ]]
     [[ -z "${DYLD_INSERT_LIBRARIES+x}" ]]
+    xcodegen_directory="$(cd "$(/usr/bin/dirname "$0")" && /bin/pwd -P)"
+    [[ -f "$xcodegen_directory/XcodeGen_XcodeGenKit.bundle/SettingPresets/Base.json" ]]
+    [[ -f "$xcodegen_directory/XcodeGen_XcodeGenKit.bundle/SettingPresets/Platforms/macOS.json" ]]
     printf 'xcodegen-user\t%s\n' "$USER" >> "${UTTERINK_FIXTURE_LOG:?}"
     if [[ -f "${UTTERINK_FIXTURE_LOG:?}.mutate-project" ]]; then
       printf '// generator drift\n' >> UtterInk.xcodeproj/project.pbxproj
@@ -252,6 +255,12 @@ case "${1-}" in
   *) exit 64 ;;
 esac
 EOF
+
+/bin/mkdir -p "$BASE/FixtureTools/XcodeGen_XcodeGenKit.bundle/SettingPresets/Platforms"
+/usr/bin/printf '{"fixture":"base"}\n' \
+  > "$BASE/FixtureTools/XcodeGen_XcodeGenKit.bundle/SettingPresets/Base.json"
+/usr/bin/printf '{"fixture":"macOS"}\n' \
+  > "$BASE/FixtureTools/XcodeGen_XcodeGenKit.bundle/SettingPresets/Platforms/macOS.json"
 
 cat > "$BASE/FixtureTools/xcodebuild" <<'EOF'
 #!/usr/bin/env bash
@@ -487,12 +496,40 @@ EOF
 done
 
 XCODEGEN_HASH="$(/usr/bin/shasum -a 256 "$BASE/FixtureTools/xcodegen-source" | /usr/bin/awk 'NR == 1 { print $1 }')"
-/usr/bin/python3 -I - "$BASE/Config/ci-toolchain.json" "$XCODEGEN_HASH" <<'PY'
+/usr/bin/python3 -I - \
+  "$BASE/Config/ci-toolchain.json" \
+  "$XCODEGEN_HASH" \
+  "$BASE/FixtureTools/XcodeGen_XcodeGenKit.bundle/SettingPresets" <<'PY'
 from pathlib import Path
+import hashlib
 import json
+import os
+import stat
+import struct
 import sys
 path = Path(sys.argv[1])
 binary_hash = sys.argv[2]
+presets_root = Path(sys.argv[3])
+
+files = []
+for directory, directory_names, file_names in os.walk(presets_root):
+    directory_names.sort(key=lambda value: value.encode("utf-8", errors="strict"))
+    file_names.sort(key=lambda value: value.encode("utf-8", errors="strict"))
+    for file_name in file_names:
+        file_path = Path(directory) / file_name
+        metadata = os.lstat(file_path)
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise SystemExit(1)
+        relative = file_path.relative_to(presets_root).as_posix().encode("utf-8", errors="strict")
+        files.append((relative, file_path.read_bytes()))
+if not files:
+    raise SystemExit(1)
+presets_digest = hashlib.sha256()
+for relative, content in sorted(files, key=lambda value: value[0]):
+    presets_digest.update(struct.pack(">Q", len(relative)))
+    presets_digest.update(relative)
+    presets_digest.update(struct.pack(">Q", len(content)))
+    presets_digest.update(content)
 value = {
     "schemaVersion": 1,
     "runnerImage": {
@@ -517,6 +554,7 @@ value = {
         "archiveURL": "https://github.com/yonaskolb/XcodeGen/archive/8d3d3476a69ae3e5d68e1adccc701c410c05eb36.tar.gz",
         "archiveSHA256": "afe64a4e9b14a91a113ae7bd2c156666ee9be51dfa84c9a6e89c89797e5d871c",
         "binarySHA256": binary_hash,
+        "settingPresetsSHA256": presets_digest.hexdigest(),
     },
     "sources": {
         "runnerRelease": "https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260630.0213",
@@ -538,6 +576,9 @@ install_xcodegen() {
   local repository="$1"
   /bin/mkdir -p "$repository/Tools/bin"
   /bin/cp "$repository/FixtureTools/xcodegen-source" "$repository/Tools/bin/xcodegen"
+  /bin/cp -R \
+    "$repository/FixtureTools/XcodeGen_XcodeGenKit.bundle" \
+    "$repository/Tools/bin/XcodeGen_XcodeGenKit.bundle"
   /bin/chmod 0755 "$repository/Tools/bin/xcodegen"
 }
 
@@ -755,6 +796,56 @@ run_build "$ORIGIN_REPO" --commit "$ORIGIN_COMMIT" --work .release-work/matching
 [[ "$BUILD_STATUS" -eq 0 ]] || fail "matching origin failed: $(/bin/cat "$STDERR")"
 [[ "$(/usr/bin/grep -c $'verify-arg\t--expected-origin' "$FIXTURE_LOG")" -eq 1 ]] || fail 'expected origin was not forwarded exactly once'
 /usr/bin/grep -Fq $'verify-arg\thttps://example.invalid/UtterInk.git' "$FIXTURE_LOG" || fail 'expected origin value changed in transit'
+
+RESOURCE_BUNDLE="$ORIGIN_REPO/Tools/bin/XcodeGen_XcodeGenKit.bundle"
+SETTING_PRESETS="$RESOURCE_BUNDLE/SettingPresets"
+RESOURCE_FAILURE_DIAGNOSTIC='build candidate error: repository-xcodegen-mismatch; run ./Scripts/bootstrap-xcodegen.sh'
+
+/bin/mv "$RESOURCE_BUNDLE" "$TMP/missing-XcodeGen_XcodeGenKit.bundle"
+run_build "$ORIGIN_REPO" --commit "$ORIGIN_COMMIT" --work .release-work/missing-xcodegen-resources --expected-origin 'https://example.invalid/UtterInk.git'
+/bin/mv "$TMP/missing-XcodeGen_XcodeGenKit.bundle" "$RESOURCE_BUNDLE"
+[[ "$BUILD_STATUS" -eq 24 ]] || fail 'missing XcodeGen resources did not fail closed with status 24'
+[[ "$(/bin/cat "$STDERR")" == "$RESOURCE_FAILURE_DIAGNOSTIC" ]] || fail 'missing XcodeGen resources diagnostic was not stable'
+assert_failed_before_xcode
+assert_no_partial "$ORIGIN_REPO" .release-work/missing-xcodegen-resources
+
+/bin/cp -p "$SETTING_PRESETS/Base.json" "$TMP/Base.json.saved"
+/usr/bin/printf '{"tampered":true}\n' > "$SETTING_PRESETS/Base.json"
+run_build "$ORIGIN_REPO" --commit "$ORIGIN_COMMIT" --work .release-work/tampered-xcodegen-resources --expected-origin 'https://example.invalid/UtterInk.git'
+/bin/cp -p "$TMP/Base.json.saved" "$SETTING_PRESETS/Base.json"
+[[ "$BUILD_STATUS" -eq 24 ]] || fail 'tampered XcodeGen resources did not fail closed with status 24'
+[[ "$(/bin/cat "$STDERR")" == "$RESOURCE_FAILURE_DIAGNOSTIC" ]] || fail 'tampered XcodeGen resources diagnostic was not stable'
+assert_failed_before_xcode
+assert_no_partial "$ORIGIN_REPO" .release-work/tampered-xcodegen-resources
+
+/usr/bin/printf '{"unexpected":true}\n' > "$SETTING_PRESETS/Unexpected.json"
+run_build "$ORIGIN_REPO" --commit "$ORIGIN_COMMIT" --work .release-work/extra-xcodegen-resource --expected-origin 'https://example.invalid/UtterInk.git'
+/bin/rm "$SETTING_PRESETS/Unexpected.json"
+[[ "$BUILD_STATUS" -eq 24 ]] || fail 'extra XcodeGen resource did not fail closed with status 24'
+assert_failed_before_xcode
+assert_no_partial "$ORIGIN_REPO" .release-work/extra-xcodegen-resource
+
+/usr/bin/printf 'unexpected bundle root entry\n' > "$RESOURCE_BUNDLE/UnexpectedRoot"
+run_build "$ORIGIN_REPO" --commit "$ORIGIN_COMMIT" --work .release-work/extra-xcodegen-bundle-entry --expected-origin 'https://example.invalid/UtterInk.git'
+/bin/rm "$RESOURCE_BUNDLE/UnexpectedRoot"
+[[ "$BUILD_STATUS" -eq 24 ]] || fail 'extra XcodeGen bundle root entry did not fail closed with status 24'
+[[ "$(/bin/cat "$STDERR")" == "$RESOURCE_FAILURE_DIAGNOSTIC" ]] || fail 'extra XcodeGen bundle root entry diagnostic was not stable'
+assert_failed_before_xcode
+assert_no_partial "$ORIGIN_REPO" .release-work/extra-xcodegen-bundle-entry
+
+/bin/ln -s Base.json "$SETTING_PRESETS/UnsafeLink.json"
+run_build "$ORIGIN_REPO" --commit "$ORIGIN_COMMIT" --work .release-work/symlink-xcodegen-resource --expected-origin 'https://example.invalid/UtterInk.git'
+/bin/rm "$SETTING_PRESETS/UnsafeLink.json"
+[[ "$BUILD_STATUS" -eq 24 ]] || fail 'symlink XcodeGen resource did not fail closed with status 24'
+assert_failed_before_xcode
+assert_no_partial "$ORIGIN_REPO" .release-work/symlink-xcodegen-resource
+
+/usr/bin/mkfifo "$SETTING_PRESETS/UnsafeSpecial"
+run_build "$ORIGIN_REPO" --commit "$ORIGIN_COMMIT" --work .release-work/special-xcodegen-resource --expected-origin 'https://example.invalid/UtterInk.git'
+/bin/rm "$SETTING_PRESETS/UnsafeSpecial"
+[[ "$BUILD_STATUS" -eq 24 ]] || fail 'special XcodeGen resource did not fail closed with status 24'
+assert_failed_before_xcode
+assert_no_partial "$ORIGIN_REPO" .release-work/special-xcodegen-resource
 
 run_build "$ORIGIN_REPO" --commit "$ORIGIN_COMMIT" --work .release-work/mismatched-origin --expected-origin 'https://example.invalid/Wrong.git'
 [[ "$BUILD_STATUS" -ne 0 ]] || fail 'mismatched origin passed'

@@ -81,6 +81,9 @@ set -euo pipefail
   printf '\n'
 } >> "${UTTERINK_FIXTURE_LOG:?}"
 [[ "${1-}" == '--version' ]] || exit 2
+xcodegen_directory="$(cd "$(/usr/bin/dirname "$0")" && /bin/pwd -P)"
+[[ -f "$xcodegen_directory/XcodeGen_XcodeGenKit.bundle/SettingPresets/base.yml" ]]
+[[ -f "$xcodegen_directory/XcodeGen_XcodeGenKit.bundle/SettingPresets/Platforms/macOS.yml" ]]
 printf 'Version: 2.45.4\n'
 EOF
 
@@ -188,6 +191,16 @@ EOF
 
 /bin/chmod 0755 "$BASE/FixtureTools/"{repository-xcodegen-source,xcodebuild,file,lipo,otool,ditto,hdiutil}
 
+/bin/mkdir -p \
+  "$BASE/FixtureTools/XcodeGen_XcodeGenKit.bundle/SettingPresets/Configs" \
+  "$BASE/FixtureTools/XcodeGen_XcodeGenKit.bundle/SettingPresets/Platforms"
+printf 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG\n' > \
+  "$BASE/FixtureTools/XcodeGen_XcodeGenKit.bundle/SettingPresets/Configs/debug.yml"
+printf 'SUPPORTED_PLATFORMS: macosx\n' > \
+  "$BASE/FixtureTools/XcodeGen_XcodeGenKit.bundle/SettingPresets/Platforms/macOS.yml"
+printf 'SDKROOT: auto\n' > \
+  "$BASE/FixtureTools/XcodeGen_XcodeGenKit.bundle/SettingPresets/base.yml"
+
 cat > "$BASE/Scripts/release/verify-candidate.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -278,15 +291,31 @@ EOF
 done
 
 XCODEGEN_HASH="$(/usr/bin/shasum -a 256 "$BASE/FixtureTools/repository-xcodegen-source" | /usr/bin/awk 'NR == 1 { print $1 }')"
-/usr/bin/python3 -I - "$BASE/Config/ci-toolchain.json" "$XCODEGEN_HASH" <<'PY'
+SETTING_PRESETS_ROOT="$BASE/FixtureTools/XcodeGen_XcodeGenKit.bundle/SettingPresets"
+/usr/bin/python3 -I - "$BASE/Config/ci-toolchain.json" "$XCODEGEN_HASH" "$SETTING_PRESETS_ROOT" <<'PY'
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
+import struct
 import sys
 
 path = Path(sys.argv[1])
 binary_hash = sys.argv[2]
+presets_root = Path(sys.argv[3])
+items = sorted(
+    (preset.relative_to(presets_root).as_posix().encode("utf-8"), preset.read_bytes())
+    for preset in presets_root.rglob("*")
+    if preset.is_file()
+)
+digest = hashlib.sha256()
+for relative, content in items:
+    digest.update(struct.pack(">Q", len(relative)))
+    digest.update(relative)
+    digest.update(struct.pack(">Q", len(content)))
+    digest.update(content)
+presets_hash = digest.hexdigest()
 value = {
     "schemaVersion": 1,
     "runnerImage": {
@@ -311,6 +340,7 @@ value = {
         "archiveURL": "https://github.com/yonaskolb/XcodeGen/archive/8d3d3476a69ae3e5d68e1adccc701c410c05eb36.tar.gz",
         "archiveSHA256": "afe64a4e9b14a91a113ae7bd2c156666ee9be51dfa84c9a6e89c89797e5d871c",
         "binarySHA256": binary_hash,
+        "settingPresetsSHA256": presets_hash,
     },
     "sources": {
         "runnerRelease": "https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260630.0213",
@@ -336,7 +366,11 @@ PACKAGE_STATUS=0
 install_xcodegen() {
   local repository="$1"
   /bin/mkdir -p "$repository/Tools/bin"
+  /bin/rm -rf "$repository/Tools/bin/XcodeGen_XcodeGenKit.bundle"
   /bin/cp "$repository/FixtureTools/repository-xcodegen-source" "$repository/Tools/bin/xcodegen"
+  /bin/cp -R \
+    "$repository/FixtureTools/XcodeGen_XcodeGenKit.bundle" \
+    "$repository/Tools/bin/XcodeGen_XcodeGenKit.bundle"
   /bin/chmod 0755 "$repository/Tools/bin/xcodegen"
 }
 
@@ -450,6 +484,20 @@ run_production_preflight() {
   set -e
 }
 
+assert_xcodegen_resource_rejected() {
+  local description="$1"
+  local output_name="$2"
+  run_package "$BASE" --commit "$BASE_COMMIT" --output "dist/$output_name"
+  [[ "$PACKAGE_STATUS" -eq 24 ]] ||
+    fail "$description returned $PACKAGE_STATUS, expected 24"
+  /usr/bin/grep -Fq 'unsigned packaging error: repository-xcodegen-mismatch; run ./Scripts/bootstrap-xcodegen.sh' "$STDERR" ||
+    fail "$description did not produce the stable resource mismatch diagnostic"
+  [[ ! -e "$BASE/dist/$output_name" ]] || fail "$description emitted an artifact directory"
+  if /usr/bin/grep -Ev '^verify-arg:' "$FIXTURE_LOG" | /usr/bin/grep -q . || [[ -e "$ORDINARY_LOG" ]]; then
+    fail "$description executed XcodeGen, a build tool, or an ordinary-PATH tool: $(/bin/cat "$FIXTURE_LOG" 2>/dev/null || : )"
+  fi
+}
+
 BASE_COMMIT="$(/usr/bin/git -C "$BASE" rev-parse HEAD)"
 run_production_preflight "$BASE" --commit "$BASE_COMMIT" --output dist/missing-xcodegen
 [[ "$PACKAGE_STATUS" -eq 24 ]] || fail "missing repository XcodeGen returned $PACKAGE_STATUS, expected 24"
@@ -470,7 +518,48 @@ run_production_preflight "$MISSING_LOCK" \
 [[ ! -e "$MISSING_LOCK/dist/missing-lock" && ! -s "$FIXTURE_LOG" && ! -e "$ORDINARY_LOG" ]] ||
   fail 'missing toolchain lock reached a build or emitted output'
 
+/bin/mkdir -p "$BASE/Tools/bin"
+/bin/cp "$BASE/FixtureTools/repository-xcodegen-source" "$BASE/Tools/bin/xcodegen"
+/bin/chmod 0755 "$BASE/Tools/bin/xcodegen"
+assert_xcodegen_resource_rejected 'missing XcodeGen companion resources' 'missing-xcodegen-resources'
+
 install_xcodegen "$BASE"
+
+/bin/rm "$BASE/Tools/bin/XcodeGen_XcodeGenKit.bundle/SettingPresets/Configs/debug.yml"
+assert_xcodegen_resource_rejected 'missing XcodeGen setting preset' 'missing-xcodegen-resource'
+install_xcodegen "$BASE"
+
+printf 'tampered setting preset\n' > \
+  "$BASE/Tools/bin/XcodeGen_XcodeGenKit.bundle/SettingPresets/Configs/debug.yml"
+assert_xcodegen_resource_rejected 'tampered XcodeGen setting preset' 'tampered-xcodegen-resource'
+install_xcodegen "$BASE"
+
+printf 'unexpected setting preset\n' > \
+  "$BASE/Tools/bin/XcodeGen_XcodeGenKit.bundle/SettingPresets/extra.yml"
+assert_xcodegen_resource_rejected 'extra XcodeGen setting preset' 'extra-xcodegen-resource'
+install_xcodegen "$BASE"
+
+printf 'unexpected bundle resource\n' > \
+  "$BASE/Tools/bin/XcodeGen_XcodeGenKit.bundle/extra.txt"
+assert_xcodegen_resource_rejected 'extra XcodeGen bundle resource' 'extra-xcodegen-bundle-resource'
+install_xcodegen "$BASE"
+
+/bin/mkdir \
+  "$BASE/Tools/bin/XcodeGen_XcodeGenKit.bundle/SettingPresets/empty-extra-directory"
+assert_xcodegen_resource_rejected 'empty XcodeGen setting preset directory' 'empty-xcodegen-resource-directory'
+install_xcodegen "$BASE"
+
+/bin/rm "$BASE/Tools/bin/XcodeGen_XcodeGenKit.bundle/SettingPresets/Configs/debug.yml"
+/bin/ln -s ../base.yml \
+  "$BASE/Tools/bin/XcodeGen_XcodeGenKit.bundle/SettingPresets/Configs/debug.yml"
+assert_xcodegen_resource_rejected 'symlinked XcodeGen setting preset' 'symlinked-xcodegen-resource'
+install_xcodegen "$BASE"
+
+/usr/bin/mkfifo \
+  "$BASE/Tools/bin/XcodeGen_XcodeGenKit.bundle/SettingPresets/unexpected.fifo"
+assert_xcodegen_resource_rejected 'special XcodeGen setting preset' 'special-xcodegen-resource'
+install_xcodegen "$BASE"
+
 run_package "$BASE" --commit "$BASE_COMMIT" --output dist/no-remote
 [[ "$PACKAGE_STATUS" -eq 0 ]] || fail "no-remote fixture failed: $(/bin/cat "$STDERR")"
 DMG="$BASE/dist/no-remote/UtterInk-0.1.0-arm64-UNSIGNED-DO-NOT-DISTRIBUTE.dmg"
@@ -725,5 +814,7 @@ run_package "$BASE" --commit "$BASE_COMMIT" --output "$TMP/outside/output"
 )
 [[ ! -e "$BASE/dist" && ! -e "$BASE/.release-work" ]] || fail 'cleanup did not remove all packaging outputs'
 [[ -x "$BASE/Tools/bin/xcodegen" ]] || fail 'output cleanup removed the repository toolchain unexpectedly'
+[[ -f "$BASE/Tools/bin/XcodeGen_XcodeGenKit.bundle/SettingPresets/base.yml" ]] ||
+  fail 'output cleanup removed the repository XcodeGen companion resources unexpectedly'
 
 printf 'unsigned packaging tests passed\n'

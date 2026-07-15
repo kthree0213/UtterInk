@@ -161,6 +161,8 @@ trap cleanup EXIT
 assert_no_repository_build_cache
 CACHE_CLEANUP_ENABLED=1
 scan_public_history
+"$XCODEGEN" generate
+assert_foundation_outputs_unchanged
 bash Tests/Scripts/test-generate-import-manifest.sh
 bash Tests/Scripts/test-scan-public-history.sh
 bash Tests/Scripts/test-import-legacy-parity.sh

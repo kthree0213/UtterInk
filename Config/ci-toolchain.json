@@ -26,7 +26,8 @@
     "sourceCommit": "8d3d3476a69ae3e5d68e1adccc701c410c05eb36",
     "archiveURL": "https://github.com/yonaskolb/XcodeGen/archive/8d3d3476a69ae3e5d68e1adccc701c410c05eb36.tar.gz",
     "archiveSHA256": "afe64a4e9b14a91a113ae7bd2c156666ee9be51dfa84c9a6e89c89797e5d871c",
-    "binarySHA256": "74e644c6e2e727dab5f1db1d0828cccbc28fa3de77dd8b4736d1f0e18eec71fc"
+    "binarySHA256": "74e644c6e2e727dab5f1db1d0828cccbc28fa3de77dd8b4736d1f0e18eec71fc",
+    "settingPresetsSHA256": "9f8dd5292ab7723927b40e836d651775e3261a30f0c05179b3b8ca7340404069"
   },
   "sources": {
     "runnerRelease": "https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260630.0213",

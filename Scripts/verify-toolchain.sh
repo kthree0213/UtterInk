@@ -107,7 +107,10 @@ runner = exact(top["runnerImage"], {"label", "releaseTag", "commit", "imageVersi
 xcode = exact(top["xcode"], {"version", "build", "developerDir"})
 sdk = exact(top["sdk"], {"version", "build"})
 swift = exact(top["swift"], {"version"})
-xcodegen = exact(top["xcodegen"], {"version", "sourceCommit", "archiveURL", "archiveSHA256", "binarySHA256"})
+xcodegen = exact(
+    top["xcodegen"],
+    {"version", "sourceCommit", "archiveURL", "archiveSHA256", "binarySHA256", "settingPresetsSHA256"},
+)
 sources = exact(top["sources"], {"runnerRelease", "runnerReadme", "xcodegenRelease", "xcodegenCommit"})
 
 if runner["label"] != "macos-26" or runner["architecture"] != "arm64":
@@ -142,6 +145,7 @@ if set(source_commit) == {"0"}:
     abort()
 archive_sha = locked_string(xcodegen["archiveSHA256"], r"[0-9a-f]{64}")
 binary_sha = locked_string(xcodegen["binarySHA256"], r"[0-9a-f]{64}")
+setting_presets_sha = locked_string(xcodegen["settingPresetsSHA256"], r"[0-9a-f]{64}")
 archive_url = f"https://github.com/yonaskolb/XcodeGen/archive/{source_commit}.tar.gz"
 if xcodegen["archiveURL"] != archive_url:
     abort()
@@ -172,6 +176,7 @@ fields = {
     "sdk-build": sdk_build,
     "sdk-version": sdk["version"],
     "swift-version": swift_version,
+    "setting-presets-sha": setting_presets_sha,
     "xcode-build": xcode["build"],
     "xcode-version": xcode["version"],
     "xcodegen-version": xcodegen["version"],
@@ -198,6 +203,7 @@ RUNNER_LABEL="$(locked runner-label)"
 SDK_BUILD="$(locked sdk-build)"
 SDK_VERSION="$(locked sdk-version)"
 SWIFT_VERSION="$(locked swift-version)"
+SETTING_PRESETS_SHA="$(locked setting-presets-sha)"
 XCODE_BUILD="$(locked xcode-build)"
 XCODE_VERSION="$(locked xcode-version)"
 XCODEGEN_VERSION="$(locked xcodegen-version)"
@@ -244,11 +250,131 @@ PY
   fi
 fi
 
+setting_presets_tree_hash() {
+  /usr/bin/python3 -I - "$1" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import os
+from pathlib import Path
+import stat
+import struct
+import sys
+
+
+def abort() -> None:
+    raise SystemExit(1)
+
+
+settings = Path(sys.argv[1])
+try:
+    if not stat.S_ISDIR(settings.lstat().st_mode):
+        abort()
+
+    files: list[tuple[bytes, Path, tuple[int, int, int, int]]] = []
+    directories: set[bytes] = set()
+    stack = [settings]
+    while stack:
+        directory = stack.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode):
+                    directories.add(path.relative_to(settings).as_posix().encode("utf-8"))
+                    stack.append(path)
+                elif stat.S_ISREG(info.st_mode):
+                    relative = path.relative_to(settings).as_posix().encode("utf-8")
+                    files.append((relative, path, (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)))
+                else:
+                    abort()
+    if not files:
+        abort()
+    required_directories: set[bytes] = set()
+    for _, path, _ in files:
+        for parent in path.relative_to(settings).parents:
+            if parent == Path("."):
+                break
+            required_directories.add(parent.as_posix().encode("utf-8"))
+    if directories != required_directories:
+        abort()
+
+    digest = hashlib.sha256()
+    for relative, path, expected in sorted(files, key=lambda item: item[0]):
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags)
+        try:
+            before = os.fstat(descriptor)
+            actual = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            if not stat.S_ISREG(before.st_mode) or actual != expected:
+                abort()
+            digest.update(struct.pack(">Q", len(relative)))
+            digest.update(relative)
+            digest.update(struct.pack(">Q", before.st_size))
+            remaining = before.st_size
+            while remaining:
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                if not chunk:
+                    abort()
+                digest.update(chunk)
+                remaining -= len(chunk)
+            if os.read(descriptor, 1):
+                abort()
+            after = os.fstat(descriptor)
+            if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != actual:
+                abort()
+        finally:
+            os.close(descriptor)
+except (OSError, UnicodeError, ValueError):
+    abort()
+
+print(digest.hexdigest())
+PY
+}
+
+companion_bundle_tree_hash() {
+  if ! /usr/bin/python3 -I - "$1" <<'PY'
+import os
+from pathlib import Path
+import stat
+import sys
+
+bundle = Path(sys.argv[1])
+try:
+    if not stat.S_ISDIR(bundle.lstat().st_mode):
+        raise ValueError
+    with os.scandir(bundle) as iterator:
+        entries = list(iterator)
+    if len(entries) != 1:
+        raise ValueError
+    entry = entries[0]
+    if entry.name != "SettingPresets" or not stat.S_ISDIR(entry.stat(follow_symlinks=False).st_mode):
+        raise ValueError
+except (OSError, UnicodeError, ValueError):
+    raise SystemExit(1)
+PY
+  then
+    return 1
+  fi
+  setting_presets_tree_hash "$1/SettingPresets"
+}
+
 XCODEGEN="$ROOT/Tools/bin/xcodegen"
-[[ ! -L "$ROOT/Tools" && ! -L "$ROOT/Tools/bin" && ! -L "$XCODEGEN" ]] || fail repository-xcodegen-unusable
+XCODEGEN_BUNDLE="$ROOT/Tools/bin/XcodeGen_XcodeGenKit.bundle"
+XCODEGEN_SETTING_PRESETS="$XCODEGEN_BUNDLE/SettingPresets"
+[[ ! -L "$ROOT/Tools" \
+  && ! -L "$ROOT/Tools/bin" \
+  && ! -L "$XCODEGEN" \
+  && ! -L "$XCODEGEN_BUNDLE" \
+  && ! -L "$XCODEGEN_SETTING_PRESETS" ]] || fail repository-xcodegen-unusable
 [[ -f "$XCODEGEN" && -x "$XCODEGEN" ]] || fail repository-xcodegen-missing
+[[ -d "$XCODEGEN_BUNDLE" && -d "$XCODEGEN_SETTING_PRESETS" ]] || fail repository-xcodegen-missing
 ACTUAL_BINARY_SHA="$(/usr/bin/shasum -a 256 "$XCODEGEN" | /usr/bin/awk 'NR == 1 { print $1 }')" || fail repository-xcodegen-unusable
 [[ "$ACTUAL_BINARY_SHA" == "$BINARY_SHA" ]] || fail repository-xcodegen-mismatch
+ACTUAL_SETTING_PRESETS_SHA="$(companion_bundle_tree_hash "$XCODEGEN_BUNDLE")" || fail repository-xcodegen-unusable
+[[ "$ACTUAL_SETTING_PRESETS_SHA" == "$SETTING_PRESETS_SHA" ]] || fail repository-xcodegen-mismatch
 ACTUAL_XCODEGEN_VERSION="$(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C HOME="$TMP" \
   "$XCODEGEN" --version 2>/dev/null)" || fail repository-xcodegen-unusable
 [[ "$ACTUAL_XCODEGEN_VERSION" == "Version: $XCODEGEN_VERSION" ]] || fail repository-xcodegen-mismatch

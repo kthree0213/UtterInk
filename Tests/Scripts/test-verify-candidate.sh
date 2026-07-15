@@ -159,11 +159,22 @@ write(
     """#!/usr/bin/env bash
 set -euo pipefail
 printf 'xcodegen:%s\\n' \"$*\" >> \"${UTTERINK_FIXTURE_LOG:?}\"
+xcodegen_directory=\"$(cd \"$(/usr/bin/dirname \"$0\")\" && /bin/pwd -P)\"
+[[ -f \"$xcodegen_directory/XcodeGen_XcodeGenKit.bundle/SettingPresets/Base.json\" ]]
+[[ -f \"$xcodegen_directory/XcodeGen_XcodeGenKit.bundle/SettingPresets/Platforms/macOS.json\" ]]
 if [[ \"${1-}\" == '--version' ]]; then
   printf 'Version: 2.45.4\\n'
 fi
 """,
     executable=True,
+)
+write(
+    "FixtureTools/XcodeGen_XcodeGenKit.bundle/SettingPresets/Base.json",
+    '{"fixture":"base"}\n',
+)
+write(
+    "FixtureTools/XcodeGen_XcodeGenKit.bundle/SettingPresets/Platforms/macOS.json",
+    '{"fixture":"macOS"}\n',
 )
 write(
     "FixtureTools/workspace-state.json",
@@ -193,15 +204,30 @@ write("Scripts/ordinary-executable.sh", "#!/bin/bash\nexit 0\n", executable=True
 PY
 
 XCODEGEN_HASH="$(/usr/bin/shasum -a 256 "$BASE/FixtureTools/xcodegen" | awk '{print $1}')"
-python3 - "$BASE/Config/ci-toolchain.json" "$XCODEGEN_HASH" <<'PY'
+SETTING_PRESETS_ROOT="$BASE/FixtureTools/XcodeGen_XcodeGenKit.bundle/SettingPresets"
+python3 - "$BASE/Config/ci-toolchain.json" "$XCODEGEN_HASH" "$SETTING_PRESETS_ROOT" <<'PY'
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
+import struct
 import sys
 
 path = Path(sys.argv[1])
 binary_hash = sys.argv[2]
+presets_root = Path(sys.argv[3])
+items = sorted(
+    (preset.relative_to(presets_root).as_posix().encode("utf-8"), preset.read_bytes())
+    for preset in presets_root.rglob("*")
+    if preset.is_file()
+)
+presets_digest = hashlib.sha256()
+for relative, content in items:
+    presets_digest.update(struct.pack(">Q", len(relative)))
+    presets_digest.update(relative)
+    presets_digest.update(struct.pack(">Q", len(content)))
+    presets_digest.update(content)
 value = {
     "schemaVersion": 1,
     "runnerImage": {
@@ -228,6 +254,7 @@ value = {
         "archiveURL": "https://github.com/yonaskolb/XcodeGen/archive/8d3d3476a69ae3e5d68e1adccc701c410c05eb36.tar.gz",
         "archiveSHA256": "afe64a4e9b14a91a113ae7bd2c156666ee9be51dfa84c9a6e89c89797e5d871c",
         "binarySHA256": binary_hash,
+        "settingPresetsSHA256": presets_digest.hexdigest(),
     },
     "sources": {
         "runnerRelease": "https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260630.0213",
@@ -640,6 +667,49 @@ git -C "$XCODEGEN_MISMATCH" commit -q -m 'drift xcodegen binary'
 expect_failure "$XCODEGEN_MISMATCH" 24 toolchain-mismatch "$(git -C "$XCODEGEN_MISMATCH" rev-parse HEAD)"
 if grep -Fq 'xcodegen:' "$TMP/fixture.log"; then
   fail 'hash-mismatched xcodegen executed before verification'
+fi
+
+XCODEGEN_RESOURCES_MISSING="$TMP/xcodegen-resources-missing"
+git clone -q "$BASE" "$XCODEGEN_RESOURCES_MISSING"
+git -C "$XCODEGEN_RESOURCES_MISSING" config user.name 'UtterInk Test'
+git -C "$XCODEGEN_RESOURCES_MISSING" config user.email 'utterink-test@example.invalid'
+git -C "$XCODEGEN_RESOURCES_MISSING" rm -qr FixtureTools/XcodeGen_XcodeGenKit.bundle
+git -C "$XCODEGEN_RESOURCES_MISSING" commit -q -m 'remove xcodegen companion resources'
+expect_failure \
+  "$XCODEGEN_RESOURCES_MISSING" 24 toolchain-mismatch \
+  "$(git -C "$XCODEGEN_RESOURCES_MISSING" rev-parse HEAD)"
+if grep -Fq 'xcodegen:' "$TMP/fixture.log"; then
+  fail 'missing XcodeGen companion resources reached XcodeGen execution'
+fi
+
+XCODEGEN_RESOURCES_TAMPERED="$TMP/xcodegen-resources-tampered"
+git clone -q "$BASE" "$XCODEGEN_RESOURCES_TAMPERED"
+git -C "$XCODEGEN_RESOURCES_TAMPERED" config user.name 'UtterInk Test'
+git -C "$XCODEGEN_RESOURCES_TAMPERED" config user.email 'utterink-test@example.invalid'
+printf '{"tampered":true}\n' > \
+  "$XCODEGEN_RESOURCES_TAMPERED/FixtureTools/XcodeGen_XcodeGenKit.bundle/SettingPresets/Base.json"
+git -C "$XCODEGEN_RESOURCES_TAMPERED" add FixtureTools/XcodeGen_XcodeGenKit.bundle/SettingPresets/Base.json
+git -C "$XCODEGEN_RESOURCES_TAMPERED" commit -q -m 'tamper xcodegen companion resource'
+expect_failure \
+  "$XCODEGEN_RESOURCES_TAMPERED" 24 toolchain-mismatch \
+  "$(git -C "$XCODEGEN_RESOURCES_TAMPERED" rev-parse HEAD)"
+if grep -Fq 'xcodegen:' "$TMP/fixture.log"; then
+  fail 'tampered XcodeGen companion resources reached XcodeGen execution'
+fi
+
+XCODEGEN_RESOURCES_EXTRA="$TMP/xcodegen-resources-extra"
+git clone -q "$BASE" "$XCODEGEN_RESOURCES_EXTRA"
+git -C "$XCODEGEN_RESOURCES_EXTRA" config user.name 'UtterInk Test'
+git -C "$XCODEGEN_RESOURCES_EXTRA" config user.email 'utterink-test@example.invalid'
+printf 'unexpected bundle resource\n' > \
+  "$XCODEGEN_RESOURCES_EXTRA/FixtureTools/XcodeGen_XcodeGenKit.bundle/extra.txt"
+git -C "$XCODEGEN_RESOURCES_EXTRA" add FixtureTools/XcodeGen_XcodeGenKit.bundle/extra.txt
+git -C "$XCODEGEN_RESOURCES_EXTRA" commit -q -m 'add xcodegen bundle root resource'
+expect_failure \
+  "$XCODEGEN_RESOURCES_EXTRA" 24 toolchain-mismatch \
+  "$(git -C "$XCODEGEN_RESOURCES_EXTRA" rev-parse HEAD)"
+if grep -Fq 'xcodegen:' "$TMP/fixture.log"; then
+  fail 'extra XcodeGen bundle-root resource reached XcodeGen execution'
 fi
 
 SUCCESS_OUTPUT="$TMP/success-output"

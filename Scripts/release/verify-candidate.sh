@@ -456,7 +456,7 @@ assert_ignored_inventory() {
   $GIT ls-files --others --ignored --exclude-standard -z > "$ignored" 2>/dev/null || fail git-status-failed
   while IFS= read -r -d '' path; do
     case "$path" in
-      .superpowers/*|Config/legacy-rights.local.tsv|Tools/bin/xcodegen|.release-work/*) ;;
+      .superpowers/*|Config/legacy-rights.local.tsv|Tools/bin/xcodegen|Tools/bin/XcodeGen_XcodeGenKit.bundle/SettingPresets/*|.release-work/*) ;;
       *) fail dirty-checkout 20 ;;
     esac
   done < "$ignored"
@@ -678,7 +678,10 @@ runner = exact(top["runnerImage"], {"label", "releaseTag", "commit", "imageVersi
 xcode = exact(top["xcode"], {"version", "build", "developerDir"})
 sdk = exact(top["sdk"], {"version", "build"})
 swift = exact(top["swift"], {"version"})
-xcodegen = exact(top["xcodegen"], {"version", "sourceCommit", "archiveURL", "archiveSHA256", "binarySHA256"})
+xcodegen = exact(
+    top["xcodegen"],
+    {"version", "sourceCommit", "archiveURL", "archiveSHA256", "binarySHA256", "settingPresetsSHA256"},
+)
 sources = exact(top["sources"], {"runnerRelease", "runnerReadme", "xcodegenRelease", "xcodegenCommit"})
 if runner != {
     "label": "macos-26",
@@ -706,10 +709,14 @@ if xcodegen != {
     "archiveURL": "https://github.com/yonaskolb/XcodeGen/archive/8d3d3476a69ae3e5d68e1adccc701c410c05eb36.tar.gz",
     "archiveSHA256": "afe64a4e9b14a91a113ae7bd2c156666ee9be51dfa84c9a6e89c89797e5d871c",
     "binarySHA256": xcodegen.get("binarySHA256"),
+    "settingPresetsSHA256": xcodegen.get("settingPresetsSHA256"),
 }:
     abort()
 binary_hash = xcodegen.get("binarySHA256")
 if type(binary_hash) is not str or re.fullmatch(r"[0-9a-f]{64}", binary_hash) is None:
+    abort()
+presets_hash = xcodegen.get("settingPresetsSHA256")
+if type(presets_hash) is not str or re.fullmatch(r"[0-9a-f]{64}", presets_hash) is None:
     abort()
 if sources != {
     "runnerRelease": "https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260630.0213",
@@ -718,7 +725,7 @@ if sources != {
     "xcodegenCommit": "https://github.com/yonaskolb/XcodeGen/commit/8d3d3476a69ae3e5d68e1adccc701c410c05eb36",
 }:
     abort()
-output_path.write_text(binary_hash + "\n", encoding="utf-8")
+output_path.write_text(binary_hash + "\n" + presets_hash + "\n", encoding="utf-8")
 PY
 then
   fail toolchain-lock-invalid 24
@@ -741,11 +748,13 @@ if [[ "$TEST_MODE" -eq 1 ]]; then
   XCODEBUILD="$TOOL_ROOT/xcodebuild"
   SWIFT="$TOOL_ROOT/swift"
   XCODEGEN_SOURCE="$TOOL_ROOT/xcodegen"
+  XCODEGEN_RESOURCE_BUNDLE_SOURCE="$TOOL_ROOT/XcodeGen_XcodeGenKit.bundle"
 else
   DEVELOPER_DIR_LOCKED=/Applications/Xcode_26.4.app/Contents/Developer
   XCODEBUILD=/usr/bin/xcodebuild
   SWIFT="$DEVELOPER_DIR_LOCKED/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift"
   XCODEGEN_SOURCE="$ROOT/Tools/bin/xcodegen"
+  XCODEGEN_RESOURCE_BUNDLE_SOURCE="$ROOT/Tools/bin/XcodeGen_XcodeGenKit.bundle"
 fi
 if [[ "$TEST_MODE" -eq 1 ]]; then
   for tool in "$XCODEBUILD" "$SWIFT" "$XCODEGEN_SOURCE"; do
@@ -755,6 +764,7 @@ if [[ "$TEST_MODE" -eq 1 ]]; then
     verify_commit_file "$tool" || fail invalid-test-tool-root 24
   done
 else
+  [[ ! -L "$ROOT/Tools" && ! -L "$ROOT/Tools/bin" ]] || fail toolchain-unavailable 24
   [[ -f "$XCODEBUILD" && -x "$XCODEBUILD" && ! -L "$XCODEBUILD" ]] || fail toolchain-unavailable 24
   [[ -f "$XCODEGEN_SOURCE" && -x "$XCODEGEN_SOURCE" && ! -L "$XCODEGEN_SOURCE" ]] || fail toolchain-unavailable 24
   [[ -f "$SWIFT" && -x "$SWIFT" ]] || fail toolchain-unavailable 24
@@ -776,10 +786,200 @@ PY
   fi
 fi
 
+EXPECTED_XCODEGEN_HASH="$(/usr/bin/sed -n '1p' "$TMP/expected-xcodegen-sha")"
+EXPECTED_XCODEGEN_PRESETS_SHA="$(/usr/bin/sed -n '2p' "$TMP/expected-xcodegen-sha")"
+[[ "$EXPECTED_XCODEGEN_HASH" =~ ^[0-9a-f]{64}$ && "$EXPECTED_XCODEGEN_PRESETS_SHA" =~ ^[0-9a-f]{64}$ ]] ||
+  fail toolchain-lock-invalid 24
+
+verify_xcodegen_resource_bundle() {
+  $PYTHON -I - "$1" "$2" <<'PY' >/dev/null 2>&1
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import stat
+import struct
+import sys
+
+
+bundle = sys.argv[1]
+expected = sys.argv[2]
+if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+    raise SystemExit(1)
+
+directory_flags = os.O_RDONLY | os.O_DIRECTORY
+file_flags = os.O_RDONLY
+if hasattr(os, "O_NOFOLLOW"):
+    directory_flags |= os.O_NOFOLLOW
+    file_flags |= os.O_NOFOLLOW
+
+
+def identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+        value.st_gid,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def safe_directory(value: os.stat_result, device: int) -> bool:
+    return (
+        stat.S_ISDIR(value.st_mode)
+        and value.st_dev == device
+        and value.st_uid == os.geteuid()
+        and value.st_mode & 0o022 == 0
+    )
+
+
+files: list[tuple[bytes, bytes]] = []
+directories: set[str] = {""}
+total_size = 0
+
+
+def walk(directory_fd: int, prefix: str, depth: int, device: int) -> None:
+    global total_size
+    if depth > 8:
+        raise ValueError
+    opened_directory = os.fstat(directory_fd)
+    if not safe_directory(opened_directory, device):
+        raise ValueError
+    with os.scandir(directory_fd) as iterator:
+        entries = list(iterator)
+    if len(entries) > 256:
+        raise ValueError
+    for entry in entries:
+        name = entry.name
+        name_bytes = name.encode("utf-8", errors="strict")
+        if not name or name in {".", ".."} or b"\x00" in name_bytes or b"/" in name_bytes:
+            raise ValueError
+        relative = f"{prefix}/{name}" if prefix else name
+        relative_bytes = relative.encode("utf-8", errors="strict")
+        if len(relative_bytes) > 512:
+            raise ValueError
+        before = entry.stat(follow_symlinks=False)
+        if stat.S_ISLNK(before.st_mode):
+            raise ValueError
+        if stat.S_ISDIR(before.st_mode):
+            if not safe_directory(before, device):
+                raise ValueError
+            child_fd = os.open(name, directory_flags, dir_fd=directory_fd)
+            try:
+                opened = os.fstat(child_fd)
+                if identity(opened) != identity(before):
+                    raise ValueError
+                directories.add(relative)
+                walk(child_fd, relative, depth + 1, device)
+                if identity(os.fstat(child_fd)) != identity(opened):
+                    raise ValueError
+            finally:
+                os.close(child_fd)
+            continue
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_dev != device
+            or before.st_uid != os.geteuid()
+            or before.st_nlink != 1
+            or before.st_mode & 0o133
+            or before.st_size < 0
+            or before.st_size > 1024 * 1024
+        ):
+            raise ValueError
+        descriptor = os.open(name, file_flags, dir_fd=directory_fd)
+        try:
+            opened = os.fstat(descriptor)
+            if identity(opened) != identity(before):
+                raise ValueError
+            content = bytearray()
+            offset = 0
+            while offset < opened.st_size:
+                chunk = os.pread(descriptor, min(1024 * 1024, opened.st_size - offset), offset)
+                if not chunk:
+                    raise ValueError
+                content.extend(chunk)
+                offset += len(chunk)
+            if identity(os.fstat(descriptor)) != identity(opened):
+                raise ValueError
+        finally:
+            os.close(descriptor)
+        total_size += len(content)
+        if total_size > 8 * 1024 * 1024 or len(files) >= 256:
+            raise ValueError
+        files.append((relative_bytes, bytes(content)))
+
+
+bundle_fd = -1
+presets_fd = -1
+try:
+    named_bundle = os.lstat(bundle)
+    if not stat.S_ISDIR(named_bundle.st_mode) or stat.S_ISLNK(named_bundle.st_mode):
+        raise ValueError
+    bundle_fd = os.open(bundle, directory_flags)
+    opened_bundle = os.fstat(bundle_fd)
+    device = opened_bundle.st_dev
+    if identity(opened_bundle) != identity(named_bundle) or not safe_directory(opened_bundle, device):
+        raise ValueError
+    with os.scandir(bundle_fd) as iterator:
+        entries = list(iterator)
+    if len(entries) != 1 or entries[0].name != "SettingPresets":
+        raise ValueError
+    named_presets = entries[0].stat(follow_symlinks=False)
+    if not safe_directory(named_presets, device):
+        raise ValueError
+    presets_fd = os.open("SettingPresets", directory_flags, dir_fd=bundle_fd)
+    opened_presets = os.fstat(presets_fd)
+    if identity(opened_presets) != identity(named_presets):
+        raise ValueError
+    walk(presets_fd, "", 0, device)
+    if identity(os.fstat(presets_fd)) != identity(opened_presets):
+        raise ValueError
+    if identity(os.fstat(bundle_fd)) != identity(opened_bundle):
+        raise ValueError
+except (OSError, UnicodeError, ValueError):
+    raise SystemExit(1)
+finally:
+    if presets_fd >= 0:
+        os.close(presets_fd)
+    if bundle_fd >= 0:
+        os.close(bundle_fd)
+
+if not files:
+    raise SystemExit(1)
+required_directories = {""}
+for path_bytes, _ in files:
+    parts = path_bytes.decode("utf-8").split("/")
+    required_directories.update("/".join(parts[:index]) for index in range(1, len(parts)))
+if directories != required_directories:
+    raise SystemExit(1)
+
+digest = hashlib.sha256()
+for relative_bytes, content in sorted(files, key=lambda value: value[0]):
+    digest.update(struct.pack(">Q", len(relative_bytes)))
+    digest.update(relative_bytes)
+    digest.update(struct.pack(">Q", len(content)))
+    digest.update(content)
+if digest.hexdigest() != expected:
+    raise SystemExit(1)
+PY
+}
+
+verify_xcodegen_resource_bundle "$XCODEGEN_RESOURCE_BUNDLE_SOURCE" "$EXPECTED_XCODEGEN_PRESETS_SHA" ||
+  fail toolchain-mismatch 24
+XCODEGEN_RESOURCE_BUNDLE="$TMP/XcodeGen_XcodeGenKit.bundle"
+/usr/bin/env COPYFILE_DISABLE=1 /bin/cp -R "$XCODEGEN_RESOURCE_BUNDLE_SOURCE" "$XCODEGEN_RESOURCE_BUNDLE" ||
+  fail toolchain-unavailable 24
+verify_xcodegen_resource_bundle "$XCODEGEN_RESOURCE_BUNDLE" "$EXPECTED_XCODEGEN_PRESETS_SHA" ||
+  fail toolchain-mismatch 24
+
 XCODEGEN="$TMP/xcodegen"
 /bin/cp "$XCODEGEN_SOURCE" "$XCODEGEN" || fail toolchain-unavailable 24
 /bin/chmod 0700 "$XCODEGEN" || fail toolchain-unavailable 24
-EXPECTED_XCODEGEN_HASH="$(/bin/cat "$TMP/expected-xcodegen-sha")"
 ACTUAL_XCODEGEN_HASH="$($SHASUM -a 256 "$XCODEGEN" | /usr/bin/awk '{print $1}')" || fail toolchain-mismatch 24
 [[ "$ACTUAL_XCODEGEN_HASH" == "$EXPECTED_XCODEGEN_HASH" ]] || fail toolchain-mismatch 24
 
@@ -952,7 +1152,7 @@ sdk = exact_object(top["sdk"], {"version", "build"})
 swift = exact_object(top["swift"], {"version"})
 xcodegen = exact_object(
     top["xcodegen"],
-    {"version", "sourceCommit", "archiveURL", "archiveSHA256", "binarySHA256"},
+    {"version", "sourceCommit", "archiveURL", "archiveSHA256", "binarySHA256", "settingPresetsSHA256"},
 )
 sources = exact_object(
     top["sources"],
@@ -981,6 +1181,7 @@ if xcodegen["version"] != "2.45.4":
 string(xcodegen["sourceCommit"], r"[0-9a-f]{40}")
 string(xcodegen["archiveSHA256"], r"[0-9a-f]{64}")
 string(xcodegen["binarySHA256"], r"[0-9a-f]{64}")
+string(xcodegen["settingPresetsSHA256"], r"[0-9a-f]{64}")
 archive_url = string(xcodegen["archiveURL"])
 parsed_archive = urlparse(archive_url)
 if (
@@ -1176,10 +1377,14 @@ PACKAGE_HASH_AFTER="$($SHASUM -a 256 "/dev/fd/$PACKAGE_RESOLUTION_FD" | /usr/bin
 generated_tree_is_clean || fail package-resolution-mismatch 22
 
 [[ "$($SHASUM -a 256 "$XCODEGEN" | /usr/bin/awk '{print $1}')" == "$EXPECTED_XCODEGEN_HASH" ]] || fail toolchain-mismatch 24
+verify_xcodegen_resource_bundle "$XCODEGEN_RESOURCE_BUNDLE" "$EXPECTED_XCODEGEN_PRESETS_SHA" ||
+  fail toolchain-mismatch 24
 if ! "$XCODEGEN" generate > "$TMP/xcodegen-output" 2> "$TMP/xcodegen-error"; then
   fail generated-project-mismatch 27
 fi
 [[ "$($SHASUM -a 256 "$XCODEGEN" | /usr/bin/awk '{print $1}')" == "$EXPECTED_XCODEGEN_HASH" ]] || fail toolchain-mismatch 24
+verify_xcodegen_resource_bundle "$XCODEGEN_RESOURCE_BUNDLE" "$EXPECTED_XCODEGEN_PRESETS_SHA" ||
+  fail toolchain-mismatch 24
 if ! generated_tree_is_clean; then
   fail generated-project-mismatch 27
 fi

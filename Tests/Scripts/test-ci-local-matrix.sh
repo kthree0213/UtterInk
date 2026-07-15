@@ -397,8 +397,13 @@ write_local_spy "$ci_repository" Tools/bin/xcodegen
 )
 assert_required_gates "$ci_log"
 assert_once "$ci_log" local:Scripts/verify-toolchain.sh '--context ci' 'locked CI toolchain verification'
-assert_once "$ci_log" local:Tools/bin/xcodegen 'generate' 'repository-local XcodeGen'
+assert_twice "$ci_log" local:Tools/bin/xcodegen 'generate' 'repository-local XcodeGen'
 assert_zero "$ci_log" xcodegen '' 'ordinary PATH XcodeGen in CI mode'
+assert_after \
+  "$ci_log" \
+  local:Scripts/verify-toolchain.sh '--context ci' \
+  local:Tools/bin/xcodegen 'generate' \
+  'locked CI toolchain verification before the first project generation'
 if [[ "$(matching_count "$ci_log" local:Scripts/scan-public-history.sh '--expected-origin https://github.example/owner/repo')" -ne 2 ]]; then
   printf 'CI mode did not propagate its derived origin to both history scans\n' >&2
   exit 1
@@ -419,8 +424,13 @@ write_local_spy "$local_package_repository" Tools/bin/xcodegen
 )
 assert_required_gates "$local_package_log"
 assert_once "$local_package_log" local:Scripts/verify-toolchain.sh '--context local' 'locked local toolchain verification'
-assert_once "$local_package_log" local:Tools/bin/xcodegen 'generate' 'repository-local XcodeGen in local packaging mode'
+assert_twice "$local_package_log" local:Tools/bin/xcodegen 'generate' 'repository-local XcodeGen in local packaging mode'
 assert_zero "$local_package_log" xcodegen '' 'ordinary PATH XcodeGen in local packaging mode'
+assert_after \
+  "$local_package_log" \
+  local:Scripts/verify-toolchain.sh '--context local' \
+  local:Tools/bin/xcodegen 'generate' \
+  'locked local toolchain verification before the first project generation'
 assert_once \
   "$local_package_log" \
   local:Scripts/package-unsigned-smoke.sh \
@@ -448,6 +458,11 @@ write_local_spy "$ci_package_repository" Tools/bin/xcodegen
 )
 assert_required_gates "$ci_package_log"
 assert_once "$ci_package_log" local:Scripts/verify-toolchain.sh '--context ci' 'locked CI package toolchain verification'
+assert_after \
+  "$ci_package_log" \
+  local:Scripts/verify-toolchain.sh '--context ci' \
+  local:Tools/bin/xcodegen 'generate' \
+  'locked CI package toolchain verification before the first project generation'
 assert_once \
   "$ci_package_log" \
   local:Scripts/package-unsigned-smoke.sh \
