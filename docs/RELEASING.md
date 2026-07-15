@@ -148,7 +148,7 @@ lock.
 
 ## Release-candidate evidence
 
-`Scripts/release/verify-candidate.sh` is the planned entry point for creating
+`Scripts/release/verify-candidate.sh` is the entry point for creating
 `candidate.json`. It must start from a clean checkout at one exact 40-character
 commit, verify the complete history and expected origin scope, resolve packages
 without changing the committed lockfile, regenerate the project without a
@@ -202,6 +202,75 @@ Committed configuration and evidence never contain a signing identity, Apple
 team value, certificate or private-key material, notarization profile, or
 credential. Those values are supplied and validated locally only when an
 authorized phase needs them.
+
+### Guarded local signing pipeline
+
+The guarded local pipeline implements the unsigned build, local Developer ID
+signing, signature verification, and signed pre-staple DMG phases. Use a fresh,
+ignored work directory for one reviewed commit. A repository with no Git remote
+uses:
+
+```bash
+COMMIT="$(git rev-parse --verify HEAD)"
+WORK='.release-work/v0.1.0-candidate'
+
+./Scripts/release/build-candidate.sh \
+  --commit "$COMMIT" \
+  --work "$WORK"
+```
+
+If the repository has an `origin`, pass its separately reviewed canonical URL
+to the same command rather than trusting the configured remote as its own
+reference:
+
+```bash
+EXPECTED_ORIGIN='https://github.com/OWNER/UtterInk.git'
+./Scripts/release/build-candidate.sh \
+  --commit "$COMMIT" \
+  --work "$WORK" \
+  --expected-origin "$EXPECTED_ORIGIN"
+```
+
+On success, the fixed build outputs are `$WORK/UtterInk.xcarchive`,
+`$WORK/candidate/candidate.json`,
+`$WORK/candidate/unsigned-build-evidence.json`, and
+`$WORK/candidate/UtterInk.app`. The unsigned-build evidence binds the exact
+candidate commit and candidate record to deterministic SHA-256 tree hashes for
+both the archived app and the complete archive. The work path must not already
+exist; the command never overwrites an earlier candidate.
+
+After reviewing those outputs, supply the exact local identity and matching
+team only as command parameters:
+
+```bash
+SIGNING_IDENTITY='<reviewed Developer ID Application identity>'
+TEAM_ID='<matching 10-character Apple team ID>'
+
+./Scripts/release/sign-candidate.sh \
+  --candidate "$WORK/candidate" \
+  --identity "$SIGNING_IDENTITY" \
+  --team-id "$TEAM_ID"
+
+./Scripts/release/create-signed-dmg.sh \
+  --candidate "$WORK/candidate" \
+  --identity "$SIGNING_IDENTITY" \
+  --team-id "$TEAM_ID"
+```
+
+Successful app signing adds
+`$WORK/candidate/signature-verification.json`. Successful signed-DMG creation
+then adds `$WORK/candidate/UtterInk-0.1.0-arm64.dmg`,
+`$WORK/candidate/pre-staple.sha256`, and
+`$WORK/candidate/signing-evidence.json`. The signing identity and team ID are
+maintainer-supplied parameters; no concrete value belongs in committed
+configuration, documentation, or committed evidence. All generated candidate
+and signing evidence remains local and uncommitted under `.release-work`.
+
+The real pipeline currently fails closed because `Config/ci-toolchain.json`
+does not yet contain the complete reviewed lock. The automated tests use only
+fake tools and fixture identities; they never select, inspect, or use a real
+certificate. These commands do not notarize, upload, staple, or publish any
+artifact.
 
 ## Immutable artifact rules
 

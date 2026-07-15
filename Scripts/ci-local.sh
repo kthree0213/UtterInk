@@ -169,6 +169,9 @@ python3 Tests/Scripts/test-release-metadata.py
 python3 Tests/Scripts/test-release-entitlements.py
 python3 Tests/Scripts/test-release-info-policy.py
 bash Tests/Scripts/test-verify-candidate.sh
+bash Tests/Scripts/test-build-candidate.sh
+bash Tests/Scripts/test-sign-candidate.sh
+bash Tests/Scripts/test-verify-signatures.sh
 python3 Tests/Scripts/test-verify-workflow.py
 bash Tests/Scripts/test-bootstrap-xcodegen.sh
 bash Tests/Scripts/test-clean-distribution-output.sh

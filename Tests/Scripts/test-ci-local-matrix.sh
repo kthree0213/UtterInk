@@ -67,6 +67,9 @@ new_repository() {
     Tests/Scripts/test-generate-legacy-defaults-map.sh \
     Tests/Scripts/test-check-parity-replacement.sh \
     Tests/Scripts/test-verify-candidate.sh \
+    Tests/Scripts/test-build-candidate.sh \
+    Tests/Scripts/test-sign-candidate.sh \
+    Tests/Scripts/test-verify-signatures.sh \
     Tests/Scripts/test-bootstrap-xcodegen.sh \
     Tests/Scripts/test-clean-distribution-output.sh \
     Tests/Scripts/test-package-unsigned-smoke.sh \
@@ -173,6 +176,9 @@ assert_required_gates() {
   assert_once "$log" python3 'Tests/Scripts/test-release-entitlements.py' 'release entitlement tests'
   assert_once "$log" python3 'Tests/Scripts/test-release-info-policy.py' 'release Info policy tests'
   assert_once "$log" local:Tests/Scripts/test-verify-candidate.sh '' 'release candidate verifier tests'
+  assert_once "$log" local:Tests/Scripts/test-build-candidate.sh '' 'release candidate builder tests'
+  assert_once "$log" local:Tests/Scripts/test-sign-candidate.sh '' 'release candidate signing tests'
+  assert_once "$log" local:Tests/Scripts/test-verify-signatures.sh '' 'release signature verifier tests'
   assert_once "$log" python3 'Tests/Scripts/test-verify-workflow.py' 'workflow policy tests'
   assert_once "$log" local:Tests/Scripts/test-bootstrap-xcodegen.sh '' 'locked XcodeGen bootstrap tests'
   assert_once "$log" local:Tests/Scripts/test-clean-distribution-output.sh '' 'distribution cleanup tests'
@@ -195,6 +201,22 @@ assert_required_gates() {
   assert_once "$log" xcodebuild '-only-testing:UtterInkUITests/PipelineStateTests/testRecordingScenarioShowsStopAndCancelActions' 'recording UI smoke test'
   assert_once "$log" local:Tests/Scripts/test-ats-policy.sh '' 'signed ATS probe'
   assert_once "$log" local:Tests/Scripts/test-ui-testing-release-boundary.sh '' 'Release UI-test boundary'
+
+  assert_after \
+    "$log" \
+    local:Tests/Scripts/test-verify-candidate.sh '' \
+    local:Tests/Scripts/test-build-candidate.sh '' \
+    'candidate builder tests after candidate verifier tests'
+  assert_after \
+    "$log" \
+    local:Tests/Scripts/test-build-candidate.sh '' \
+    local:Tests/Scripts/test-sign-candidate.sh '' \
+    'candidate signing tests after candidate builder tests'
+  assert_after \
+    "$log" \
+    local:Tests/Scripts/test-sign-candidate.sh '' \
+    local:Tests/Scripts/test-verify-signatures.sh '' \
+    'signature verifier tests after candidate signing tests'
 
   notice_scratch="$(awk -F '\t' '
     $1 == "local:Scripts/collect-third-party-notices.sh" { print $3 }
