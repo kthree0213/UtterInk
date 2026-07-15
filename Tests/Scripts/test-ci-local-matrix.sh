@@ -399,7 +399,7 @@ assert_required_gates "$ci_log"
 assert_once "$ci_log" local:Scripts/verify-toolchain.sh '--context ci' 'locked CI toolchain verification'
 assert_once "$ci_log" local:Tools/bin/xcodegen 'generate' 'repository-local XcodeGen'
 assert_zero "$ci_log" xcodegen '' 'ordinary PATH XcodeGen in CI mode'
-if [[ "$(matching_count "$ci_log" local:Scripts/scan-public-history.sh '--expected-origin https://github.example/owner/repo.git')" -ne 2 ]]; then
+if [[ "$(matching_count "$ci_log" local:Scripts/scan-public-history.sh '--expected-origin https://github.example/owner/repo')" -ne 2 ]]; then
   printf 'CI mode did not propagate its derived origin to both history scans\n' >&2
   exit 1
 fi
@@ -451,14 +451,14 @@ assert_once "$ci_package_log" local:Scripts/verify-toolchain.sh '--context ci' '
 assert_once \
   "$ci_package_log" \
   local:Scripts/package-unsigned-smoke.sh \
-  '--commit 0123456789abcdef0123456789abcdef01234567 --output dist/unsigned-smoke --expected-origin https://github.example/owner/repo.git' \
+  '--commit 0123456789abcdef0123456789abcdef01234567 --output dist/unsigned-smoke --expected-origin https://github.example/owner/repo' \
   'CI unsigned package smoke'
 assert_zero \
   "$ci_package_log" \
   local:Scripts/package-unsigned-smoke.sh \
   'must-not-be-used.invalid' \
   'ambient local origin in CI package mode'
-if [[ "$(matching_count "$ci_package_log" local:Scripts/scan-public-history.sh '--expected-origin https://github.example/owner/repo.git')" -ne 2 ]]; then
+if [[ "$(matching_count "$ci_package_log" local:Scripts/scan-public-history.sh '--expected-origin https://github.example/owner/repo')" -ne 2 ]]; then
   printf 'CI packaging mode did not propagate its derived origin to both history scans\n' >&2
   exit 1
 fi

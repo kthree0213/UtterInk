@@ -36,7 +36,10 @@ if [[ "$CI_MODE" -eq 1 ]]; then
     printf 'CI mode requires GITHUB_SERVER_URL and GITHUB_REPOSITORY\n' >&2
     exit 66
   fi
-  expected_origin="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+  # actions/checkout configures this exact credential-free HTTPS URL without
+  # a trailing .git suffix. Keep the expected value byte-for-byte identical so
+  # the history scanner can reject every other remote shape.
+  expected_origin="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
 else
   expected_origin="${UTTERINK_EXPECTED_ORIGIN:-}"
   # Local verification never infers repository scope from ambient GitHub

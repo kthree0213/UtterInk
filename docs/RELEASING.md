@@ -126,8 +126,9 @@ asset publication.
 When repository origin scope is known locally, supply it explicitly with
 `--expected-origin` to the package command. For the local packaging mode of
 `Scripts/ci-local.sh`, set `UTTERINK_EXPECTED_ORIGIN` explicitly. Local mode
-never infers that value from ambient GitHub variables. CI derives exactly
-`GITHUB_SERVER_URL/GITHUB_REPOSITORY.git`, passes the same value to both the
+never infers that value from ambient GitHub variables. CI derives exactly the
+credential-free `GITHUB_SERVER_URL/GITHUB_REPOSITORY` URL configured by
+`actions/checkout` (without a `.git` suffix), passes the same value to both the
 history scan and package verifier, runs the CI verifier with both the `--ci`
 and `--unsigned-package-smoke` flags, and removes `dist/` in its unconditional
 cleanup step. The workflow contains no artifact-upload step.
