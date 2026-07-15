@@ -21,11 +21,22 @@ write_local_spy() {
 write_path_spy() {
   local bin="$1"
   local command="$2"
-  printf '%s\n' \
-    '#!/usr/bin/env bash' \
-    'set -euo pipefail' \
-    "printf '%s\\t%s\\n' '$command' \"\$*\" >> \"\${UTTERINK_MATRIX_LOG:?}\"" \
-    > "$bin/$command"
+  if [[ "$command" == git ]]; then
+    printf '%s\n' \
+      '#!/usr/bin/env bash' \
+      'set -euo pipefail' \
+      "printf '%s\\t%s\\n' '$command' \"\$*\" >> \"\${UTTERINK_MATRIX_LOG:?}\"" \
+      'if [[ "$*" == "rev-parse --verify HEAD" ]]; then' \
+      "  printf '%s\\n' '0123456789abcdef0123456789abcdef01234567'" \
+      'fi' \
+      > "$bin/$command"
+  else
+    printf '%s\n' \
+      '#!/usr/bin/env bash' \
+      'set -euo pipefail' \
+      "printf '%s\\t%s\\n' '$command' \"\$*\" >> \"\${UTTERINK_MATRIX_LOG:?}\"" \
+      > "$bin/$command"
+  fi
   chmod +x "$bin/$command"
 }
 
@@ -46,6 +57,7 @@ new_repository() {
     Scripts/check-parity-replacement.sh \
     Scripts/check-repo-hygiene.sh \
     Scripts/collect-third-party-notices.sh \
+    Scripts/package-unsigned-smoke.sh \
     Scripts/scan-public-history.sh \
     Scripts/verify-toolchain.sh \
     Tests/Scripts/test-generate-import-manifest.sh \
@@ -57,6 +69,8 @@ new_repository() {
     Tests/Scripts/test-verify-candidate.sh \
     Tests/Scripts/test-bootstrap-xcodegen.sh \
     Tests/Scripts/test-clean-distribution-output.sh \
+    Tests/Scripts/test-package-unsigned-smoke.sh \
+    Tests/Scripts/test-inspect-dmg.sh \
     Tests/Scripts/test-ats-policy.sh \
     Tests/Scripts/test-ui-testing-release-boundary.sh; do
     write_local_spy "$repository" "$relative_path"
@@ -162,6 +176,8 @@ assert_required_gates() {
   assert_once "$log" python3 'Tests/Scripts/test-verify-workflow.py' 'workflow policy tests'
   assert_once "$log" local:Tests/Scripts/test-bootstrap-xcodegen.sh '' 'locked XcodeGen bootstrap tests'
   assert_once "$log" local:Tests/Scripts/test-clean-distribution-output.sh '' 'distribution cleanup tests'
+  assert_once "$log" local:Tests/Scripts/test-package-unsigned-smoke.sh '' 'unsigned packaging tests'
+  assert_once "$log" local:Tests/Scripts/test-inspect-dmg.sh '' 'DMG inspection tests'
   assert_once "$log" python3 'Scripts/release/read-metadata.py --json' 'release metadata validator'
   assert_once "$log" python3 'Scripts/release/verify-entitlements.py' 'release entitlement validator'
   assert_once "$log" python3 'Scripts/release/verify-info-policy.py' 'release Info policy validator'
@@ -280,8 +296,8 @@ fi
 
 github_repository="$(run_case github-origin GITHUB_SERVER_URL=https://github.example GITHUB_REPOSITORY=owner/repo)"
 github_log="$github_repository/commands.log"
-if [[ "$(matching_count "$github_log" local:Scripts/scan-public-history.sh '--expected-origin https://github.example/owner/repo.git')" -ne 2 ]]; then
-  printf 'GitHub origin was not propagated to both history scans\n' >&2
+if grep -F $'local:Scripts/scan-public-history.sh\t--expected-origin' "$github_log" >/dev/null; then
+  printf 'local mode inferred an origin from ambient GitHub variables\n' >&2
   exit 1
 fi
 
@@ -293,6 +309,8 @@ write_local_spy "$ci_repository" Tools/bin/xcodegen
   cd "$ci_repository"
   PATH="$ci_repository/bin:/usr/bin:/bin" \
   UTTERINK_MATRIX_LOG="$ci_log" \
+  GITHUB_SERVER_URL=https://github.example \
+  GITHUB_REPOSITORY=owner/repo \
     ./Scripts/ci-local.sh --ci \
     >"$ci_repository/ci.stdout" \
     2>"$ci_repository/ci.stderr"
@@ -301,6 +319,93 @@ assert_required_gates "$ci_log"
 assert_once "$ci_log" local:Scripts/verify-toolchain.sh '--context ci' 'locked CI toolchain verification'
 assert_once "$ci_log" local:Tools/bin/xcodegen 'generate' 'repository-local XcodeGen'
 assert_zero "$ci_log" xcodegen '' 'ordinary PATH XcodeGen in CI mode'
+if [[ "$(matching_count "$ci_log" local:Scripts/scan-public-history.sh '--expected-origin https://github.example/owner/repo.git')" -ne 2 ]]; then
+  printf 'CI mode did not propagate its derived origin to both history scans\n' >&2
+  exit 1
+fi
+
+local_package_repository="$(new_repository local-unsigned-package)"
+local_package_log="$local_package_repository/commands.log"
+: > "$local_package_log"
+write_local_spy "$local_package_repository" Tools/bin/xcodegen
+(
+  cd "$local_package_repository"
+  PATH="$local_package_repository/bin:/usr/bin:/bin" \
+  UTTERINK_MATRIX_LOG="$local_package_log" \
+  UTTERINK_EXPECTED_ORIGIN=https://example.invalid/owner/repo.git \
+    ./Scripts/ci-local.sh --unsigned-package-smoke \
+    >"$local_package_repository/ci.stdout" \
+    2>"$local_package_repository/ci.stderr"
+)
+assert_required_gates "$local_package_log"
+assert_once "$local_package_log" local:Scripts/verify-toolchain.sh '--context local' 'locked local toolchain verification'
+assert_once "$local_package_log" local:Tools/bin/xcodegen 'generate' 'repository-local XcodeGen in local packaging mode'
+assert_zero "$local_package_log" xcodegen '' 'ordinary PATH XcodeGen in local packaging mode'
+assert_once \
+  "$local_package_log" \
+  local:Scripts/package-unsigned-smoke.sh \
+  '--commit 0123456789abcdef0123456789abcdef01234567 --output dist/unsigned-smoke --expected-origin https://example.invalid/owner/repo.git' \
+  'local unsigned package smoke'
+if [[ "$(matching_count "$local_package_log" local:Scripts/scan-public-history.sh '--expected-origin https://example.invalid/owner/repo.git')" -ne 2 ]]; then
+  printf 'local packaging mode did not propagate its explicit origin to both history scans\n' >&2
+  exit 1
+fi
+
+ci_package_repository="$(new_repository ci-unsigned-package)"
+ci_package_log="$ci_package_repository/commands.log"
+: > "$ci_package_log"
+write_local_spy "$ci_package_repository" Tools/bin/xcodegen
+(
+  cd "$ci_package_repository"
+  PATH="$ci_package_repository/bin:/usr/bin:/bin" \
+  UTTERINK_MATRIX_LOG="$ci_package_log" \
+  GITHUB_SERVER_URL=https://github.example \
+  GITHUB_REPOSITORY=owner/repo \
+  UTTERINK_EXPECTED_ORIGIN=https://must-not-be-used.invalid/other.git \
+    ./Scripts/ci-local.sh --ci --unsigned-package-smoke \
+    >"$ci_package_repository/ci.stdout" \
+    2>"$ci_package_repository/ci.stderr"
+)
+assert_required_gates "$ci_package_log"
+assert_once "$ci_package_log" local:Scripts/verify-toolchain.sh '--context ci' 'locked CI package toolchain verification'
+assert_once \
+  "$ci_package_log" \
+  local:Scripts/package-unsigned-smoke.sh \
+  '--commit 0123456789abcdef0123456789abcdef01234567 --output dist/unsigned-smoke --expected-origin https://github.example/owner/repo.git' \
+  'CI unsigned package smoke'
+assert_zero \
+  "$ci_package_log" \
+  local:Scripts/package-unsigned-smoke.sh \
+  'must-not-be-used.invalid' \
+  'ambient local origin in CI package mode'
+if [[ "$(matching_count "$ci_package_log" local:Scripts/scan-public-history.sh '--expected-origin https://github.example/owner/repo.git')" -ne 2 ]]; then
+  printf 'CI packaging mode did not propagate its derived origin to both history scans\n' >&2
+  exit 1
+fi
+
+missing_ci_origin_repository="$(new_repository ci-mode-missing-origin)"
+missing_ci_origin_log="$missing_ci_origin_repository/commands.log"
+: > "$missing_ci_origin_log"
+if (
+  cd "$missing_ci_origin_repository"
+  PATH="$missing_ci_origin_repository/bin:/usr/bin:/bin" \
+  UTTERINK_MATRIX_LOG="$missing_ci_origin_log" \
+    ./Scripts/ci-local.sh --ci \
+    >"$missing_ci_origin_repository/ci.stdout" \
+    2>"$missing_ci_origin_repository/ci.stderr"
+); then
+  printf 'CI mode accepted missing repository-origin variables\n' >&2
+  exit 1
+fi
+if [[ -s "$missing_ci_origin_log" ]]; then
+  printf 'CI mode executed commands before rejecting missing origin variables\n' >&2
+  exit 1
+fi
+if ! grep -F 'CI mode requires GITHUB_SERVER_URL and GITHUB_REPOSITORY' \
+    "$missing_ci_origin_repository/ci.stderr" >/dev/null; then
+  printf 'missing CI origin failure did not explain the required variables\n' >&2
+  exit 1
+fi
 
 missing_locked_repository="$(new_repository ci-mode-missing-locked-xcodegen)"
 missing_locked_log="$missing_locked_repository/commands.log"
@@ -309,6 +414,8 @@ if (
   cd "$missing_locked_repository"
   PATH="$missing_locked_repository/bin:/usr/bin:/bin" \
   UTTERINK_MATRIX_LOG="$missing_locked_log" \
+  GITHUB_SERVER_URL=https://github.example \
+  GITHUB_REPOSITORY=owner/repo \
     ./Scripts/ci-local.sh --ci \
     >"$missing_locked_repository/ci.stdout" \
     2>"$missing_locked_repository/ci.stderr"
@@ -346,6 +453,30 @@ if [[ -s "$duplicate_log" ]]; then
 fi
 if ! grep -F 'duplicate ci-local argument: --ci' "$duplicate_repository/ci.stderr" >/dev/null; then
   printf 'duplicate CI argument failure did not explain the rejected argument\n' >&2
+  exit 1
+fi
+
+duplicate_package_repository="$(new_repository duplicate-package-argument)"
+duplicate_package_log="$duplicate_package_repository/commands.log"
+: > "$duplicate_package_log"
+if (
+  cd "$duplicate_package_repository"
+  PATH="$duplicate_package_repository/bin:/usr/bin:/bin" \
+  UTTERINK_MATRIX_LOG="$duplicate_package_log" \
+    ./Scripts/ci-local.sh --unsigned-package-smoke --unsigned-package-smoke \
+    >"$duplicate_package_repository/ci.stdout" \
+    2>"$duplicate_package_repository/ci.stderr"
+); then
+  printf 'duplicate unsigned-package argument was accepted\n' >&2
+  exit 1
+fi
+if [[ -s "$duplicate_package_log" ]]; then
+  printf 'duplicate unsigned-package argument executed commands before failing\n' >&2
+  exit 1
+fi
+if ! grep -F 'duplicate ci-local argument: --unsigned-package-smoke' \
+    "$duplicate_package_repository/ci.stderr" >/dev/null; then
+  printf 'duplicate unsigned-package failure did not explain the rejected argument\n' >&2
   exit 1
 fi
 

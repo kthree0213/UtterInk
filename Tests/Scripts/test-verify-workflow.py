@@ -44,7 +44,7 @@ jobs:
       - name: Verify workflow policy
         run: python3 Scripts/verify-workflow.py
       - name: Run source, history, test, and build checks
-        run: ./Scripts/ci-local.sh --ci
+        run: ./Scripts/ci-local.sh --ci --unsigned-package-smoke
       - name: Remove unsigned outputs
         if: always()
         run: ./Scripts/clean-distribution-output.sh
@@ -298,6 +298,16 @@ with tempfile.TemporaryDirectory(prefix="utterink-workflow-policy-tests-") as te
             None,
         ),
         (
+            "missing-unsigned-package-smoke",
+            replace_once(
+                VALID_WORKFLOW,
+                "run: ./Scripts/ci-local.sh --ci --unsigned-package-smoke",
+                "run: ./Scripts/ci-local.sh --ci",
+            ),
+            "steps",
+            None,
+        ),
+        (
             "secret-reference",
             replace_once(
                 VALID_WORKFLOW,
@@ -363,7 +373,7 @@ with tempfile.TemporaryDirectory(prefix="utterink-workflow-policy-tests-") as te
             "release-command",
             replace_once(
                 VALID_WORKFLOW,
-                "run: ./Scripts/ci-local.sh --ci",
+                "run: ./Scripts/ci-local.sh --ci --unsigned-package-smoke",
                 "run: gh release create v0.1.0",
             ),
             "forbidden-command",
@@ -373,7 +383,7 @@ with tempfile.TemporaryDirectory(prefix="utterink-workflow-policy-tests-") as te
             "push-command",
             replace_once(
                 VALID_WORKFLOW,
-                "run: ./Scripts/ci-local.sh --ci",
+                "run: ./Scripts/ci-local.sh --ci --unsigned-package-smoke",
                 "run: git push origin main",
             ),
             "forbidden-command",
@@ -383,7 +393,7 @@ with tempfile.TemporaryDirectory(prefix="utterink-workflow-policy-tests-") as te
             "notary-command",
             replace_once(
                 VALID_WORKFLOW,
-                "run: ./Scripts/ci-local.sh --ci",
+                "run: ./Scripts/ci-local.sh --ci --unsigned-package-smoke",
                 "run: xcrun notarytool submit candidate.dmg",
             ),
             "forbidden-command",
@@ -393,7 +403,7 @@ with tempfile.TemporaryDirectory(prefix="utterink-workflow-policy-tests-") as te
             "sign-command",
             replace_once(
                 VALID_WORKFLOW,
-                "run: ./Scripts/ci-local.sh --ci",
+                "run: ./Scripts/ci-local.sh --ci --unsigned-package-smoke",
                 'run: codesign --sign "Developer ID" UtterInk.app',
             ),
             "forbidden-command",

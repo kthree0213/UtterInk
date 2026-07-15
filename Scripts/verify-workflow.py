@@ -377,7 +377,7 @@ def validate_exact_workflow(document: object) -> None:
         },
         {
             "name": "Run source, history, test, and build checks",
-            "run": "./Scripts/ci-local.sh --ci",
+            "run": "./Scripts/ci-local.sh --ci --unsigned-package-smoke",
         },
         {
             "name": "Remove unsigned outputs",

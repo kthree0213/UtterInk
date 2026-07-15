@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 CI_MODE=0
+UNSIGNED_PACKAGE_SMOKE=0
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --ci)
@@ -14,6 +15,13 @@ while [[ "$#" -gt 0 ]]; do
       fi
       CI_MODE=1
       ;;
+    --unsigned-package-smoke)
+      if [[ "$UNSIGNED_PACKAGE_SMOKE" -eq 1 ]]; then
+        printf 'duplicate ci-local argument: --unsigned-package-smoke\n' >&2
+        exit 64
+      fi
+      UNSIGNED_PACKAGE_SMOKE=1
+      ;;
     *)
       printf 'unknown ci-local argument: %s\n' "$1" >&2
       exit 64
@@ -22,8 +30,29 @@ while [[ "$#" -gt 0 ]]; do
   shift
 done
 
-XCODEGEN=xcodegen
+expected_origin=""
 if [[ "$CI_MODE" -eq 1 ]]; then
+  if [[ -z "${GITHUB_SERVER_URL:-}" || -z "${GITHUB_REPOSITORY:-}" ]]; then
+    printf 'CI mode requires GITHUB_SERVER_URL and GITHUB_REPOSITORY\n' >&2
+    exit 66
+  fi
+  expected_origin="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+else
+  expected_origin="${UTTERINK_EXPECTED_ORIGIN:-}"
+  # Local verification never infers repository scope from ambient GitHub
+  # variables. Only the explicit local contract above may define it.
+  unset GITHUB_SERVER_URL GITHUB_REPOSITORY
+fi
+unset UTTERINK_EXPECTED_ORIGIN
+case "$expected_origin" in
+  *$'\n'*|*$'\r'*)
+    printf 'expected origin contains a forbidden line break\n' >&2
+    exit 66
+    ;;
+esac
+
+XCODEGEN=xcodegen
+if [[ "$CI_MODE" -eq 1 || "$UNSIGNED_PACKAGE_SMOKE" -eq 1 ]]; then
   XCODEGEN="$ROOT/Tools/bin/xcodegen"
   if [[ ! -f "$XCODEGEN" || ! -x "$XCODEGEN" || -L "$XCODEGEN" ]]; then
     printf 'locked XcodeGen is unavailable; run ./Scripts/bootstrap-xcodegen.sh first\n' >&2
@@ -33,7 +62,11 @@ if [[ "$CI_MODE" -eq 1 ]]; then
     printf 'toolchain verifier is unavailable\n' >&2
     exit 65
   fi
-  "$ROOT/Scripts/verify-toolchain.sh" --context ci
+  if [[ "$CI_MODE" -eq 1 ]]; then
+    "$ROOT/Scripts/verify-toolchain.sh" --context ci
+  else
+    "$ROOT/Scripts/verify-toolchain.sh" --context local
+  fi
 fi
 
 if [[ -e LegacyParity || -L LegacyParity ]]; then
@@ -53,11 +86,6 @@ mkdir -p "$TMP/swift-module-cache" "$TMP/clang-module-cache"
 export SWIFT_MODULECACHE_PATH="$TMP/swift-module-cache"
 export CLANG_MODULE_CACHE_PATH="$TMP/clang-module-cache"
 CACHE_CLEANUP_ENABLED=0
-
-expected_origin="${UTTERINK_EXPECTED_ORIGIN:-}"
-if [[ -n "${GITHUB_SERVER_URL:-}" && -n "${GITHUB_REPOSITORY:-}" ]]; then
-  expected_origin="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
-fi
 
 scan_public_history() {
   if [[ -n "$expected_origin" ]]; then
@@ -144,6 +172,8 @@ bash Tests/Scripts/test-verify-candidate.sh
 python3 Tests/Scripts/test-verify-workflow.py
 bash Tests/Scripts/test-bootstrap-xcodegen.sh
 bash Tests/Scripts/test-clean-distribution-output.sh
+bash Tests/Scripts/test-package-unsigned-smoke.sh
+bash Tests/Scripts/test-inspect-dmg.sh
 python3 Scripts/release/read-metadata.py --json
 python3 Scripts/release/verify-entitlements.py
 python3 Scripts/release/verify-info-policy.py
@@ -239,5 +269,16 @@ assert_no_repository_build_cache
 git diff --check
 ./Scripts/check-repo-hygiene.sh
 scan_public_history
+
+if [[ "$UNSIGNED_PACKAGE_SMOKE" -eq 1 ]]; then
+  package_arguments=(
+    --commit "$(git rev-parse --verify HEAD)"
+    --output dist/unsigned-smoke
+  )
+  if [[ -n "$expected_origin" ]]; then
+    package_arguments+=(--expected-origin "$expected_origin")
+  fi
+  ./Scripts/package-unsigned-smoke.sh "${package_arguments[@]}"
+fi
 
 printf 'local verification passed\n'

@@ -93,6 +93,59 @@ build or unsigned packaging smoke test is verification only: it is not a
 distributable release, is not uploaded by default, and must never be reused as
 a signed candidate.
 
+After the reviewed toolchain lock is complete, the unsigned packaging smoke
+path is invoked from one exact clean commit as follows. This first form is only
+for a repository that has no Git remote:
+
+```bash
+./Scripts/bootstrap-xcodegen.sh
+./Scripts/verify-toolchain.sh --context local
+./Scripts/package-unsigned-smoke.sh \
+  --commit "$(git rev-parse HEAD)" \
+  --output dist/unsigned-smoke
+./Scripts/inspect-dmg.sh \
+  --dmg dist/unsigned-smoke/UtterInk-0.1.0-arm64-UNSIGNED-DO-NOT-DISTRIBUTE.dmg \
+  --mode unsigned
+./Scripts/clean-distribution-output.sh
+```
+
+For an ordinary clone that has an `origin`, pass the separately reviewed,
+canonical URL explicitly; do not derive the expected value from the repository
+configuration that it is meant to check:
+
+```bash
+# Replace only after Gate 1 approval.
+EXPECTED_ORIGIN='https://github.com/OWNER/UtterInk.git'
+./Scripts/package-unsigned-smoke.sh \
+  --commit "$(git rev-parse HEAD)" \
+  --output dist/unsigned-smoke \
+  --expected-origin "$EXPECTED_ORIGIN"
+```
+
+Until Gate 1 approves a real owner, repository, and private first push, the
+placeholder above is documentation only and must not be treated as an approved
+remote.
+
+When repository origin scope is known locally, supply it explicitly with
+`--expected-origin` to the package command. For the local packaging mode of
+`Scripts/ci-local.sh`, set `UTTERINK_EXPECTED_ORIGIN` explicitly. Local mode
+never infers that value from ambient GitHub variables. CI derives exactly
+`GITHUB_SERVER_URL/GITHUB_REPOSITORY.git`, passes the same value to both the
+history scan and package verifier, runs the CI verifier with both the `--ci`
+and `--unsigned-package-smoke` flags, and removes `dist/` in its unconditional
+cleanup step. The workflow contains no artifact-upload step.
+
+The smoke filename deliberately contains `UNSIGNED-DO-NOT-DISTRIBUTE`. Its
+DMG may contain only `UtterInk.app` and the `Applications -> /Applications`
+symlink. Inspection is read-only and rejects unexpected files, metadata,
+architectures, links, signatures, or additional mounted volumes. After exact
+candidate verification, archive creation, DMG creation, and inspection run
+from an isolated local clone detached at that commit; only the inspected bytes
+are atomically linked into the requested output directory. While
+`Config/ci-toolchain.json` remains incomplete, the real commands above stop
+before producing a package; the offline fake-tool tests do not waive that
+lock.
+
 ## Release-candidate evidence
 
 `Scripts/release/verify-candidate.sh` is the planned entry point for creating

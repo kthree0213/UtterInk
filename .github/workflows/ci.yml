@@ -26,7 +26,7 @@ jobs:
       - name: Verify workflow policy
         run: python3 Scripts/verify-workflow.py
       - name: Run source, history, test, and build checks
-        run: ./Scripts/ci-local.sh --ci
+        run: ./Scripts/ci-local.sh --ci --unsigned-package-smoke
       - name: Remove unsigned outputs
         if: always()
         run: ./Scripts/clean-distribution-output.sh
