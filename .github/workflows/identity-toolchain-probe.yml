@@ -34,7 +34,7 @@ jobs:
                   command,
                   check=True,
                   stdout=subprocess.PIPE,
-                  stderr=subprocess.STDOUT,
+                  stderr=subprocess.PIPE,
                   env=os.environ.copy(),
               )
               return result.stdout.decode("utf-8", errors="strict").strip()
