@@ -6,7 +6,6 @@ import html
 import os
 from pathlib import Path, PurePosixPath
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -715,16 +714,16 @@ class Validator:
         ):
             self.add("unsafe-git-environment", ".git")
             return
-        git = shutil.which("git")
-        if git is None:
-            self.add("tracked-path-scan-failed", ".git")
-            return
+        # GitHub's macOS runner puts Homebrew's symlinked Git ahead of the
+        # system tool in PATH. Use the fixed system binary so validation does
+        # not depend on ambient PATH ordering and still rejects tool swaps.
+        git = Path("/usr/bin/git")
         try:
             metadata = os.lstat(git)
         except OSError:
             self.add("tracked-path-scan-failed", ".git")
             return
-        if not stat.S_ISREG(metadata.st_mode):
+        if not stat.S_ISREG(metadata.st_mode) or not os.access(git, os.X_OK):
             self.add("tracked-path-scan-failed", ".git")
             return
         try:

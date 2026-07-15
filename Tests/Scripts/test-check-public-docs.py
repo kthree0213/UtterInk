@@ -238,8 +238,12 @@ def expect_failure(
         fail(f"{case} omitted its expected category, file, or line")
 
 
-def expect_pass(fixture: Path) -> None:
-    result = run_validator(fixture)
+def expect_pass(
+    fixture: Path,
+    *,
+    environment_overrides: dict[str, str] | None = None,
+) -> None:
+    result = run_validator(fixture, environment_overrides=environment_overrides)
     if result.returncode != 0 or result.stderr:
         fail("valid fixture was rejected")
     if result.stdout != "public documents valid\n":
@@ -251,6 +255,14 @@ with tempfile.TemporaryDirectory(prefix="utterink-public-docs-") as temporary:
 
     valid = make_fixture(temp_root, "valid")
     expect_pass(valid)
+
+    fixed_system_git = make_fixture(temp_root, "fixed-system-git")
+    empty_path = checked_path(fixed_system_git, ".empty-path")
+    empty_path.mkdir()
+    expect_pass(
+        fixed_system_git,
+        environment_overrides={"PATH": str(empty_path)},
+    )
 
     unexpected_argument = make_fixture(temp_root, "unexpected-argument")
     private_argument = "--root=/" + "Users/fixture-owner/private"
