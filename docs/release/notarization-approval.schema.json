@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UtterInk one-use Apple notarization upload approval",
+  "description": "Exact local approval for one upload attempt of one immutable signed pre-staple DMG. This record is local, ignored, owner-only, and consumed before network access.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "action",
+    "requestID",
+    "product",
+    "appleTeamID",
+    "preStapleDMGSHA256",
+    "candidateCommit",
+    "profileBindingReceiptSHA256",
+    "attempt",
+    "approvedAt",
+    "expiresAt"
+  ],
+  "properties": {
+    "action": {
+      "const": "apple-notarization-upload"
+    },
+    "requestID": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "The 32-byte CSPRNG nonce emitted by the immutable request summary."
+    },
+    "product": {
+      "const": "UtterInk"
+    },
+    "appleTeamID": {
+      "type": "string",
+      "pattern": "^[A-Z0-9]{10}$"
+    },
+    "preStapleDMGSHA256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "candidateCommit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "profileBindingReceiptSHA256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "attempt": {
+      "const": 1
+    },
+    "approvedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "description": "Validated procedurally as later than approvedAt, no more than 30 minutes later, and still in the future."
+    }
+  }
+}

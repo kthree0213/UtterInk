@@ -272,6 +272,88 @@ fake tools and fixture identities; they never select, inspect, or use a real
 certificate. These commands do not notarize, upload, staple, or publish any
 artifact.
 
+### One-use notarization approval gate
+
+Notarization is a separate external action. The guarded implementation never
+derives upload approval from this document, a design approval, a completed
+build, a stored profile, or an existing local file. Its automated tests use
+only fake Apple tools and never contact Apple or modify a real Keychain.
+
+A real notary profile must first be registered interactively under its own
+explicit approval. The registration command validates one exact Developer ID
+Application certificate, Team ID, private-key availability, and the profile
+with Apple, then writes only a salted, owner-only binding receipt under the
+ignored `.notary-profile-bindings/` directory. It never writes the profile
+name, Apple ID, password, API key, certificate body, or private key into that
+receipt. The future approved command shape is:
+
+```bash
+NOTARY_PROFILE='<local Keychain profile name>'
+PROFILE_RECEIPT='.notary-profile-bindings/v0.1.0.json'
+
+./Scripts/release/register-notary-profile.sh \
+  --identity "$SIGNING_IDENTITY" \
+  --team-id "$TEAM_ID" \
+  --keychain-profile "$NOTARY_PROFILE" \
+  --receipt "$PROFILE_RECEIPT"
+```
+
+Do not run that production command without separately approving its Keychain
+and network changes. Registration is a prerequisite, not notarization-upload
+approval.
+
+After the exact signed pre-staple DMG and retained signing evidence have been
+reviewed, create a local sanitized request summary. This step is read-only with
+respect to Apple and cannot create an approval:
+
+```bash
+REQUEST='.release-requests/v0.1.0.json'
+
+python3 Scripts/release/prepare-notarization-request.py prepare \
+  --candidate "$WORK/candidate" \
+  --apple-team-id "$TEAM_ID" \
+  --profile-binding-receipt "$PROFILE_RECEIPT" \
+  --output "$REQUEST"
+```
+
+The request binds an unpredictable request ID, candidate commit and tree,
+Apple Team ID, complete profile-receipt SHA-256, signed pre-staple DMG name,
+size and SHA-256, retained signature-verification evidence, and attempt `1`.
+It states that rejection or any changed byte requires a new request and a new
+approval. Request summaries remain owner-only and ignored under
+`.release-requests/`.
+
+Only after reviewing that summary may the user manually create an owner-only
+`0600` approval matching
+`docs/release/notarization-approval.schema.json`. The approval expires within
+30 minutes and binds the exact request ID, Team ID, candidate commit,
+pre-staple DMG SHA-256, profile-receipt SHA-256, and one attempt. No repository
+script turns a request into approval.
+
+Gate 2 approval authorizes one invocation only:
+
+```bash
+APPROVAL='.release-approvals/<request-id>.json'
+
+./Scripts/release/notarize-approved.sh \
+  --dmg "$WORK/candidate/UtterInk-0.1.0-arm64.dmg" \
+  --approval "$APPROVAL" \
+  --keychain-profile "$NOTARY_PROFILE"
+```
+
+Before any DMG upload, the wrapper uniquely locates and revalidates the request
+and profile receipt by their bound values, validates the exact DMG, and checks
+the local profile with `notarytool history`. That read-only profile check may
+contact Apple, but it does not upload the DMG or consume the approval. The
+wrapper then refreshes the clock and all pinned inputs before atomically
+consuming the approval immediately before the one permitted submission. A
+crash, rejection, timeout, or other failure after consumption never restores
+it and never triggers an automatic retry. Only an accepted submission with a
+completely reviewed log may proceed to stapling, post-staple signature and
+manifest verification, and the final DMG hash. Raw Apple responses and local
+profile state remain ignored, owner-only local evidence; none of these steps
+publishes or transfers the DMG.
+
 ## Immutable artifact rules
 
 - Build only from the exact clean candidate commit and committed

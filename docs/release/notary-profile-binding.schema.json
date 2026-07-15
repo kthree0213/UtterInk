@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UtterInk local notary profile binding receipt",
+  "description": "Sanitized owner-only proof that one hashed local notary profile was recently bound to the same Apple team and Developer ID certificate used to sign the candidate. Profile names and credentials are excluded.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "bindingNonce",
+    "appleTeamID",
+    "signingCertificateSHA256",
+    "profileNameSalt",
+    "profileNameHashSHA256",
+    "notarytoolVersion",
+    "validatedAt",
+    "expiresAt",
+    "selfSHA256"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "bindingNonce": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "appleTeamID": {
+      "type": "string",
+      "pattern": "^[A-Z0-9]{10}$"
+    },
+    "signingCertificateSHA256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "profileNameSalt": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "profileNameHashSHA256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "notarytoolVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "validatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "description": "Exactly 86400 seconds after validatedAt; validation also requires validatedAt <= now < expiresAt."
+    },
+    "selfSHA256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of compact, sorted-key UTF-8 JSON plus LF after removing this selfSHA256 field."
+    }
+  }
+}

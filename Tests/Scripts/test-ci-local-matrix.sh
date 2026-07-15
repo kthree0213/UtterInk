@@ -70,6 +70,8 @@ new_repository() {
     Tests/Scripts/test-build-candidate.sh \
     Tests/Scripts/test-sign-candidate.sh \
     Tests/Scripts/test-verify-signatures.sh \
+    Tests/Scripts/test-register-notary-profile.sh \
+    Tests/Scripts/test-notarize-approved.sh \
     Tests/Scripts/test-bootstrap-xcodegen.sh \
     Tests/Scripts/test-clean-distribution-output.sh \
     Tests/Scripts/test-package-unsigned-smoke.sh \
@@ -179,6 +181,9 @@ assert_required_gates() {
   assert_once "$log" local:Tests/Scripts/test-build-candidate.sh '' 'release candidate builder tests'
   assert_once "$log" local:Tests/Scripts/test-sign-candidate.sh '' 'release candidate signing tests'
   assert_once "$log" local:Tests/Scripts/test-verify-signatures.sh '' 'release signature verifier tests'
+  assert_once "$log" python3 'Tests/Scripts/test-notarization-gate.py' 'notarization approval gate tests'
+  assert_once "$log" local:Tests/Scripts/test-register-notary-profile.sh '' 'notary profile binding tests'
+  assert_once "$log" local:Tests/Scripts/test-notarize-approved.sh '' 'approved notarization wrapper tests'
   assert_once "$log" python3 'Tests/Scripts/test-verify-workflow.py' 'workflow policy tests'
   assert_once "$log" local:Tests/Scripts/test-bootstrap-xcodegen.sh '' 'locked XcodeGen bootstrap tests'
   assert_once "$log" local:Tests/Scripts/test-clean-distribution-output.sh '' 'distribution cleanup tests'
@@ -217,6 +222,21 @@ assert_required_gates() {
     local:Tests/Scripts/test-sign-candidate.sh '' \
     local:Tests/Scripts/test-verify-signatures.sh '' \
     'signature verifier tests after candidate signing tests'
+  assert_after \
+    "$log" \
+    local:Tests/Scripts/test-verify-signatures.sh '' \
+    python3 'Tests/Scripts/test-notarization-gate.py' \
+    'notarization gate tests after signature verifier tests'
+  assert_after \
+    "$log" \
+    python3 'Tests/Scripts/test-notarization-gate.py' \
+    local:Tests/Scripts/test-register-notary-profile.sh '' \
+    'notary profile tests after notarization gate tests'
+  assert_after \
+    "$log" \
+    local:Tests/Scripts/test-register-notary-profile.sh '' \
+    local:Tests/Scripts/test-notarize-approved.sh '' \
+    'approved notarization tests after notary profile tests'
 
   notice_scratch="$(awk -F '\t' '
     $1 == "local:Scripts/collect-third-party-notices.sh" { print $3 }
