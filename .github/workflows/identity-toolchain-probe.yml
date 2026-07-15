@@ -19,10 +19,57 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
-      - name: Bootstrap and verify locked toolchain
+      - name: Verify locked identity toolchain
         run: |
-          ./Scripts/bootstrap-xcodegen.sh
-          ./Scripts/verify-toolchain.sh --context ci
+          /usr/bin/python3 -I - Config/ci-toolchain.json <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+
+          def output(command: list[str]) -> str:
+              result = subprocess.run(
+                  command,
+                  check=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+                  env=os.environ.copy(),
+              )
+              return result.stdout.decode("utf-8", errors="strict").strip()
+
+
+          lock = json.loads(Path(sys.argv[1]).read_bytes())
+          runner = lock["runnerImage"]
+          xcode = lock["xcode"]
+          sdk = lock["sdk"]
+          swift = lock["swift"]
+          developer_dir = os.environ.get("DEVELOPER_DIR", "")
+          swift_tool = f"{developer_dir}/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift"
+
+          checks = {
+              "architecture": output(["/usr/bin/uname", "-m"]) == runner["architecture"],
+              "developerDir": developer_dir == xcode["developerDir"],
+              "imageOS": os.environ.get("ImageOS") == "macos26",
+              "imageVersion": os.environ.get("ImageVersion") == runner["imageVersion"],
+              "label": os.environ.get("UTTERINK_CI_RUNNER_LABEL") == runner["label"],
+              "osBuild": output(["/usr/bin/sw_vers", "-buildVersion"]) == runner["osBuild"],
+              "osVersion": output(["/usr/bin/sw_vers", "-productVersion"]) == runner["osVersion"],
+              "runnerArch": os.environ.get("RUNNER_ARCH") == "ARM64",
+              "sdkBuild": output(["/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-build-version"]) == sdk["build"],
+              "sdkVersion": output(["/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-version"]) == sdk["version"],
+              "xcode": output(["/usr/bin/xcodebuild", "-version"]) == f"Xcode {xcode['version']}\nBuild version {xcode['build']}",
+          }
+          swift_lines = output([swift_tool, "--version"]).splitlines()
+          checks["swift"] = bool(swift_lines) and swift_lines[0] == swift["version"]
+          expected_target = f"Target: {runner['architecture']}-apple-macosx{runner['osVersion'].split('.', 1)[0]}.0"
+          checks["swiftTarget"] = len(swift_lines) == 2 and swift_lines[1] == expected_target
+          failed = sorted(name for name, passed in checks.items() if not passed)
+          if failed:
+              raise SystemExit("locked identity toolchain mismatch: " + ",".join(failed))
+          print("locked identity toolchain verified")
+          PY
       - name: Compare locked identity regeneration
         run: |
           set -euo pipefail
