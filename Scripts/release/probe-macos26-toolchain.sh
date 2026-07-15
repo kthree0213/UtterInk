@@ -415,6 +415,7 @@ if ! /usr/bin/env -i "${XCODE_BUILD_ENV[@]}" "$XCODEBUILD" archive \
   -onlyUsePackageVersionsFromResolvedFile \
   ARCHS=arm64 \
   ONLY_ACTIVE_ARCH=NO \
+  OTHER_LDFLAGS=-Wl,-no_adhoc_codesign \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO \
   CODE_SIGN_IDENTITY= \
