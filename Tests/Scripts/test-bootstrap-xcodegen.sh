@@ -197,13 +197,15 @@ run_bootstrap() {
   set +e
   (
     cd "$FIXTURE"
+    # Keep the interpreter launchable on macOS 26 while retaining the fake
+    # Swift tool's downstream absence check above.
     env \
       PATH="$FIXTURE/HostilePath:/usr/bin:/bin:/usr/sbin:/sbin" \
       UTTERINK_TOOLCHAIN_TEST_MODE=1 \
       UTTERINK_TOOLCHAIN_TEST_TOOL_ROOT="$FIXTURE/FixtureTools" \
       UTTERINK_TOOLCHAIN_TEST_ARCHIVE="$ARCHIVE" \
       SWIFT_EXEC="$FIXTURE/HostilePath/swiftc" \
-      DYLD_INSERT_LIBRARIES="$FIXTURE/HostilePath/inject.dylib" \
+      DYLD_INSERT_LIBRARIES=/usr/lib/libSystem.B.dylib \
       ./Scripts/bootstrap-xcodegen.sh
   ) > "$TMP/stdout" 2> "$TMP/stderr"
   STATUS=$?

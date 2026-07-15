@@ -243,6 +243,7 @@ case "${1-}" in
   generate)
     [[ "$PWD" == */.release-work/.build-candidate.*/.transient/exact-source ]]
     [[ -n "${USER:-}" && "${LOGNAME:-}" == "$USER" ]]
+    [[ -z "${DYLD_INSERT_LIBRARIES+x}" ]]
     printf 'xcodegen-user\t%s\n' "$USER" >> "${UTTERINK_FIXTURE_LOG:?}"
     if [[ -f "${UTTERINK_FIXTURE_LOG:?}.mutate-project" ]]; then
       printf '// generator drift\n' >> UtterInk.xcodeproj/project.pbxproj
@@ -553,6 +554,10 @@ run_build() {
   set +e
   (
     cd "$repository"
+    # A nonexistent injected library aborts the shebang interpreter on
+    # macOS 26 before the script can sanitize its environment. A trusted
+    # dyld shared-cache library keeps the launch executable while retaining
+    # the downstream absence check above.
     /usr/bin/env \
       PATH="$repository/OrdinaryPath:/usr/bin:/bin:/usr/sbin:/sbin" \
       BASH_ENV="$BASH_ENV_CANARY" \
@@ -560,7 +565,7 @@ run_build() {
       CODE_SIGN_IDENTITY=ATTACKIDENTITY \
       PROVISIONING_PROFILE_SPECIFIER=ATTACKPROFILE \
       XCODE_XCCONFIG_FILE=/private/tmp/attack.xcconfig \
-      DYLD_INSERT_LIBRARIES=/private/tmp/attack.dylib \
+      DYLD_INSERT_LIBRARIES=/usr/lib/libSystem.B.dylib \
       UTTERINK_RELEASE_TEST_MODE=1 \
       UTTERINK_RELEASE_TEST_TOOL_ROOT="$repository/FixtureTools" \
       UTTERINK_FIXTURE_LOG="$FIXTURE_LOG" \
@@ -719,7 +724,7 @@ if /usr/bin/grep -q $'verify-arg\t--expected-origin' "$FIXTURE_LOG"; then
   fail 'originless build forwarded an implicit origin'
 fi
 [[ ! -e "$ORDINARY_LOG" && ! -e "$BASH_ENV_MARKER" ]] || fail 'hostile PATH or BASH_ENV was used'
-if /usr/bin/grep -Eq 'ATTACKTEAM|ATTACKIDENTITY|ATTACKPROFILE|attack[.]xcconfig|attack[.]dylib' "$FIXTURE_LOG"; then
+if /usr/bin/grep -Eq 'ATTACKTEAM|ATTACKIDENTITY|ATTACKPROFILE|attack[.]xcconfig|libSystem[.]B[.]dylib' "$FIXTURE_LOG"; then
   fail 'inherited signing or tool injection reached a subprocess'
 fi
 
