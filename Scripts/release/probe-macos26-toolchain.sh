@@ -75,6 +75,8 @@ trap cleanup EXIT
   "$TMP/public-git-home" \
   "$TMP/repository-home" \
   "$TMP/repository-tmp" \
+  "$TMP/repository-xdg-config" \
+  "$TMP/repository-xdg-cache" \
   "$TMP/DerivedData" \
   "$TMP/SourcePackages" \
   "$TMP/build-home" \
@@ -86,9 +88,11 @@ trap cleanup EXIT
 
 XCODEBUILD=/usr/bin/xcodebuild
 SWIFT="$DEVELOPER_DIR_LOCKED/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift"
-for tool in "$XCODEBUILD" /usr/bin/git /usr/bin/python3 /usr/bin/curl /usr/bin/file /usr/bin/lipo /usr/bin/otool; do
+for tool in "$XCODEBUILD" /usr/bin/git /usr/bin/python3 /usr/bin/curl /usr/bin/file /usr/bin/id /usr/bin/lipo /usr/bin/otool; do
   [[ -f "$tool" && -x "$tool" && ! -L "$tool" ]] || fail required-tool-unavailable
 done
+BUILD_USER="$(/usr/bin/id -un 2> "$TMP/id-error")" || fail build-user-unavailable
+[[ "$BUILD_USER" =~ ^[A-Za-z_][A-Za-z0-9_.-]{0,63}$ ]] || fail build-user-invalid
 /usr/bin/python3 -I - "$SWIFT" "$DEVELOPER_DIR_LOCKED" <<'PY' || fail swift-unavailable
 from pathlib import Path
 import os
@@ -349,7 +353,15 @@ if ! /usr/bin/env -i \
   PATH=/usr/bin:/bin:/usr/sbin:/sbin \
   LC_ALL=C \
   HOME="$TMP/repository-home" \
+  CFFIXED_USER_HOME="$TMP/repository-home" \
   TMPDIR="$TMP/repository-tmp" \
+  XDG_CONFIG_HOME="$TMP/repository-xdg-config" \
+  XDG_CACHE_HOME="$TMP/repository-xdg-cache" \
+  USER="$BUILD_USER" \
+  LOGNAME="$BUILD_USER" \
+  GIT_CONFIG_GLOBAL=/dev/null \
+  GIT_CONFIG_SYSTEM=/dev/null \
+  GIT_TERMINAL_PROMPT=0 \
   "$XCODEGEN_BINARY" generate \
   > "$TMP/project-generation-output" 2> "$TMP/project-generation-error"; then
   fail project-generation-failed
@@ -364,6 +376,8 @@ XCODE_BUILD_ENV=(
   TMPDIR="$TMP/build-tmp"
   XDG_CONFIG_HOME="$TMP/build-xdg-config"
   XDG_CACHE_HOME="$TMP/build-xdg-cache"
+  USER="$BUILD_USER"
+  LOGNAME="$BUILD_USER"
   DEVELOPER_DIR="$DEVELOPER_DIR_LOCKED"
   SWIFT_MODULECACHE_PATH="$TMP/build-swift-module-cache"
   CLANG_MODULE_CACHE_PATH="$TMP/build-clang-module-cache"
