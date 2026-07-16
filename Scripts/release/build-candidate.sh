@@ -1174,6 +1174,110 @@ run_late_test_hook() {
   fi
 }
 
+# Xcode 26.4 creates these ignored workspace-state directories beside a local
+# Swift package even when package checkouts, caches, HOME, and DerivedData are
+# redirected outside the source tree.  Create the exact empty layout before
+# the first source inventory so the expected tool behavior is frozen instead
+# of being reported as a source mutation.  Any later entry or metadata change
+# remains covered by the source inventories and the dedicated state token.
+SWIFTPM_STATE_PARENT="$EXACT_SOURCE/Packages/UtterInkKit"
+readonly SWIFTPM_STATE_PARENT
+
+swiftpm_state_token() {
+  local mode="$1"
+  $PYTHON -I - "$mode" "$SWIFTPM_STATE_PARENT" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import stat
+import sys
+
+
+mode, parent_path = sys.argv[1:3]
+directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+descriptors: list[int] = []
+
+
+def record(
+    name: str,
+    descriptor: int,
+    device: int,
+    required_mode: int | None,
+) -> list[object]:
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_dev != device
+        or metadata.st_uid != os.geteuid()
+        or (
+            stat.S_IMODE(metadata.st_mode) != required_mode
+            if required_mode is not None
+            else stat.S_IMODE(metadata.st_mode) & 0o022
+        )
+    ):
+        raise ValueError
+    return [
+        name,
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_uid,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    ]
+
+
+try:
+    if mode not in {"create", "verify"}:
+        raise ValueError
+    parent = os.open(parent_path, directory_flags)
+    descriptors.append(parent)
+    parent_metadata = os.fstat(parent)
+    if (
+        not stat.S_ISDIR(parent_metadata.st_mode)
+        or stat.S_ISLNK(parent_metadata.st_mode)
+        or parent_metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(parent_metadata.st_mode) & 0o022
+    ):
+        raise ValueError
+    if mode == "create":
+        os.mkdir(".swiftpm", 0o700, dir_fd=parent)
+    state = os.open(".swiftpm", directory_flags, dir_fd=parent)
+    descriptors.append(state)
+    records = [
+        record("..", parent, parent_metadata.st_dev, None),
+        record(".", state, parent_metadata.st_dev, 0o700),
+    ]
+    if mode == "create":
+        for name in ("configuration", "xcode"):
+            os.mkdir(name, 0o700, dir_fd=state)
+    if sorted(os.listdir(state)) != ["configuration", "xcode"]:
+        raise ValueError
+    for name in ("configuration", "xcode"):
+        child = os.open(name, directory_flags, dir_fd=state)
+        descriptors.append(child)
+        records.append(record(name, child, parent_metadata.st_dev, 0o700))
+        if os.listdir(child):
+            raise ValueError
+    payload = json.dumps(records, separators=(",", ":")).encode("utf-8")
+    print(hashlib.sha256(payload).hexdigest())
+except (OSError, UnicodeError, ValueError):
+    raise SystemExit(1)
+finally:
+    for descriptor in reversed(descriptors):
+        os.close(descriptor)
+PY
+}
+
+CREATED_SWIFTPM_STATE_TOKEN="$(swiftpm_state_token create)" || fail exact-source-mutated 31
+[[ "$CREATED_SWIFTPM_STATE_TOKEN" =~ ^[0-9a-f]{64}$ ]] || fail exact-source-mutated 31
+unset CREATED_SWIFTPM_STATE_TOKEN
+
 EXACT_RELEASE_WORK="$EXACT_SOURCE/.release-work/build"
 /bin/mkdir -p "$EXACT_SOURCE/.release-work"
 /bin/chmod 0700 "$EXACT_SOURCE/.release-work"
@@ -1406,6 +1510,9 @@ exact_source_inventory verify "$INITIAL_SOURCE_INVENTORY" "$INITIAL_SOURCE_TOKEN
 PACKAGE_HASH_AFTER="$($SHASUM -a 256 "$PACKAGE_RESOLUTION" | /usr/bin/awk 'NR == 1 { print $1}')" ||
   fail package-resolution-mismatch 31
 [[ "$PACKAGE_HASH_AFTER" == "$PACKAGE_HASH_BEFORE" ]] || fail package-resolution-mismatch 31
+SWIFTPM_STATE_TOKEN="$(swiftpm_state_token verify)" || fail exact-source-mutated 31
+[[ "$SWIFTPM_STATE_TOKEN" =~ ^[0-9a-f]{64}$ ]] || fail exact-source-mutated 31
+readonly SWIFTPM_STATE_TOKEN
 
 BUILD_USER="$(/usr/bin/id -un 2>/dev/null)" || fail generated-project-mismatch 32
 [[ "$BUILD_USER" =~ ^[A-Za-z0-9._-]+$ ]] || fail generated-project-mismatch 32
@@ -1433,6 +1540,8 @@ fi
 EXACT_STATUS="$($GIT -C "$EXACT_SOURCE" status --porcelain=v1 --untracked-files=all 2>/dev/null)" ||
   fail generated-project-mismatch 32
 [[ -z "$EXACT_STATUS" ]] || fail generated-project-mismatch 32
+CURRENT_SWIFTPM_STATE_TOKEN="$(swiftpm_state_token verify)" || fail exact-source-mutated 32
+[[ "$CURRENT_SWIFTPM_STATE_TOKEN" == "$SWIFTPM_STATE_TOKEN" ]] || fail exact-source-mutated 32
 FINAL_SOURCE_INVENTORY="$TRANSIENT/exact-source-inventory-final.json"
 FINAL_SOURCE_TOKEN="$(exact_source_inventory capture "$FINAL_SOURCE_INVENTORY")" ||
   fail exact-source-mutated 32

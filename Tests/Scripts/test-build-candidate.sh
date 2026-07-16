@@ -42,6 +42,7 @@ printf 'printf loaded > %q\n' "$BASH_ENV_MARKER" > "$BASH_ENV_CANARY"
 /usr/bin/printf '%s\n' \
   '/Tools/bin/' \
   '/.release-work/' \
+  '.swiftpm/' \
   '/.fixture-*' \
   '*.xcarchive' > "$BASE/.gitignore"
 /usr/bin/printf 'committed-source\n' > "$BASE/Config/source-sentinel"
@@ -258,6 +259,15 @@ case "${1-}" in
     if [[ -f "${UTTERINK_FIXTURE_LOG:?}.mutate-project" ]]; then
       printf '// generator drift\n' >> UtterInk.xcodeproj/project.pbxproj
     fi
+    if [[ -f "${UTTERINK_FIXTURE_LOG:?}.swiftpm-xcodegen-inject" ]]; then
+      printf 'unexpected generator state\n' \
+        > Packages/UtterInkKit/.swiftpm/configuration/registries.json
+    fi
+    if [[ -f "${UTTERINK_FIXTURE_LOG:?}.swiftpm-xcodegen-write-delete" ]]; then
+      printf 'transient generator state\n' \
+        > Packages/UtterInkKit/.swiftpm/xcode/transient
+      /bin/rm Packages/UtterInkKit/.swiftpm/xcode/transient
+    fi
     ;;
   *) exit 64 ;;
 esac
@@ -284,6 +294,24 @@ printf 'boundary-source\t%s\n' "$(/bin/cat Config/source-sentinel)" >> "${UTTERI
 } >> "${UTTERINK_FIXTURE_LOG:?}"
 
 if [[ " $* " == *' -resolvePackageDependencies '* ]]; then
+  swiftpm_state=Packages/UtterInkKit/.swiftpm
+  if [[ -d "$swiftpm_state" && ! -L "$swiftpm_state" &&
+    -d "$swiftpm_state/configuration" && ! -L "$swiftpm_state/configuration" &&
+    -d "$swiftpm_state/xcode" && ! -L "$swiftpm_state/xcode" &&
+    "$(/usr/bin/stat -f '%Lp' "$swiftpm_state")" == 700 &&
+    "$(/usr/bin/stat -f '%Lp' "$swiftpm_state/configuration")" == 700 &&
+    "$(/usr/bin/stat -f '%Lp' "$swiftpm_state/xcode")" == 700 ]]; then
+    printf 'swiftpm-state\tprecreated\n' >> "${UTTERINK_FIXTURE_LOG:?}"
+  else
+    printf 'swiftpm-state\tcreated-by-xcode\n' >> "${UTTERINK_FIXTURE_LOG:?}"
+  fi
+  /bin/mkdir -p "$swiftpm_state/configuration" "$swiftpm_state/xcode"
+  if [[ -f "${UTTERINK_FIXTURE_LOG:?}.swiftpm-extra-state" ]]; then
+    /usr/bin/printf 'unexpected state\n' > "$swiftpm_state/configuration/injected"
+  fi
+  if [[ -f "${UTTERINK_FIXTURE_LOG:?}.swiftpm-mode-mutation" ]]; then
+    /bin/chmod 0777 "$swiftpm_state/xcode"
+  fi
   if [[ -f "${UTTERINK_FIXTURE_LOG:?}.mutate-lock" ]]; then
     printf 'changed\n' >> Packages/UtterInkKit/Package.resolved
   fi
@@ -761,6 +789,7 @@ for expected in \
   'third-party-notices' \
   $'xcodegen\tgenerate' \
   $'xcodebuild\t-resolvePackageDependencies' \
+  $'swiftpm-state\tprecreated' \
   $'xcodebuild\t-project\tUtterInk.xcodeproj\t-scheme\tUtterInk\t-configuration\tRelease\t-showBuildSettings' \
   $'xcodebuild\tarchive\t-project\tUtterInk.xcodeproj\t-scheme\tUtterInk\t-configuration\tRelease\t-destination\tgeneric/platform=macOS' \
   $'ARCHS=arm64\tONLY_ACTIVE_ARCH=NO\tOTHER_LDFLAGS=-Wl,-no_adhoc_codesign\tCODE_SIGNING_ALLOWED=NO\tCODE_SIGNING_REQUIRED=NO\tCODE_SIGN_IDENTITY=\tDEVELOPMENT_TEAM=\tPROVISIONING_PROFILE_SPECIFIER='; do
@@ -916,6 +945,26 @@ value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 if value.get("source", {}).get("commit") != sys.argv[2] or value.get("checks", {}).get("history") is not True:
     raise SystemExit(1)
 PY
+
+for scenario in swiftpm-extra-state swiftpm-mode-mutation; do
+  /usr/bin/touch "$FIXTURE_LOG.$scenario"
+  run_build "$ORIGIN_REPO" --commit "$ORIGIN_COMMIT" --work ".release-work/failure-$scenario" --expected-origin 'https://example.invalid/UtterInk.git'
+  /bin/rm -f "$FIXTURE_LOG.$scenario"
+  [[ "$BUILD_STATUS" -eq 31 ]] || fail "$scenario did not fail at the exact-source inventory boundary"
+  [[ "$(/bin/cat "$STDERR")" == 'build candidate error: exact-source-mutated' ]] ||
+    fail "$scenario did not emit the stable exact-source mutation diagnostic"
+  assert_no_partial "$ORIGIN_REPO" ".release-work/failure-$scenario"
+done
+
+for scenario in swiftpm-xcodegen-inject swiftpm-xcodegen-write-delete; do
+  /usr/bin/touch "$FIXTURE_LOG.$scenario"
+  run_build "$ORIGIN_REPO" --commit "$ORIGIN_COMMIT" --work ".release-work/failure-$scenario" --expected-origin 'https://example.invalid/UtterInk.git'
+  /bin/rm -f "$FIXTURE_LOG.$scenario"
+  [[ "$BUILD_STATUS" -eq 32 ]] || fail "$scenario did not fail before the final inventory"
+  [[ "$(/bin/cat "$STDERR")" == 'build candidate error: exact-source-mutated' ]] ||
+    fail "$scenario did not emit the stable exact-source mutation diagnostic"
+  assert_no_partial "$ORIGIN_REPO" ".release-work/failure-$scenario"
+done
 
 for scenario in \
   hardened-mismatch \
