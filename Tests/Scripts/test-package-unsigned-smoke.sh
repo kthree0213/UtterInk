@@ -29,6 +29,12 @@ for publisher in "$CREATE_DMG" "$PACKAGER"; do
   fi
   /usr/bin/grep -Fq 'def remove_contents(descriptor: int, root_device: int)' "$publisher" ||
     fail "$(/usr/bin/basename "$publisher") does not use descriptor-rooted WORK cleanup"
+  /usr/bin/grep -Fq 'def safe_generated_directory(metadata: os.stat_result, root_device: int)' "$publisher" ||
+    fail "$(/usr/bin/basename "$publisher") does not distinguish generated cleanup descendants"
+  /usr/bin/grep -Fq 'def safe_private_directory(metadata: os.stat_result, root_device: int)' "$publisher" ||
+    fail "$(/usr/bin/basename "$publisher") does not keep the WORK boundary private"
+  /usr/bin/grep -Fq 'before.st_dev != root_device or before.st_uid != os.geteuid()' "$publisher" ||
+    fail "$(/usr/bin/basename "$publisher") does not validate every cleanup entry"
   /usr/bin/grep -Fq 'safe_remove_work "$WORK" "$WORK_DEVICE" "$WORK_INODE" || fail work-cleanup-failed' "$publisher" ||
     fail "$(/usr/bin/basename "$publisher") does not require WORK cleanup before success evidence"
   /usr/bin/grep -Fq 'and metadata.st_dev == root_device' "$publisher" ||
@@ -108,6 +114,13 @@ done
 [[ -n "$archive" ]]
 app="$archive/Products/Applications/UtterInk.app"
 /bin/mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+# SwiftPM creates these private-work descendants as mode 0777 on current
+# Xcode releases. The enclosing packaging WORK remains mode 0700, so cleanup
+# must validate ownership/device/identity without rejecting the generated mode.
+/bin/mkdir -p "$PWD/.release-work/SourcePackages/checkouts/fixture/.swiftpm/xcode"
+/bin/chmod 0777 \
+  "$PWD/.release-work/SourcePackages/checkouts/fixture/.swiftpm" \
+  "$PWD/.release-work/SourcePackages/checkouts/fixture/.swiftpm/xcode"
 printf 'fixture Mach-O bytes\n' > "$app/Contents/MacOS/UtterInk"
 /bin/chmod 0755 "$app/Contents/MacOS/UtterInk"
 if [[ -f "${UTTERINK_FIXTURE_LOG:?}.source-mode-0644" ]]; then
@@ -173,6 +186,8 @@ source_path="${1:?}"
 destination="${2:?}"
 /bin/mkdir -p "$(/usr/bin/dirname "$destination")"
 /bin/cp -Rp "$source_path" "$destination"
+cleanup_canary="$(/usr/bin/dirname "$(/usr/bin/dirname "$destination")")/generated-writable-directory"
+/bin/mkdir -m 0777 "$cleanup_canary"
 if [[ -f "${UTTERINK_FIXTURE_LOG:?}.strip-mode" ]]; then
   /bin/chmod 0644 "$destination/Contents/MacOS/UtterInk"
 fi

@@ -147,11 +147,17 @@ def identity(metadata: os.stat_result) -> tuple[int, int]:
     return metadata.st_dev, metadata.st_ino
 
 
-def safe_directory(metadata: os.stat_result, root_device: int) -> bool:
+def safe_generated_directory(metadata: os.stat_result, root_device: int) -> bool:
     return (
         stat.S_ISDIR(metadata.st_mode)
         and metadata.st_dev == root_device
         and metadata.st_uid == os.geteuid()
+    )
+
+
+def safe_private_directory(metadata: os.stat_result, root_device: int) -> bool:
+    return (
+        safe_generated_directory(metadata, root_device)
         and metadata.st_mode & 0o022 == 0
     )
 
@@ -161,11 +167,16 @@ def remove_contents(descriptor: int, root_device: int) -> None:
         if not name or name in {".", ".."} or "/" in name:
             raise CleanupError
         before = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        if before.st_dev != root_device or before.st_uid != os.geteuid():
+            raise CleanupError
         if stat.S_ISDIR(before.st_mode):
             child_fd = os.open(name, directory_flags, dir_fd=descriptor)
             try:
                 opened = os.fstat(child_fd)
-                if identity(opened) != identity(before) or not safe_directory(opened, root_device):
+                if (
+                    identity(opened) != identity(before)
+                    or not safe_generated_directory(opened, root_device)
+                ):
                     raise CleanupError
                 remove_contents(child_fd, root_device)
                 current = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
@@ -192,17 +203,17 @@ if (
 try:
     root_fd = os.open(root_path, directory_flags)
     root_metadata = os.fstat(root_fd)
-    if not safe_directory(root_metadata, root_metadata.st_dev):
+    if not safe_private_directory(root_metadata, root_metadata.st_dev):
         raise CleanupError
     release_fd = os.open(".release-work", directory_flags, dir_fd=root_fd)
     release_metadata = os.fstat(release_fd)
-    if not safe_directory(release_metadata, root_metadata.st_dev):
+    if not safe_private_directory(release_metadata, root_metadata.st_dev):
         raise CleanupError
     work_fd = os.open(relative.parts[1], directory_flags, dir_fd=release_fd)
     work_metadata = os.fstat(work_fd)
     if (
         identity(work_metadata) != expected_identity
-        or not safe_directory(work_metadata, root_metadata.st_dev)
+        or not safe_private_directory(work_metadata, root_metadata.st_dev)
     ):
         raise CleanupError
     remove_contents(work_fd, root_metadata.st_dev)
