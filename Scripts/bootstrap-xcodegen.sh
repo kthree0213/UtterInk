@@ -8,12 +8,7 @@ unset DEVELOPER_DIR SDKROOT TOOLCHAINS XCODE_DEFAULT_TOOLCHAIN_OVERRIDE
 umask 077
 
 fail() {
-  if [[ "$1" == canonical-build-root-busy && -n "${CANONICAL_ROOT:-}" && -n "${CANONICAL_LOCK:-}" ]]; then
-    printf 'XcodeGen bootstrap error: canonical-build-root-busy; after confirming no bootstrap is running, inspect the exact stale paths %s and %s\n' \
-      "$CANONICAL_ROOT" "$CANONICAL_LOCK" >&2
-  else
-    printf 'XcodeGen bootstrap error: %s\n' "$1" >&2
-  fi
+  printf 'XcodeGen bootstrap error: %s\n' "$1" >&2
   exit "${2:-1}"
 }
 
@@ -34,10 +29,6 @@ esac
 TMP="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/utterink-xcodegen.XXXXXX")"
 INSTALL_BINARY_TEMP=''
 INSTALL_RESOURCE_TEMP=''
-CANONICAL_ROOT=''
-CANONICAL_LOCK=''
-CANONICAL_OWNED=0
-CANONICAL_LOCK_OWNED=0
 cleanup() {
   local status=$?
   trap - EXIT
@@ -46,12 +37,6 @@ cleanup() {
   fi
   if [[ -n "$INSTALL_RESOURCE_TEMP" ]]; then
     /bin/rm -rf "$INSTALL_RESOURCE_TEMP"
-  fi
-  if [[ "$CANONICAL_OWNED" -eq 1 && "$CANONICAL_ROOT" == /private/tmp/utterink-xcodegen-bootstrap-* && ! -L "$CANONICAL_ROOT" ]]; then
-    /bin/rm -rf "$CANONICAL_ROOT"
-  fi
-  if [[ "$CANONICAL_LOCK_OWNED" -eq 1 && "$CANONICAL_LOCK" == /private/tmp/utterink-xcodegen-bootstrap-*.lock && ! -L "$CANONICAL_LOCK" ]]; then
-    /bin/rmdir "$CANONICAL_LOCK" 2>/dev/null || :
   fi
   /bin/rm -rf "$TMP"
   exit "$status"
@@ -148,7 +133,7 @@ if xcodegen["version"] != "2.45.4":
 source_commit = locked_string(xcodegen["sourceCommit"], r"[0-9a-f]{40}")
 if set(source_commit) == {"0"}:
     abort()
-archive_url = f"https://github.com/yonaskolb/XcodeGen/archive/{source_commit}.tar.gz"
+archive_url = f"https://github.com/yonaskolb/XcodeGen/releases/download/{xcodegen['version']}/xcodegen.zip"
 if xcodegen["archiveURL"] != archive_url:
     abort()
 archive_sha = locked_string(xcodegen["archiveSHA256"], r"[0-9a-f]{64}")
@@ -157,7 +142,11 @@ setting_presets_sha = locked_string(xcodegen["settingPresetsSHA256"], r"[0-9a-f]
 if not test_mode:
     if source_commit != "8d3d3476a69ae3e5d68e1adccc701c410c05eb36":
         abort()
-    if archive_sha != "afe64a4e9b14a91a113ae7bd2c156666ee9be51dfa84c9a6e89c89797e5d871c":
+    if archive_sha != "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef":
+        abort()
+    if binary_sha != "6aa2b4da95304b343bea12890c59f9655aa428c08b351d57d592cfab4e88a9f1":
+        abort()
+    if setting_presets_sha != "9f8dd5292ab7723927b40e836d651775e3261a30f0c05179b3b8ca7340404069":
         abort()
 
 encoded_tag = release_tag.replace("/", "%2F")
@@ -173,8 +162,6 @@ fields = {
     "archive-url": archive_url,
     "archive-sha": archive_sha,
     "binary-sha": binary_sha,
-    "developer-dir": xcode["developerDir"],
-    "source-commit": source_commit,
     "setting-presets-sha": setting_presets_sha,
     "version": xcodegen["version"],
 }
@@ -188,8 +175,6 @@ fi
 ARCHIVE_URL="$(/bin/cat "$TMP/lock/archive-url")"
 ARCHIVE_SHA="$(/bin/cat "$TMP/lock/archive-sha")"
 BINARY_SHA="$(/bin/cat "$TMP/lock/binary-sha")"
-DEVELOPER_DIR_LOCKED="$(/bin/cat "$TMP/lock/developer-dir")"
-SOURCE_COMMIT="$(/bin/cat "$TMP/lock/source-commit")"
 SETTING_PRESETS_SHA="$(/bin/cat "$TMP/lock/setting-presets-sha")"
 XCODEGEN_VERSION="$(/bin/cat "$TMP/lock/version")"
 
@@ -208,30 +193,12 @@ if [[ "$TEST_MODE" -eq 1 ]]; then
   [[ "$TOOL_ROOT" == "$ROOT/FixtureTools" ]] || fail invalid-test-tool-root
   [[ -f "$TOOL_ROOT/.utterink-toolchain-test-fixture" && ! -L "$TOOL_ROOT/.utterink-toolchain-test-fixture" ]] || fail invalid-test-tool-root
   [[ "$(/bin/cat "$TOOL_ROOT/.utterink-toolchain-test-fixture")" == utterink-offline-toolchain-fixture-v1 ]] || fail invalid-test-tool-root
-  case "$TEST_ARCHIVE" in "$ROOT"/FixtureSource/*.tar.gz) ;; *) fail invalid-test-source ;; esac
-  SWIFT="$TOOL_ROOT/swift"
-  [[ -f "$SWIFT" && -x "$SWIFT" && ! -L "$SWIFT" ]] || fail swift-unavailable
+  case "$TEST_ARCHIVE" in "$ROOT"/FixtureArchive/*.zip) ;; *) fail invalid-test-source ;; esac
+  LIPO="$TOOL_ROOT/lipo"
 else
-  SWIFT="$DEVELOPER_DIR_LOCKED/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift"
-  [[ -x "$SWIFT" ]] || fail swift-unavailable
-  if ! /usr/bin/python3 -I - "$SWIFT" "$DEVELOPER_DIR_LOCKED" <<'PY' >/dev/null 2>&1
-from pathlib import Path
-import os
-import sys
-
-try:
-    tool = Path(sys.argv[1]).resolve(strict=True)
-    developer = Path(sys.argv[2]).resolve(strict=True)
-    tool.relative_to(developer)
-except (OSError, ValueError):
-    raise SystemExit(1)
-if not tool.is_file() or not os.access(tool, os.X_OK):
-    raise SystemExit(1)
-PY
-  then
-    fail swift-unavailable
-  fi
+  LIPO=/usr/bin/lipo
 fi
+[[ -f "$LIPO" && -x "$LIPO" && ! -L "$LIPO" ]] || fail architecture-tool-unavailable
 
 TOOLS_ROOT="$ROOT/Tools"
 TOOLS_BIN="$TOOLS_ROOT/bin"
@@ -364,17 +331,25 @@ PY
   setting_presets_tree_hash "$1/SettingPresets"
 }
 
+binary_architectures() {
+  /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C \
+    "$LIPO" -archs "$1" 2>/dev/null
+}
+
 if [[ -f "$DESTINATION" && -x "$DESTINATION" && ! -L "$DESTINATION" ]]; then
   EXISTING_SHA="$(/usr/bin/shasum -a 256 "$DESTINATION" | /usr/bin/awk 'NR == 1 { print $1 }')" || fail repository-xcodegen-unreadable
   if [[ "$EXISTING_SHA" == "$BINARY_SHA" ]]; then
     EXISTING_SETTING_PRESETS_SHA="$(companion_bundle_tree_hash "$DESTINATION_BUNDLE" 2>/dev/null)" ||
       EXISTING_SETTING_PRESETS_SHA=''
     if [[ "$EXISTING_SETTING_PRESETS_SHA" == "$SETTING_PRESETS_SHA" ]]; then
-      EXISTING_VERSION="$(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C HOME="$TMP" \
-        "$DESTINATION" --version 2>/dev/null)" || EXISTING_VERSION=''
-      if [[ "$EXISTING_VERSION" == "Version: $XCODEGEN_VERSION" ]]; then
-        printf 'locked XcodeGen already installed: Tools/bin/xcodegen + Tools/bin/%s/SettingPresets\n' "$RESOURCE_BUNDLE_NAME"
-        exit 0
+      EXISTING_ARCHITECTURES="$(binary_architectures "$DESTINATION")" || EXISTING_ARCHITECTURES=''
+      if [[ "$EXISTING_ARCHITECTURES" == 'x86_64 arm64' ]]; then
+        EXISTING_VERSION="$(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C HOME="$TMP" \
+          "$DESTINATION" --version 2>/dev/null)" || EXISTING_VERSION=''
+        if [[ "$EXISTING_VERSION" == "Version: $XCODEGEN_VERSION" ]]; then
+          printf 'locked XcodeGen already installed: Tools/bin/xcodegen + Tools/bin/%s/SettingPresets\n' "$RESOURCE_BUNDLE_NAME"
+          exit 0
+        fi
       fi
     fi
   fi
@@ -382,53 +357,9 @@ elif [[ -e "$DESTINATION" ]]; then
   fail unsafe-install-path
 fi
 
-[[ -d /private/tmp && ! -L /private/tmp ]] || fail canonical-build-root-unavailable
-# XcodeGen 2.45.4 uses #file at runtime, and Swift keeps that absolute source
-# path in the Mach-O even with prefix-map flags. A commit-derived canonical
-# root is therefore part of the reproducible binary-hash contract; the lock
-# prevents two builds from sharing it, and the trap removes only roots created
-# by this process.
-CANONICAL_ROOT="/private/tmp/utterink-xcodegen-bootstrap-$SOURCE_COMMIT"
-CANONICAL_LOCK="$CANONICAL_ROOT.lock"
-if ! /bin/mkdir -m 0700 "$CANONICAL_LOCK" 2>/dev/null; then
-  fail canonical-build-root-busy
-fi
-CANONICAL_LOCK_OWNED=1
-[[ ! -e "$CANONICAL_ROOT" && ! -L "$CANONICAL_ROOT" ]] || fail canonical-build-root-busy
-/bin/mkdir -m 0700 "$CANONICAL_ROOT" || fail canonical-build-root-unavailable
-CANONICAL_OWNED=1
-/bin/mkdir -m 0700 \
-  "$CANONICAL_ROOT/source" \
-  "$CANONICAL_ROOT/build" \
-  "$CANONICAL_ROOT/home" \
-  "$CANONICAL_ROOT/tmp" \
-  "$CANONICAL_ROOT/swift-module-cache" \
-  "$CANONICAL_ROOT/clang-module-cache" \
-  "$CANONICAL_ROOT/swiftpm-cache" \
-  "$CANONICAL_ROOT/swiftpm-config" \
-  "$CANONICAL_ROOT/swiftpm-security" || fail canonical-build-root-unavailable
-SOURCE_MAP="$CANONICAL_ROOT=/__UTTERINK_XCODEGEN_BUILD__"
-SWIFT_BUILD_ENV=(
-  PATH=/usr/bin:/bin:/usr/sbin:/sbin
-  LC_ALL=C
-  HOME="$CANONICAL_ROOT/home"
-  XDG_CONFIG_HOME="$CANONICAL_ROOT/home"
-  XDG_CACHE_HOME="$CANONICAL_ROOT/home/cache"
-  TMPDIR="$CANONICAL_ROOT/tmp"
-  DEVELOPER_DIR="$DEVELOPER_DIR_LOCKED"
-  SWIFT_MODULECACHE_PATH="$CANONICAL_ROOT/swift-module-cache"
-  CLANG_MODULE_CACHE_PATH="$CANONICAL_ROOT/clang-module-cache"
-  SOURCE_DATE_EPOCH=0
-  ZERO_AR_DATE=1
-  GIT_CONFIG_GLOBAL=/dev/null
-  GIT_CONFIG_SYSTEM=/dev/null
-  GIT_TERMINAL_PROMPT=0
-  GIT_NO_LAZY_FETCH=1
-)
-
-ARCHIVE_FILE="$TMP/XcodeGen.tar.gz"
+ARCHIVE_FILE="$TMP/xcodegen.zip"
 if [[ "$TEST_MODE" -eq 1 ]]; then
-  /bin/cp "$TEST_ARCHIVE" "$ARCHIVE_FILE" || fail source-copy-failed
+  /bin/cp "$TEST_ARCHIVE" "$ARCHIVE_FILE" || fail archive-copy-failed
 else
   /usr/bin/curl \
     --disable \
@@ -439,135 +370,213 @@ else
     --silent \
     --show-error \
     --output "$ARCHIVE_FILE" \
-    "$ARCHIVE_URL" || fail source-download-failed
+    "$ARCHIVE_URL" || fail archive-download-failed
 fi
 
 ACTUAL_ARCHIVE_SHA="$(/usr/bin/shasum -a 256 "$ARCHIVE_FILE" | /usr/bin/awk 'NR == 1 { print $1 }')" || fail archive-hash-unavailable
 [[ "$ACTUAL_ARCHIVE_SHA" == "$ARCHIVE_SHA" ]] || fail archive-hash-mismatch
 
-if ! /usr/bin/python3 -I - "$ARCHIVE_FILE" "XcodeGen-$SOURCE_COMMIT" <<'PY'
+EXTRACTED="$TMP/extracted"
+if ! /usr/bin/python3 -I - "$ARCHIVE_FILE" "$EXTRACTED" <<'PY'
 from __future__ import annotations
 
-from pathlib import PurePosixPath
+import os
+from pathlib import Path, PurePosixPath
+import stat
 import sys
-import tarfile
+import unicodedata
+import zipfile
 
 
-def normalized(path: PurePosixPath) -> PurePosixPath:
-    parts: list[str] = []
-    for part in path.parts:
-        if part in ("", "."):
-            continue
-        if part == "..":
-            if not parts:
-                raise ValueError
-            parts.pop()
-        else:
-            parts.append(part)
-    return PurePosixPath(*parts)
+ARCHIVE_PATH = Path(sys.argv[1])
+OUTPUT = Path(sys.argv[2])
+BINARY = "xcodegen/bin/xcodegen"
+PRESETS = "xcodegen/share/xcodegen/SettingPresets"
+FIXED_DIRECTORIES = {
+    "xcodegen",
+    "xcodegen/bin",
+    "xcodegen/share",
+    "xcodegen/share/xcodegen",
+    PRESETS,
+}
+FIXED_FILES = {
+    "xcodegen/LICENSE",
+    BINARY,
+    "xcodegen/install.sh",
+}
+FIXED = FIXED_DIRECTORIES | FIXED_FILES
+MAX_ENTRIES = 128
+MAX_TOTAL_SIZE = 32 * 1024 * 1024
+MAX_BINARY_SIZE = 24 * 1024 * 1024
+MAX_RESOURCE_SIZE = 1024 * 1024
 
 
-archive_path, expected_root = sys.argv[1:]
+def abort() -> None:
+    raise ValueError
+
+
+def normalized_name(info: zipfile.ZipInfo) -> str:
+    name = info.filename
+    if (
+        not name
+        or len(name) > 512
+        or "\x00" in name
+        or "\\" in name
+        or name.startswith("/")
+        or unicodedata.normalize("NFC", name) != name
+    ):
+        abort()
+    try:
+        name.encode("ascii", errors="strict")
+    except UnicodeError:
+        abort()
+    raw = name[:-1] if name.endswith("/") else name
+    parts = raw.split("/")
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        abort()
+    path = PurePosixPath(*parts).as_posix()
+    if info.is_dir() != name.endswith("/"):
+        abort()
+    return path
+
+
+def unix_type(info: zipfile.ZipInfo) -> int:
+    if info.create_system != 3:
+        abort()
+    mode = (info.external_attr >> 16) & 0xFFFF
+    if mode & 0o022:
+        abort()
+    kind = stat.S_IFMT(mode)
+    expected = stat.S_IFDIR if info.is_dir() else stat.S_IFREG
+    if kind != expected:
+        abort()
+    if not info.is_dir() and info.filename == BINARY and not mode & 0o111:
+        abort()
+    return mode
+
+
+def write_member(archive: zipfile.ZipFile, info: zipfile.ZipInfo, target: Path, mode: int) -> None:
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(target, flags, mode)
+    written = 0
+    try:
+        with archive.open(info, "r") as source:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > info.file_size:
+                    abort()
+                view = memoryview(chunk)
+                while view:
+                    count = os.write(descriptor, view)
+                    if count <= 0:
+                        abort()
+                    view = view[count:]
+        if written != info.file_size:
+            abort()
+    finally:
+        os.close(descriptor)
+
+
 try:
-    with tarfile.open(archive_path, mode="r:gz") as archive:
-        members = archive.getmembers()
-        if not members or len(members) > 100_000:
-            raise ValueError
-        total_size = 0
+    with zipfile.ZipFile(ARCHIVE_PATH, mode="r") as archive:
+        if archive.comment:
+            abort()
+        entries = archive.infolist()
+        if not entries or len(entries) > MAX_ENTRIES:
+            abort()
+        records: list[tuple[zipfile.ZipInfo, str]] = []
         names: set[str] = set()
-        for member in members:
-            if "\x00" in member.name or member.name.startswith("/"):
-                raise ValueError
-            raw_member_path = PurePosixPath(member.name)
-            if ".." in raw_member_path.parts:
-                raise ValueError
-            member_path = normalized(raw_member_path)
-            normalized_name = member_path.as_posix()
-            if normalized_name in names:
-                raise ValueError
-            names.add(normalized_name)
-            if not member_path.parts or member_path.parts[0] != expected_root:
-                raise ValueError
-            if not (member.isdir() or member.isfile() or member.issym() or member.islnk()):
-                raise ValueError
-            if member.size < 0 or member.size > 128 * 1024 * 1024:
-                raise ValueError
-            total_size += member.size
-            if total_size > 512 * 1024 * 1024:
-                raise ValueError
-            if member.issym() or member.islnk():
-                if not member.linkname or member.linkname.startswith("/") or "\x00" in member.linkname:
-                    raise ValueError
-                if member.issym():
-                    target = normalized(member_path.parent / PurePosixPath(member.linkname))
+        folded_names: set[str] = set()
+        total_size = 0
+        preset_file_count = 0
+        for info in entries:
+            name = normalized_name(info)
+            folded = name.casefold()
+            if name in names or folded in folded_names:
+                abort()
+            names.add(name)
+            folded_names.add(folded)
+            unix_type(info)
+            if info.flag_bits & 0x1:
+                abort()
+            if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                abort()
+            if info.file_size < 0 or info.compress_size < 0:
+                abort()
+            if name not in FIXED and not name.startswith(PRESETS + "/"):
+                abort()
+            if name in FIXED_DIRECTORIES and not info.is_dir():
+                abort()
+            if name in FIXED_FILES and info.is_dir():
+                abort()
+            if info.is_dir():
+                if info.file_size != 0:
+                    abort()
+            else:
+                limit = MAX_BINARY_SIZE if name == BINARY else MAX_RESOURCE_SIZE
+                if info.file_size > limit:
+                    abort()
+                total_size += info.file_size
+                if total_size > MAX_TOTAL_SIZE:
+                    abort()
+                if name.startswith(PRESETS + "/"):
+                    preset_file_count += 1
+            records.append((info, name))
+        if not FIXED.issubset(names) or preset_file_count == 0:
+            abort()
+
+        OUTPUT.mkdir(mode=0o700)
+        settings_output = OUTPUT / "SettingPresets"
+        settings_output.mkdir(mode=0o700)
+        for info, name in records:
+            if name == BINARY:
+                write_member(archive, info, OUTPUT / "xcodegen", 0o700)
+            elif name.startswith(PRESETS + "/"):
+                relative = PurePosixPath(name).relative_to(PRESETS)
+                target = settings_output.joinpath(*relative.parts)
+                if info.is_dir():
+                    target.mkdir(mode=0o700, parents=True, exist_ok=False)
                 else:
-                    target = normalized(PurePosixPath(member.linkname))
-                if not target.parts or target.parts[0] != expected_root:
-                    raise ValueError
-except (OSError, tarfile.TarError, ValueError):
+                    write_member(archive, info, target, 0o600)
+except (
+    OSError,
+    RuntimeError,
+    UnicodeError,
+    ValueError,
+    zipfile.BadZipFile,
+    zipfile.LargeZipFile,
+):
+    raise SystemExit(1)
+
+if not (OUTPUT / "xcodegen").is_file() or not settings_output.is_dir():
     raise SystemExit(1)
 PY
 then
-  fail unsafe-source-archive
+  fail unsafe-release-archive
 fi
 
-COPYFILE_DISABLE=1 /usr/bin/tar -xzf "$ARCHIVE_FILE" -C "$CANONICAL_ROOT/source" || fail source-extraction-failed
-SOURCE_ROOT="$CANONICAL_ROOT/source/XcodeGen-$SOURCE_COMMIT"
-[[ -d "$SOURCE_ROOT" && ! -L "$SOURCE_ROOT" && -f "$SOURCE_ROOT/Package.swift" && ! -L "$SOURCE_ROOT/Package.swift" ]] || fail source-layout-mismatch
-[[ -f "$SOURCE_ROOT/Package.resolved" && ! -L "$SOURCE_ROOT/Package.resolved" ]] || fail source-resolution-missing
-SOURCE_SETTING_PRESETS="$SOURCE_ROOT/SettingPresets"
-ACTUAL_SETTING_PRESETS_SHA="$(setting_presets_tree_hash "$SOURCE_SETTING_PRESETS")" || fail source-setting-presets-invalid
-[[ "$ACTUAL_SETTING_PRESETS_SHA" == "$SETTING_PRESETS_SHA" ]] || fail source-setting-presets-hash-mismatch
+POST_EXTRACTION_ARCHIVE_SHA="$(/usr/bin/shasum -a 256 "$ARCHIVE_FILE" | /usr/bin/awk 'NR == 1 { print $1 }')" || fail archive-hash-unavailable
+[[ "$POST_EXTRACTION_ARCHIVE_SHA" == "$ARCHIVE_SHA" ]] || fail archive-hash-mismatch
 
-/usr/bin/env -i "${SWIFT_BUILD_ENV[@]}" \
-  "$SWIFT" build \
-    --package-path "$SOURCE_ROOT" \
-    --cache-path "$CANONICAL_ROOT/swiftpm-cache" \
-    --config-path "$CANONICAL_ROOT/swiftpm-config" \
-    --security-path "$CANONICAL_ROOT/swiftpm-security" \
-    --disable-dependency-cache \
-    --configuration release \
-    --product xcodegen \
-    --scratch-path "$CANONICAL_ROOT/build" \
-    --disable-sandbox \
-    --force-resolved-versions \
-    -Xswiftc -debug-prefix-map \
-    -Xswiftc "$SOURCE_MAP" \
-    -Xswiftc -file-prefix-map \
-    -Xswiftc "$SOURCE_MAP" \
-    -Xcc "-fdebug-prefix-map=$SOURCE_MAP" \
-    -Xcc "-ffile-prefix-map=$SOURCE_MAP" || fail source-build-failed
+SOURCE_SETTING_PRESETS="$EXTRACTED/SettingPresets"
+ACTUAL_SETTING_PRESETS_SHA="$(setting_presets_tree_hash "$SOURCE_SETTING_PRESETS")" || fail release-setting-presets-invalid
+[[ "$ACTUAL_SETTING_PRESETS_SHA" == "$SETTING_PRESETS_SHA" ]] || fail release-setting-presets-hash-mismatch
 
-BUILT_BIN_DIR="$(
-  /usr/bin/env -i "${SWIFT_BUILD_ENV[@]}" \
-    "$SWIFT" build \
-      --package-path "$SOURCE_ROOT" \
-      --cache-path "$CANONICAL_ROOT/swiftpm-cache" \
-      --config-path "$CANONICAL_ROOT/swiftpm-config" \
-      --security-path "$CANONICAL_ROOT/swiftpm-security" \
-      --disable-dependency-cache \
-      --configuration release \
-      --product xcodegen \
-      --scratch-path "$CANONICAL_ROOT/build" \
-      --disable-sandbox \
-      --force-resolved-versions \
-      -Xswiftc -debug-prefix-map \
-      -Xswiftc "$SOURCE_MAP" \
-      -Xswiftc -file-prefix-map \
-      -Xswiftc "$SOURCE_MAP" \
-      -Xcc "-fdebug-prefix-map=$SOURCE_MAP" \
-      -Xcc "-ffile-prefix-map=$SOURCE_MAP" \
-      --show-bin-path
-)" || fail built-binary-path-unavailable
-[[ "$BUILT_BIN_DIR" == "$CANONICAL_ROOT/build"/* && -d "$BUILT_BIN_DIR" && ! -L "$BUILT_BIN_DIR" ]] || fail built-binary-path-invalid
-BUILT_BINARY="$BUILT_BIN_DIR/xcodegen"
-[[ -f "$BUILT_BINARY" && -x "$BUILT_BINARY" && ! -L "$BUILT_BINARY" ]] || fail built-binary-missing
-
-ACTUAL_BINARY_SHA="$(/usr/bin/shasum -a 256 "$BUILT_BINARY" | /usr/bin/awk 'NR == 1 { print $1 }')" || fail built-binary-hash-unavailable
-[[ "$ACTUAL_BINARY_SHA" == "$BINARY_SHA" ]] || fail built-binary-hash-mismatch
-ACTUAL_VERSION="$(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C HOME="$CANONICAL_ROOT/home" \
-  "$BUILT_BINARY" --version 2>/dev/null)" || fail built-binary-version-unavailable
-[[ "$ACTUAL_VERSION" == "Version: $XCODEGEN_VERSION" ]] || fail built-binary-version-mismatch
+BUILT_BINARY="$EXTRACTED/xcodegen"
+[[ -f "$BUILT_BINARY" && -x "$BUILT_BINARY" && ! -L "$BUILT_BINARY" ]] || fail release-binary-missing
+ACTUAL_BINARY_SHA="$(/usr/bin/shasum -a 256 "$BUILT_BINARY" | /usr/bin/awk 'NR == 1 { print $1 }')" || fail release-binary-hash-unavailable
+[[ "$ACTUAL_BINARY_SHA" == "$BINARY_SHA" ]] || fail release-binary-hash-mismatch
+ACTUAL_ARCHITECTURES="$(binary_architectures "$BUILT_BINARY")" || fail release-binary-architecture-unavailable
+[[ "$ACTUAL_ARCHITECTURES" == 'x86_64 arm64' ]] || fail release-binary-architecture-mismatch
+ACTUAL_VERSION="$(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C HOME="$TMP" \
+  "$BUILT_BINARY" --version 2>/dev/null)" || fail release-binary-version-unavailable
+[[ "$ACTUAL_VERSION" == "Version: $XCODEGEN_VERSION" ]] || fail release-binary-version-mismatch
 
 INSTALL_BINARY_TEMP="$(/usr/bin/mktemp "$TOOLS_BIN/.xcodegen.XXXXXX")"
 INSTALL_RESOURCE_TEMP="$(/usr/bin/mktemp -d "$TOOLS_BIN/.xcodegen-bundle.XXXXXX")"
@@ -597,5 +606,10 @@ FINAL_SHA="$(/usr/bin/shasum -a 256 "$DESTINATION" | /usr/bin/awk 'NR == 1 { pri
 [[ "$FINAL_SHA" == "$BINARY_SHA" ]] || fail install-verification-failed
 FINAL_SETTING_PRESETS_SHA="$(companion_bundle_tree_hash "$DESTINATION_BUNDLE")" || fail install-verification-failed
 [[ "$FINAL_SETTING_PRESETS_SHA" == "$SETTING_PRESETS_SHA" ]] || fail install-verification-failed
+FINAL_ARCHITECTURES="$(binary_architectures "$DESTINATION")" || fail install-verification-failed
+[[ "$FINAL_ARCHITECTURES" == 'x86_64 arm64' ]] || fail install-verification-failed
+FINAL_VERSION="$(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C HOME="$TMP" \
+  "$DESTINATION" --version 2>/dev/null)" || fail install-verification-failed
+[[ "$FINAL_VERSION" == "Version: $XCODEGEN_VERSION" ]] || fail install-verification-failed
 
 printf 'locked XcodeGen installed: Tools/bin/xcodegen + Tools/bin/%s/SettingPresets\n' "$RESOURCE_BUNDLE_NAME"

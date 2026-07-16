@@ -24,9 +24,9 @@
   "xcodegen": {
     "version": "2.45.4",
     "sourceCommit": "8d3d3476a69ae3e5d68e1adccc701c410c05eb36",
-    "archiveURL": "https://github.com/yonaskolb/XcodeGen/archive/8d3d3476a69ae3e5d68e1adccc701c410c05eb36.tar.gz",
-    "archiveSHA256": "afe64a4e9b14a91a113ae7bd2c156666ee9be51dfa84c9a6e89c89797e5d871c",
-    "binarySHA256": "74e644c6e2e727dab5f1db1d0828cccbc28fa3de77dd8b4736d1f0e18eec71fc",
+    "archiveURL": "https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip",
+    "archiveSHA256": "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef",
+    "binarySHA256": "6aa2b4da95304b343bea12890c59f9655aa428c08b351d57d592cfab4e88a9f1",
     "settingPresetsSHA256": "9f8dd5292ab7723927b40e836d651775e3261a30f0c05179b3b8ca7340404069"
   },
   "sources": {

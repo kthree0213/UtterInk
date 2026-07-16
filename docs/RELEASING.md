@@ -25,9 +25,10 @@ text, tag, and filename agree.
 
 The reviewed CI and release lock is the official `macos-26` arm64 runner image
 `20260630.0213.1` with macOS `26.4` build `25E246`, Xcode `26.4.1` build
-`17E202`, macOS SDK `26.4` build `25E251`, Apple Swift `6.3.1`, and XcodeGen
-`2.45.4` built from an immutable reviewed source revision. The complete values,
-hashes, and source references are committed in `Config/ci-toolchain.json`.
+`17E202`, macOS SDK `26.4` build `25E251`, Apple Swift `6.3.1`, and the official
+XcodeGen `2.45.4` release archive. The archive, exact executable architecture
+set, companion presets, upstream source revision, and complete runner tuple are
+independently hash- or commit-locked in `Config/ci-toolchain.json`.
 
 A temporary read-only GitHub Actions probe captured those values on the locked
 runner without repository secrets, signing, notarization, artifact upload, or
@@ -47,12 +48,14 @@ Toolchain drift fails closed. A rolling runner-image update, dependency update,
 Action update, Xcode update, SDK update, Swift update, or XcodeGen update
 requires a dedicated reviewed lock change and fresh evidence.
 
-The reviewed immutable source identities for the lock are:
+The reviewed immutable release and source identities for the lock are:
 
 - GitHub's official [`macos-26-arm64/20260630.0213` runner release](https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260630.0213)
   and its [commit-pinned software inventory](https://github.com/actions/runner-images/blob/afadebc447d1a69fc726b50cd5aba055c0cfdf82/images/macos/macos-26-arm64-Readme.md);
-- XcodeGen [`2.45.4`](https://github.com/yonaskolb/XcodeGen/releases/tag/2.45.4)
-  at source commit
+- XcodeGen [`2.45.4`](https://github.com/yonaskolb/XcodeGen/releases/tag/2.45.4),
+  its content-addressed official
+  [`xcodegen.zip`](https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip)
+  release asset, and upstream source commit
   [`8d3d3476a69ae3e5d68e1adccc701c410c05eb36`](https://github.com/yonaskolb/XcodeGen/commit/8d3d3476a69ae3e5d68e1adccc701c410c05eb36);
   and
 - `actions/checkout` at reviewed commit

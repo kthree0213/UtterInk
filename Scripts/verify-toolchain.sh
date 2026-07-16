@@ -146,13 +146,17 @@ if set(source_commit) == {"0"}:
 archive_sha = locked_string(xcodegen["archiveSHA256"], r"[0-9a-f]{64}")
 binary_sha = locked_string(xcodegen["binarySHA256"], r"[0-9a-f]{64}")
 setting_presets_sha = locked_string(xcodegen["settingPresetsSHA256"], r"[0-9a-f]{64}")
-archive_url = f"https://github.com/yonaskolb/XcodeGen/archive/{source_commit}.tar.gz"
+archive_url = f"https://github.com/yonaskolb/XcodeGen/releases/download/{xcodegen['version']}/xcodegen.zip"
 if xcodegen["archiveURL"] != archive_url:
     abort()
 if not test_mode:
     if source_commit != "8d3d3476a69ae3e5d68e1adccc701c410c05eb36":
         abort()
-    if archive_sha != "afe64a4e9b14a91a113ae7bd2c156666ee9be51dfa84c9a6e89c89797e5d871c":
+    if archive_sha != "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef":
+        abort()
+    if binary_sha != "6aa2b4da95304b343bea12890c59f9655aa428c08b351d57d592cfab4e88a9f1":
+        abort()
+    if setting_presets_sha != "9f8dd5292ab7723927b40e836d651775e3261a30f0c05179b3b8ca7340404069":
         abort()
 
 encoded_tag = release_tag.replace("/", "%2F")

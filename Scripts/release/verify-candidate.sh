@@ -669,8 +669,15 @@ PY
 
 assert_held_inputs
 
+TEST_MODE=0
+if [[ "${UTTERINK_RELEASE_TEST_MODE:-}" == 1 ]]; then
+  TEST_MODE=1
+elif [[ -n "${UTTERINK_RELEASE_TEST_MODE:-}" ]]; then
+  fail invalid-test-mode 24
+fi
+
 rewind_held_fd "$TOOLCHAIN_LOCK_FD"
-if ! "$PYTHON" -I - "/dev/fd/$TOOLCHAIN_LOCK_FD" "$TMP/expected-xcodegen-sha" <<'PY' > "$TMP/lock-preflight-output" 2>&1
+if ! "$PYTHON" -I - "/dev/fd/$TOOLCHAIN_LOCK_FD" "$TMP/expected-xcodegen-sha" "$TEST_MODE" <<'PY' > "$TMP/lock-preflight-output" 2>&1
 from __future__ import annotations
 
 import json
@@ -700,6 +707,7 @@ def exact(value: object, keys: set[str]) -> dict[str, object]:
 
 lock_path = Path(sys.argv[1])
 output_path = Path(sys.argv[2])
+test_mode = sys.argv[3] == "1"
 try:
     if lock_path.stat().st_size > 128 * 1024:
         abort()
@@ -741,8 +749,8 @@ if type(swift.get("version")) is not str or re.fullmatch(r"(?:swift-driver versi
 if xcodegen != {
     "version": "2.45.4",
     "sourceCommit": "8d3d3476a69ae3e5d68e1adccc701c410c05eb36",
-    "archiveURL": "https://github.com/yonaskolb/XcodeGen/archive/8d3d3476a69ae3e5d68e1adccc701c410c05eb36.tar.gz",
-    "archiveSHA256": "afe64a4e9b14a91a113ae7bd2c156666ee9be51dfa84c9a6e89c89797e5d871c",
+    "archiveURL": "https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip",
+    "archiveSHA256": "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef",
     "binarySHA256": xcodegen.get("binarySHA256"),
     "settingPresetsSHA256": xcodegen.get("settingPresetsSHA256"),
 }:
@@ -752,6 +760,11 @@ if type(binary_hash) is not str or re.fullmatch(r"[0-9a-f]{64}", binary_hash) is
     abort()
 presets_hash = xcodegen.get("settingPresetsSHA256")
 if type(presets_hash) is not str or re.fullmatch(r"[0-9a-f]{64}", presets_hash) is None:
+    abort()
+if not test_mode and (
+    binary_hash != "6aa2b4da95304b343bea12890c59f9655aa428c08b351d57d592cfab4e88a9f1"
+    or presets_hash != "9f8dd5292ab7723927b40e836d651775e3261a30f0c05179b3b8ca7340404069"
+):
     abort()
 if sources != {
     "runnerRelease": "https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260630.0213",
@@ -764,13 +777,6 @@ output_path.write_text(binary_hash + "\n" + presets_hash + "\n", encoding="utf-8
 PY
 then
   fail toolchain-lock-invalid 24
-fi
-
-TEST_MODE=0
-if [[ "${UTTERINK_RELEASE_TEST_MODE:-}" == 1 ]]; then
-  TEST_MODE=1
-elif [[ -n "${UTTERINK_RELEASE_TEST_MODE:-}" ]]; then
-  fail invalid-test-mode 24
 fi
 
 if [[ "$TEST_MODE" -eq 1 ]]; then
@@ -1226,7 +1232,7 @@ if (
     or parsed_archive.password is not None
     or parsed_archive.query
     or parsed_archive.fragment
-    or not parsed_archive.path.startswith("/yonaskolb/XcodeGen/archive/")
+    or parsed_archive.path != "/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip"
 ):
     abort()
 for key, value in sources.items():

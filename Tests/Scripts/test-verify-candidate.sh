@@ -254,8 +254,8 @@ value = {
     "xcodegen": {
         "version": "2.45.4",
         "sourceCommit": "8d3d3476a69ae3e5d68e1adccc701c410c05eb36",
-        "archiveURL": "https://github.com/yonaskolb/XcodeGen/archive/8d3d3476a69ae3e5d68e1adccc701c410c05eb36.tar.gz",
-        "archiveSHA256": "afe64a4e9b14a91a113ae7bd2c156666ee9be51dfa84c9a6e89c89797e5d871c",
+        "archiveURL": "https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip",
+        "archiveSHA256": "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef",
         "binarySHA256": binary_hash,
         "settingPresetsSHA256": presets_digest.hexdigest(),
     },
@@ -368,6 +368,34 @@ expect_failure() {
   if [[ -e "$output/candidate.json" || -L "$output/candidate.json" ]]; then
     fail "$expected_category emitted candidate.json"
   fi
+}
+
+expect_production_toolchain_lock_failure() {
+  local repository="$1"
+  local label="$2"
+  local commit
+  local output="$TMP/output-production-$label"
+  commit="$(git -C "$repository" rev-parse HEAD)"
+  set +e
+  (
+    cd "$repository"
+    /usr/bin/env \
+      -u UTTERINK_RELEASE_TEST_MODE \
+      -u UTTERINK_RELEASE_TEST_TOOL_ROOT \
+      -u UTTERINK_FIXTURE_LOG \
+      ./Scripts/release/verify-candidate.sh \
+        --commit "$commit" \
+        --output "$output"
+  ) > "$TMP/stdout" 2> "$TMP/stderr"
+  CANDIDATE_STATUS=$?
+  set -e
+  [[ "$CANDIDATE_STATUS" -eq 24 ]] ||
+    fail "production $label drift returned $CANDIDATE_STATUS, expected 24"
+  [[ ! -s "$TMP/stdout" ]] || fail "production $label drift wrote to stdout"
+  [[ "$(cat "$TMP/stderr")" == 'release candidate error: toolchain-lock-invalid' ]] ||
+    fail "production $label drift emitted a non-sanitized diagnostic: $(tr '\n' ' ' < "$TMP/stderr")"
+  [[ ! -e "$output/candidate.json" && ! -L "$output/candidate.json" ]] ||
+    fail "production $label drift emitted candidate.json"
 }
 
 BASE_COMMIT="$(git -C "$BASE" rev-parse HEAD)"
@@ -499,6 +527,44 @@ PY
 git -C "$LOCK_DRIFT" add Config/ci-toolchain.json
 git -C "$LOCK_DRIFT" commit -q -m 'drift official toolchain source'
 expect_failure "$LOCK_DRIFT" 24 toolchain-lock-invalid "$(git -C "$LOCK_DRIFT" rev-parse HEAD)"
+
+PRODUCTION_BINARY_LOCK_DRIFT="$TMP/production-binary-lock-drift"
+git clone -q "$BASE" "$PRODUCTION_BINARY_LOCK_DRIFT"
+git -C "$PRODUCTION_BINARY_LOCK_DRIFT" config user.name 'UtterInk Test'
+git -C "$PRODUCTION_BINARY_LOCK_DRIFT" config user.email 'utterink-test@example.invalid'
+python3 - "$PRODUCTION_BINARY_LOCK_DRIFT/Config/ci-toolchain.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+value = json.loads(path.read_text(encoding="utf-8"))
+value["xcodegen"]["binarySHA256"] = "0" * 64
+value["xcodegen"]["settingPresetsSHA256"] = "9f8dd5292ab7723927b40e836d651775e3261a30f0c05179b3b8ca7340404069"
+path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+git -C "$PRODUCTION_BINARY_LOCK_DRIFT" add Config/ci-toolchain.json
+git -C "$PRODUCTION_BINARY_LOCK_DRIFT" commit -q -m 'drift official XcodeGen binary identity'
+expect_production_toolchain_lock_failure "$PRODUCTION_BINARY_LOCK_DRIFT" binary
+
+PRODUCTION_PRESETS_LOCK_DRIFT="$TMP/production-presets-lock-drift"
+git clone -q "$BASE" "$PRODUCTION_PRESETS_LOCK_DRIFT"
+git -C "$PRODUCTION_PRESETS_LOCK_DRIFT" config user.name 'UtterInk Test'
+git -C "$PRODUCTION_PRESETS_LOCK_DRIFT" config user.email 'utterink-test@example.invalid'
+python3 - "$PRODUCTION_PRESETS_LOCK_DRIFT/Config/ci-toolchain.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+value = json.loads(path.read_text(encoding="utf-8"))
+value["xcodegen"]["binarySHA256"] = "6aa2b4da95304b343bea12890c59f9655aa428c08b351d57d592cfab4e88a9f1"
+value["xcodegen"]["settingPresetsSHA256"] = "0" * 64
+path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+git -C "$PRODUCTION_PRESETS_LOCK_DRIFT" add Config/ci-toolchain.json
+git -C "$PRODUCTION_PRESETS_LOCK_DRIFT" commit -q -m 'drift official XcodeGen presets identity'
+expect_production_toolchain_lock_failure "$PRODUCTION_PRESETS_LOCK_DRIFT" presets
 
 MISSING_LOCK="$TMP/missing-toolchain-lock"
 git clone -q "$BASE" "$MISSING_LOCK"

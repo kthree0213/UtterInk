@@ -551,8 +551,8 @@ value = {
     "xcodegen": {
         "version": "2.45.4",
         "sourceCommit": "8d3d3476a69ae3e5d68e1adccc701c410c05eb36",
-        "archiveURL": "https://github.com/yonaskolb/XcodeGen/archive/8d3d3476a69ae3e5d68e1adccc701c410c05eb36.tar.gz",
-        "archiveSHA256": "afe64a4e9b14a91a113ae7bd2c156666ee9be51dfa84c9a6e89c89797e5d871c",
+        "archiveURL": "https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip",
+        "archiveSHA256": "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef",
         "binarySHA256": binary_hash,
         "settingPresetsSHA256": presets_digest.hexdigest(),
     },
