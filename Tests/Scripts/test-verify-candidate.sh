@@ -403,6 +403,44 @@ if [[ "$CANDIDATE_STATUS" -ne 0 || -s "$TMP/stdout" || -s "$TMP/stderr" ||
   fail 'actions/checkout gc.auto=0 config was not accepted exactly'
 fi
 
+CHECKOUT_WORKTREE_CONFIG="$TMP/checkout-worktree-config"
+CHECKOUT_WORKTREE_CONFIG_OUTPUT="$TMP/checkout-worktree-config-output"
+git clone -q "$BASE" "$CHECKOUT_WORKTREE_CONFIG"
+git -C "$CHECKOUT_WORKTREE_CONFIG" config gc.auto 0
+git -C "$CHECKOUT_WORKTREE_CONFIG" config extensions.worktreeConfig true
+git -C "$CHECKOUT_WORKTREE_CONFIG" sparse-checkout disable
+git -C "$CHECKOUT_WORKTREE_CONFIG" config --local --unset-all extensions.worktreeConfig
+mkdir -p "$CHECKOUT_WORKTREE_CONFIG_OUTPUT"
+run_candidate \
+  "$CHECKOUT_WORKTREE_CONFIG" \
+  "$CHECKOUT_WORKTREE_CONFIG_OUTPUT" \
+  "$(git -C "$CHECKOUT_WORKTREE_CONFIG" rev-parse HEAD)"
+if [[ "$CANDIDATE_STATUS" -ne 0 || -s "$TMP/stdout" || -s "$TMP/stderr" ||
+  ! -f "$CHECKOUT_WORKTREE_CONFIG_OUTPUT/candidate.json" ]]; then
+  fail 'actions/checkout sparse-worktree cleanup config was not accepted exactly'
+fi
+
+WORKTREE_CONFIG_DRIFT="$TMP/worktree-config-drift"
+git clone -q "$BASE" "$WORKTREE_CONFIG_DRIFT"
+git -C "$WORKTREE_CONFIG_DRIFT" config extensions.worktreeConfig true
+git -C "$WORKTREE_CONFIG_DRIFT" sparse-checkout disable
+git -C "$WORKTREE_CONFIG_DRIFT" config --local --unset-all extensions.worktreeConfig
+git -C "$WORKTREE_CONFIG_DRIFT" config --file .git/config.worktree index.sparse true
+expect_failure \
+  "$WORKTREE_CONFIG_DRIFT" \
+  20 \
+  unsafe-git-config \
+  "$(git -C "$WORKTREE_CONFIG_DRIFT" rev-parse HEAD)"
+
+WORKTREE_CONFIG_SYMLINK="$TMP/worktree-config-symlink"
+git clone -q "$BASE" "$WORKTREE_CONFIG_SYMLINK"
+ln -s /dev/null "$WORKTREE_CONFIG_SYMLINK/.git/config.worktree"
+expect_failure \
+  "$WORKTREE_CONFIG_SYMLINK" \
+  20 \
+  unsafe-git-config \
+  "$(git -C "$WORKTREE_CONFIG_SYMLINK" rev-parse HEAD)"
+
 GC_AUTO_WRONG="$TMP/gc-auto-wrong"
 git clone -q "$BASE" "$GC_AUTO_WRONG"
 git -C "$GC_AUTO_WRONG" config gc.auto 1

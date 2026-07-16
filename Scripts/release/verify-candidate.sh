@@ -298,6 +298,32 @@ export HOME="$TMP/empty-home"
 export XDG_CONFIG_HOME="$TMP/empty-home"
 export TMPDIR="$TMP/tool-tmp"
 
+validate_checkout_worktree_config() {
+  local worktree_config="$ROOT/.git/config.worktree"
+  local config_keys="$TMP/worktree-git-config-keys"
+  local config_values="$TMP/worktree-git-config-values"
+  local expected_value="$TMP/worktree-git-config-expected"
+  local key
+  if [[ ! -e "$worktree_config" && ! -L "$worktree_config" ]]; then
+    return
+  fi
+  [[ -f "$worktree_config" && ! -L "$worktree_config" ]] || fail unsafe-git-config 20
+  $GIT config --file "$worktree_config" --no-includes --name-only --list -z > "$config_keys" 2>/dev/null ||
+    fail unsafe-git-config 20
+  while IFS= read -r -d '' key; do
+    case "$key" in
+      core.sparsecheckout|core.sparsecheckoutcone|index.sparse) ;;
+      *) fail unsafe-git-config 20 ;;
+    esac
+  done < "$config_keys"
+  /usr/bin/printf 'false\0' > "$expected_value" || fail unsafe-git-config 20
+  for key in core.sparsecheckout core.sparsecheckoutcone index.sparse; do
+    $GIT config --file "$worktree_config" --no-includes --get-all -z "$key" > "$config_values" 2>/dev/null ||
+      fail unsafe-git-config 20
+    /usr/bin/cmp -s "$config_values" "$expected_value" || fail unsafe-git-config 20
+  done
+}
+
 validate_local_git_config() {
   local config_keys="$TMP/local-git-config-keys"
   local gc_auto_values="$TMP/local-git-gc-auto-values"
@@ -305,7 +331,7 @@ validate_local_git_config() {
   local key
   [[ -d "$ROOT/.git" && ! -L "$ROOT/.git" ]] || fail unsafe-git-config 20
   [[ -f "$ROOT/.git/config" && ! -L "$ROOT/.git/config" ]] || fail unsafe-git-config 20
-  [[ ! -e "$ROOT/.git/config.worktree" && ! -e "$ROOT/.git/commondir" ]] || fail unsafe-git-config 20
+  [[ ! -e "$ROOT/.git/commondir" && ! -L "$ROOT/.git/commondir" ]] || fail unsafe-git-config 20
   $GIT config --local --no-includes --name-only --list -z > "$config_keys" 2>/dev/null || fail unsafe-git-config 20
   while IFS= read -r -d '' key; do
     case "$key" in
@@ -325,6 +351,7 @@ validate_local_git_config() {
       *) fail unsafe-git-config 20 ;;
     esac
   done < "$config_keys"
+  validate_checkout_worktree_config
 }
 
 worktree_matches_commit() {
