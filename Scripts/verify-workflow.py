@@ -17,6 +17,7 @@ CHECKOUT_SHA = "de0fac2e4500dabe0009e67214ff5f5447ce83dd"
 CHECKOUT_REFERENCE = f"{CHECKOUT_ACTION}@{CHECKOUT_SHA}"
 RUNNER = "macos-26"
 DEVELOPER_DIR = "/Applications/Xcode_26.4.app/Contents/Developer"
+TIMEOUT_MINUTES = 75
 MAX_WORKFLOW_BYTES = 64 * 1024
 MAX_LINE_LENGTH = 4096
 
@@ -339,7 +340,7 @@ def validate_exact_workflow(document: object) -> None:
 
     if set(job) != {"runs-on", "timeout-minutes", "env", "steps"}:
         reject("jobs")
-    if job.get("timeout-minutes") != 45:
+    if job.get("timeout-minutes") != TIMEOUT_MINUTES:
         reject("jobs")
 
     steps = job.get("steps")

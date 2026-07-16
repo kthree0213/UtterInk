@@ -300,6 +300,8 @@ export TMPDIR="$TMP/tool-tmp"
 
 validate_local_git_config() {
   local config_keys="$TMP/local-git-config-keys"
+  local gc_auto_values="$TMP/local-git-gc-auto-values"
+  local gc_auto_expected="$TMP/local-git-gc-auto-expected"
   local key
   [[ -d "$ROOT/.git" && ! -L "$ROOT/.git" ]] || fail unsafe-git-config 20
   [[ -f "$ROOT/.git/config" && ! -L "$ROOT/.git/config" ]] || fail unsafe-git-config 20
@@ -308,6 +310,12 @@ validate_local_git_config() {
   while IFS= read -r -d '' key; do
     case "$key" in
       core.repositoryformatversion|core.filemode|core.bare|core.logallrefupdates|core.ignorecase|core.precomposeunicode|user.name|user.email) ;;
+      gc.auto)
+        $GIT config --local --no-includes --get-all -z gc.auto > "$gc_auto_values" 2>/dev/null ||
+          fail unsafe-git-config 20
+        /usr/bin/printf '0\0' > "$gc_auto_expected" || fail unsafe-git-config 20
+        /usr/bin/cmp -s "$gc_auto_values" "$gc_auto_expected" || fail unsafe-git-config 20
+        ;;
       remote.*.url|remote.*.fetch)
         [[ "$key" =~ ^remote\.[A-Za-z0-9._-]+\.(url|fetch)$ ]] || fail unsafe-git-config 20
         ;;

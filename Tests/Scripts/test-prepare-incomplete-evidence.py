@@ -417,6 +417,7 @@ with tempfile.TemporaryDirectory(prefix="utterink-prepare-incomplete-tests-") as
 
     first = copy_repository(template, temp / "first")
     second = copy_repository(template, temp / "second")
+    checked(["/usr/bin/git", "config", "--local", "gc.auto", "0"], first)
     first_output = first / ".release-work/evidence"
     second_output = second / ".release-work/evidence"
     first_result = prepare(first, commit, ".release-work/evidence")
@@ -529,6 +530,23 @@ with tempfile.TemporaryDirectory(prefix="utterink-prepare-incomplete-tests-") as
     wrong_commit = copy_repository(template, temp / "wrong-commit")
     wrong_commit_output = wrong_commit / ".release-work/evidence"
     expect_rejected(prepare(wrong_commit, "9" * 40, ".release-work/evidence"), wrong_commit_output, "mismatched commit")
+
+    gc_auto_wrong = copy_repository(template, temp / "gc-auto-wrong")
+    checked(["/usr/bin/git", "config", "--local", "gc.auto", "1"], gc_auto_wrong)
+    gc_auto_wrong_output = gc_auto_wrong / ".release-work/evidence"
+    gc_auto_wrong_result = prepare(gc_auto_wrong, commit, ".release-work/evidence")
+    expect_rejected(gc_auto_wrong_result, gc_auto_wrong_output, "nonzero gc.auto")
+    if gc_auto_wrong_result.stderr != "incomplete evidence error: unsafe-git-config\n":
+        fail("nonzero gc.auto did not fail as unsafe-git-config")
+
+    gc_auto_duplicate = copy_repository(template, temp / "gc-auto-duplicate")
+    checked(["/usr/bin/git", "config", "--local", "gc.auto", "0"], gc_auto_duplicate)
+    checked(["/usr/bin/git", "config", "--local", "--add", "gc.auto", "0"], gc_auto_duplicate)
+    gc_auto_duplicate_output = gc_auto_duplicate / ".release-work/evidence"
+    gc_auto_duplicate_result = prepare(gc_auto_duplicate, commit, ".release-work/evidence")
+    expect_rejected(gc_auto_duplicate_result, gc_auto_duplicate_output, "duplicate gc.auto")
+    if gc_auto_duplicate_result.stderr != "incomplete evidence error: unsafe-git-config\n":
+        fail("duplicate gc.auto did not fail as unsafe-git-config")
 
     dirty = copy_repository(template, temp / "dirty")
     (dirty / "README.md").write_text("dirty\n", encoding="utf-8")

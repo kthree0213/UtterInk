@@ -189,6 +189,20 @@ def validate_local_config(root: Path) -> None:
     for key in keys:
         if key in allowed_exact:
             continue
+        if key == "gc.auto":
+            values = git(
+                root,
+                "config",
+                "--local",
+                "--no-includes",
+                "--get-all",
+                "-z",
+                "gc.auto",
+                expected=(0, 1),
+            )
+            if values != b"0\0":
+                reject("unsafe-git-config")
+            continue
         if re.fullmatch(r"remote[.][A-Za-z0-9._-]+[.](?:url|fetch)", key):
             continue
         if re.fullmatch(r"branch[.][A-Za-z0-9._/-]+[.](?:remote|merge)", key):

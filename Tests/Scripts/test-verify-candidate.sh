@@ -392,6 +392,28 @@ TAG_OBJECT_ID="$(git -C "$TAG_OBJECT" rev-parse candidate-tag)"
 printf '%s\n' "$TAG_OBJECT_ID" > "$TAG_OBJECT/.git/HEAD"
 expect_failure "$TAG_OBJECT" 21 commit-mismatch "$TAG_OBJECT_ID"
 
+GC_AUTO_ZERO="$TMP/gc-auto-zero"
+GC_AUTO_ZERO_OUTPUT="$TMP/gc-auto-zero-output"
+git clone -q "$BASE" "$GC_AUTO_ZERO"
+git -C "$GC_AUTO_ZERO" config gc.auto 0
+mkdir -p "$GC_AUTO_ZERO_OUTPUT"
+run_candidate "$GC_AUTO_ZERO" "$GC_AUTO_ZERO_OUTPUT" "$(git -C "$GC_AUTO_ZERO" rev-parse HEAD)"
+if [[ "$CANDIDATE_STATUS" -ne 0 || -s "$TMP/stdout" || -s "$TMP/stderr" ||
+  ! -f "$GC_AUTO_ZERO_OUTPUT/candidate.json" ]]; then
+  fail 'actions/checkout gc.auto=0 config was not accepted exactly'
+fi
+
+GC_AUTO_WRONG="$TMP/gc-auto-wrong"
+git clone -q "$BASE" "$GC_AUTO_WRONG"
+git -C "$GC_AUTO_WRONG" config gc.auto 1
+expect_failure "$GC_AUTO_WRONG" 20 unsafe-git-config "$(git -C "$GC_AUTO_WRONG" rev-parse HEAD)"
+
+GC_AUTO_DUPLICATE="$TMP/gc-auto-duplicate"
+git clone -q "$BASE" "$GC_AUTO_DUPLICATE"
+git -C "$GC_AUTO_DUPLICATE" config gc.auto 0
+git -C "$GC_AUTO_DUPLICATE" config --add gc.auto 0
+expect_failure "$GC_AUTO_DUPLICATE" 20 unsafe-git-config "$(git -C "$GC_AUTO_DUPLICATE" rev-parse HEAD)"
+
 UNSAFE_CONFIG="$TMP/unsafe-git-config"
 UNSAFE_CONFIG_MARKER="$TMP/unsafe-git-config-executed"
 git clone -q "$BASE" "$UNSAFE_CONFIG"
