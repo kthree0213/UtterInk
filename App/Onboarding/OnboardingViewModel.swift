@@ -358,6 +358,7 @@ final class OnboardingViewModel {
     private func ensureHistoryChoiceIsApplied() async -> Bool {
         let status = controller.historyControlStatus
         if case let .settled(enabled) = status, enabled == historyEnabled {
+            isHistoryChangePending = false
             return true
         }
         if case .failed = status {
