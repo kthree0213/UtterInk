@@ -35,7 +35,7 @@ _品牌标识图，不是产品截图。_
 
 - macOS 14+
 - 仅支持 Apple Silicon / arm64
-- 文档所示源码流程使用 Xcode 26.4 和 XcodeGen 2.45.4
+- 文档所示源码流程使用 Xcode 26.4.1 build 17E202、Apple Swift 6.3.1 和 XcodeGen 2.45.4
 - 首次下载所选语音模型和分词器时需要联网
 
 语音模型权重不包含在仓库或应用中，而是在运行时从固定的 Hugging Face revision 下载并缓存到 `~/Library/Application Support/UtterInk/huggingface`。目录标示大小约为：`base` 149 MB、`small` 489 MB、`large-v3` 3.1 GB；仅当缓存模型未被选中、准备、加载或由活动操作占用时，才能在设置中删除。
@@ -115,19 +115,19 @@ _品牌标识图，不是产品截图。_
 
 以上源码命令只会生成未签名的开发构建。它没有经过公证，也不用于再分发；当前预发布仓库尚未发布可安装的软件包。
 
-下方故障闭合的打包路径依赖已审核的 `Config/ci-toolchain.json` 锁。该锁目前有意尚未提交，因此当前检出会先以 `toolchain-lock-missing` 停止，不会生成软件包。锁完成后，贡献者无需 Apple 凭据即可运行同一验证路径：
+下方故障闭合的打包路径依赖已审核并提交的 `Config/ci-toolchain.json` 锁，其中记录了审核过的来源标识和哈希。贡献者无需 Apple 凭据即可运行同一验证路径；任何工具链或生成工程漂移都会以失败关闭：
 
 ```bash
 (
   set -e
   trap 'status=$?; trap - EXIT; ./Scripts/clean-distribution-output.sh || status=$?; exit "$status"' EXIT
   ./Scripts/bootstrap-xcodegen.sh
-  UTTERINK_EXPECTED_ORIGIN='https://github.com/OWNER/UtterInk.git' \
+  UTTERINK_EXPECTED_ORIGIN='https://github.com/kthree0213/UtterInk.git' \
     ./Scripts/ci-local.sh --unsigned-package-smoke
 )
 ```
 
-请把示例地址替换为另行审核过的规范 `origin`；如果这个检出有意不配置远程仓库，则省略 `UTTERINK_EXPECTED_ORIGIN`。任何产物的名称都包含 `UNSIGNED-DO-NOT-DISTRIBUTE`，只能留在本地，并由退出清理删除。签名、公证、最终验证和发布属于互相独立的维护者阶段，详见[发布流程](docs/RELEASING.md)；运行上述命令不会授权其中任何操作。
+请让预期地址与另行审核过的规范 `origin` 逐字节一致；如果这个检出有意不配置远程仓库，则省略 `UTTERINK_EXPECTED_ORIGIN`。任何产物的名称都包含 `UNSIGNED-DO-NOT-DISTRIBUTE`，只能留在本地，并由退出清理删除。签名、公证、最终验证和发布属于互相独立的维护者阶段，详见[发布流程](docs/RELEASING.md)；运行上述命令不会授权其中任何操作。
 
 ## 可选服务商设置
 

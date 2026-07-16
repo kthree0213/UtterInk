@@ -37,11 +37,11 @@ set, and confirmed that the app has no nested signable code components. Its
 three Swift package `.bundle` directories contain resources rather than
 executables and therefore are not nested signing targets.
 
-The current development Mac reports Xcode `26.4` build `17E192`, which does not
-match the locked Xcode `26.4.1` build `17E202` tuple. It can run ordinary local
-development checks, but it cannot supply accepted locked-toolchain candidate
-evidence. Candidate evidence must be produced on an environment that matches
-every committed lock value.
+The current development Mac selects Xcode `26.4.1` build `17E202` and Apple
+Swift `6.3.1`, matching the locked local toolchain tuple. Candidate evidence is
+accepted only when the complete environment and every committed lock value are
+verified; the official CI evidence remains bound to the locked `macos-26`
+runner image above.
 
 Toolchain drift fails closed. A rolling runner-image update, dependency update,
 Action update, Xcode update, SDK update, Swift update, or XcodeGen update
@@ -119,9 +119,10 @@ EXPECTED_ORIGIN='https://github.com/kthree0213/UtterInk.git'
   --expected-origin "$EXPECTED_ORIGIN"
 ```
 
-Gate 1 approved the private `kthree0213/UtterInk` repository and its first push.
-This origin value does not authorize a visibility change, tag, Release, or
-asset publication.
+Gate 1 approved the first push of `kthree0213/UtterInk`, and Gate 4 separately
+approved and completed its transition to public visibility. This origin value
+and the completed visibility transition do not authorize a tag, GitHub Release,
+release-asset publication, or Apple upload.
 
 When repository origin scope is known locally, supply it explicitly with
 `--expected-origin` to the package command. For the local packaging mode of
@@ -221,7 +222,7 @@ to the same command rather than trusting the configured remote as its own
 reference:
 
 ```bash
-EXPECTED_ORIGIN='https://github.com/OWNER/UtterInk.git'
+EXPECTED_ORIGIN='https://github.com/kthree0213/UtterInk.git'
 ./Scripts/release/build-candidate.sh \
   --commit "$COMMIT" \
   --work "$WORK" \
@@ -263,11 +264,12 @@ maintainer-supplied parameters; no concrete value belongs in committed
 configuration, documentation, or committed evidence. All generated candidate
 and signing evidence remains local and uncommitted under `.release-work`.
 
-The reviewed lock is complete, but this development Mac does not match it and
-therefore fails closed before creating release-candidate evidence. The
-automated tests use only fake tools and fixture identities; they never select,
-inspect, or use a real certificate. These commands do not notarize, upload,
-staple, or publish any artifact.
+The reviewed local toolchain now matches the lock and can create unsigned
+release-candidate evidence. The automated tests use only fake tools and fixture
+identities; they never select, inspect, or use a real certificate. Real signing
+still fails closed unless the maintainer explicitly supplies a matching
+Developer ID Application identity and Apple team. These commands do not
+notarize, upload, staple, or publish any artifact.
 
 ### One-use notarization approval gate
 
@@ -575,6 +577,10 @@ other gate.
 5. **Publish the GitHub Release and DMG.** Approval identifies tag and commit,
    final release text, immutable final stapled DMG SHA-256, `SHA256SUMS`, and
    the verified source archives.
+
+Gates 1 and 4 are complete for `kthree0213/UtterInk`. Gates 2, 3, and 5 retain
+their independent approval requirements; a second-Mac test does not require
+Gate 3 unless the DMG is transferred to another person.
 
 No release command may infer approval from a writable repository file, turn a
 request into approval, broaden approval scope, or perform an unapproved retry.

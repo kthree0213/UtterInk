@@ -35,7 +35,7 @@ See [Privacy](PRIVACY.md) and the [privacy data flow](docs/privacy-data-flow.md)
 
 - macOS 14+
 - Apple Silicon / arm64 only
-- Xcode 26.4 and XcodeGen 2.45.4 for the documented source workflow
+- Xcode 26.4.1 build 17E202, Apple Swift 6.3.1, and XcodeGen 2.45.4 for the documented source workflow
 - An internet connection for the first runtime download of a selected speech model and tokenizer
 
 Speech weights are not included in the repository or app. They are downloaded from pinned Hugging Face revisions and cached under `~/Library/Application Support/UtterInk/huggingface`. Catalog sizes are approximately 149 MB for `base`, 489 MB for `small`, and 3.1 GB for `large-v3`; Settings can delete a cached model only while it is not selected, preparing, loaded, or leased by an active operation.
@@ -120,23 +120,23 @@ notarized or intended for redistribution, and this pre-release repository does
 not currently publish an installable package.
 
 The fail-closed packaging path below requires the reviewed
-`Config/ci-toolchain.json` lock. That lock is intentionally not committed yet,
-so this checkout currently stops with `toolchain-lock-missing` before producing
-a package. After the lock is completed, contributors can run the same path
-without Apple credentials:
+`Config/ci-toolchain.json` lock, which is committed with its reviewed source
+identities and hashes. Contributors can run the same verification path without
+Apple credentials; any toolchain or generated-project drift fails closed:
 
 ```bash
 (
   set -e
   trap 'status=$?; trap - EXIT; ./Scripts/clean-distribution-output.sh || status=$?; exit "$status"' EXIT
   ./Scripts/bootstrap-xcodegen.sh
-  UTTERINK_EXPECTED_ORIGIN='https://github.com/OWNER/UtterInk.git' \
+  UTTERINK_EXPECTED_ORIGIN='https://github.com/kthree0213/UtterInk.git' \
     ./Scripts/ci-local.sh --unsigned-package-smoke
 )
 ```
 
-Replace the example origin with the separately reviewed canonical `origin`; if
-the checkout intentionally has no remote, omit `UTTERINK_EXPECTED_ORIGIN`.
+Keep the expected origin byte-for-byte identical to the separately reviewed
+canonical `origin`; if the checkout intentionally has no remote, omit
+`UTTERINK_EXPECTED_ORIGIN`.
 Any output is named `UNSIGNED-DO-NOT-DISTRIBUTE`, must remain local, and is
 removed by the exit cleanup. Signing, notarization, final verification, and
 publication are separate maintainer phases documented in
