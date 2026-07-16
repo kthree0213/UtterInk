@@ -10,6 +10,13 @@ fail() {
 }
 
 [[ -x "$BUILDER" ]] || fail 'Scripts/release/build-candidate.sh is missing or not executable'
+for helper in \
+  Scripts/release/read-metadata.py \
+  Scripts/release/verify-entitlements.py \
+  Scripts/release/verify-info-policy.py; do
+  [[ -f "$ROOT/$helper" && -x "$ROOT/$helper" && ! -L "$ROOT/$helper" ]] ||
+    fail "$helper is missing, linked, or not executable"
+done
 
 TMP="$(/usr/bin/mktemp -d /private/tmp/utterink-build-candidate-tests.XXXXXX)"
 TMP="$(cd "$TMP" && pwd -P)"
