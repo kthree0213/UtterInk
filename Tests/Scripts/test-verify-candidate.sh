@@ -164,6 +164,9 @@ xcodegen_directory=\"$(cd \"$(/usr/bin/dirname \"$0\")\" && /bin/pwd -P)\"
 [[ -f \"$xcodegen_directory/XcodeGen_XcodeGenKit.bundle/SettingPresets/Platforms/macOS.json\" ]]
 if [[ \"${1-}\" == '--version' ]]; then
   printf 'Version: 2.45.4\\n'
+elif [[ \"${1-}\" == 'generate' ]]; then
+  [[ -n \"${USER:-}\" && \"${LOGNAME:-}\" == \"$USER\" ]]
+  printf 'xcodegen-user:%s\\n' \"$USER\" >> \"${UTTERINK_FIXTURE_LOG:?}\"
 fi
 """,
     executable=True,

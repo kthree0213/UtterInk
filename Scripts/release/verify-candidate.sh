@@ -1414,7 +1414,11 @@ generated_tree_is_clean || fail package-resolution-mismatch 22
 [[ "$($SHASUM -a 256 "$XCODEGEN" | /usr/bin/awk '{print $1}')" == "$EXPECTED_XCODEGEN_HASH" ]] || fail toolchain-mismatch 24
 verify_xcodegen_resource_bundle "$XCODEGEN_RESOURCE_BUNDLE" "$EXPECTED_XCODEGEN_PRESETS_SHA" ||
   fail toolchain-mismatch 24
-if ! "$XCODEGEN" generate > "$TMP/xcodegen-output" 2> "$TMP/xcodegen-error"; then
+BUILD_USER="$(/usr/bin/id -un 2>/dev/null)" || fail generated-project-mismatch 27
+[[ "$BUILD_USER" =~ ^[A-Za-z0-9._-]+$ ]] || fail generated-project-mismatch 27
+readonly BUILD_USER
+if ! USER="$BUILD_USER" LOGNAME="$BUILD_USER" \
+  "$XCODEGEN" generate > "$TMP/xcodegen-output" 2> "$TMP/xcodegen-error"; then
   fail generated-project-mismatch 27
 fi
 [[ "$($SHASUM -a 256 "$XCODEGEN" | /usr/bin/awk '{print $1}')" == "$EXPECTED_XCODEGEN_HASH" ]] || fail toolchain-mismatch 24
