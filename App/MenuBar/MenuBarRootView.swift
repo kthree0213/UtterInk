@@ -32,19 +32,28 @@ struct MenuBarRootView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-                statusContent
-                Divider()
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    statusContent
 
+                    if model.readiness == .ready {
+                        Divider()
+                        actionContent
+                        Divider()
+                        latestResultContent
+                        Divider()
+                        configurationContent
+                    }
+                }
+                .padding(12)
+            }
+
+            Divider()
+            VStack(alignment: .leading, spacing: 8) {
                 if model.readiness == .ready {
-                    actionContent
-                    Divider()
-                    latestResultContent
-                    Divider()
-                    configurationContent
-                    Divider()
                     routeContent
+                    Divider()
                 }
 
                 Button {
