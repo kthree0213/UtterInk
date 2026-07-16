@@ -367,7 +367,31 @@ if [[ "${1-}" == archive ]]; then
   done
   [[ -n "$archive" ]]
   app="$archive/Products/Applications/UtterInk.app"
+  dsym_resources="$archive/dSYMs/UtterInk.app.dSYM/Contents/Resources"
   /bin/mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+  /bin/mkdir -p \
+    "$dsym_resources/DWARF" \
+    "$dsym_resources/Relocations/aarch64"
+  build_system_marker=true
+  if [[ -f "${UTTERINK_FIXTURE_LOG:?}.archive-build-marker-wrong-value" ]]; then
+    build_system_marker=false
+  fi
+  /usr/bin/xattr -w \
+    com.apple.xcode.CreatedByBuildSystem \
+    "$build_system_marker" \
+    "$archive/Products"
+  if [[ -f "${UTTERINK_FIXTURE_LOG:?}.archive-build-marker-extra-xattr" ]]; then
+    /usr/bin/xattr -w \
+      com.utterink.attack \
+      unexpected-metadata \
+      "$archive/Products"
+  fi
+  if [[ -f "${UTTERINK_FIXTURE_LOG:?}.archive-build-marker-wrong-path" ]]; then
+    /usr/bin/xattr -w \
+      com.apple.xcode.CreatedByBuildSystem \
+      true \
+      "$archive/Products/Applications"
+  fi
   /usr/bin/printf 'fixture Mach-O arm64\n' > "$app/Contents/MacOS/UtterInk"
   /bin/chmod 0755 "$app/Contents/MacOS/UtterInk"
   /usr/bin/printf '%s\n' \
@@ -386,6 +410,30 @@ if [[ "${1-}" == archive ]]; then
     '</dict></plist>' > "$app/Contents/Info.plist"
   /usr/bin/printf 'safe symlink target\n' > "$app/Contents/Resources/symlink-target.txt"
   /bin/ln -s symlink-target.txt "$app/Contents/Resources/symlink-current"
+  fixture_user_root="/""Users/fixture"
+  /usr/bin/printf 'fixture DWARF source path: %s\n' \
+    "$fixture_user_root/UtterInk/App/Main.swift" \
+    > "$dsym_resources/DWARF/UtterInk"
+  /usr/bin/printf "binary-path: '%s'\n" \
+    "$fixture_user_root/Library/Developer/Xcode/DerivedData/UtterInk/Build/UtterInk.app/Contents/MacOS/UtterInk" \
+    > "$dsym_resources/Relocations/aarch64/UtterInk.yml"
+  if [[ -f "${UTTERINK_FIXTURE_LOG:?}.archive-app-path-marker" ]]; then
+    /usr/bin/printf 'unexpected app path: %s\n' \
+      "$fixture_user_root/secret" \
+      > "$app/Contents/Resources/local-path.txt"
+  fi
+  if [[ -f "${UTTERINK_FIXTURE_LOG:?}.archive-wrong-dsym-path" ]]; then
+    wrong_dsym="$archive/dSYMs/Wrong.app.dSYM/Contents/Resources/DWARF"
+    /bin/mkdir -p "$wrong_dsym"
+    /usr/bin/printf 'unexpected DWARF source path: %s\n' \
+      "$fixture_user_root/Wrong/App/Main.swift" \
+      > "$wrong_dsym/Wrong"
+  fi
+  if [[ -f "${UTTERINK_FIXTURE_LOG:?}.archive-dsym-secret-marker" ]]; then
+    /usr/bin/printf '%s\n' \
+      'OPENAI_API_KEY=fixture-not-a-secret' \
+      >> "$dsym_resources/DWARF/UtterInk"
+  fi
   if [[ -f "${UTTERINK_FIXTURE_LOG:?}.archive-outside-secret" ]]; then
     /bin/mkdir -p "$archive/Metadata"
     /usr/bin/printf '%s%s\n' '-----BEGIN ' 'PRIVATE KEY-----' > "$archive/Metadata/leak.txt"
@@ -678,6 +726,19 @@ run_build "$BASE" --commit "$BASE_COMMIT" --work .release-work/baseline
 [[ -d "$BASE/.release-work/baseline/candidate/UtterInk.app" && ! -L "$BASE/.release-work/baseline/candidate/UtterInk.app" ]] || fail 'candidate app missing'
 [[ "$(/usr/bin/find "$BASE/.release-work/baseline" -mindepth 1 -maxdepth 1 -print | /usr/bin/wc -l | /usr/bin/tr -d ' ')" == 2 ]] || fail 'candidate output layout contains extras'
 [[ "$(/usr/bin/find "$BASE/.release-work/baseline/candidate" -mindepth 1 -maxdepth 1 -print | /usr/bin/wc -l | /usr/bin/tr -d ' ')" == 3 ]] || fail 'candidate directory layout does not contain exactly three outputs'
+BASELINE_ARCHIVE="$BASE/.release-work/baseline/UtterInk.xcarchive"
+FIXTURE_USER_ROOT="/""Users/fixture"
+if /usr/bin/xattr -p com.apple.xcode.CreatedByBuildSystem "$BASELINE_ARCHIVE/Products" >/dev/null 2>&1; then
+  fail 'normalized archive retained the removable Xcode build-system marker'
+fi
+/usr/bin/printf 'fixture DWARF source path: %s\n' \
+  "$FIXTURE_USER_ROOT/UtterInk/App/Main.swift" |
+  /usr/bin/cmp - "$BASELINE_ARCHIVE/dSYMs/UtterInk.app.dSYM/Contents/Resources/DWARF/UtterInk" ||
+  fail 'canonical DWARF bytes changed during archive inspection or publication'
+/usr/bin/printf "binary-path: '%s'\n" \
+  "$FIXTURE_USER_ROOT/Library/Developer/Xcode/DerivedData/UtterInk/Build/UtterInk.app/Contents/MacOS/UtterInk" |
+  /usr/bin/cmp - "$BASELINE_ARCHIVE/dSYMs/UtterInk.app.dSYM/Contents/Resources/Relocations/aarch64/UtterInk.yml" ||
+  fail 'canonical dSYM relocation bytes changed during archive inspection or publication'
 /usr/bin/python3 -I - \
   "$BASE/.release-work/baseline/candidate/candidate.json" \
   "$BASE/.release-work/baseline/candidate/unsigned-build-evidence.json" \
@@ -963,6 +1024,22 @@ for scenario in swiftpm-xcodegen-inject swiftpm-xcodegen-write-delete; do
   [[ "$BUILD_STATUS" -eq 32 ]] || fail "$scenario did not fail before the final inventory"
   [[ "$(/bin/cat "$STDERR")" == 'build candidate error: exact-source-mutated' ]] ||
     fail "$scenario did not emit the stable exact-source mutation diagnostic"
+  assert_no_partial "$ORIGIN_REPO" ".release-work/failure-$scenario"
+done
+
+for scenario in \
+  archive-build-marker-wrong-value \
+  archive-build-marker-extra-xattr \
+  archive-build-marker-wrong-path \
+  archive-app-path-marker \
+  archive-wrong-dsym-path \
+  archive-dsym-secret-marker; do
+  /usr/bin/touch "$FIXTURE_LOG.$scenario"
+  run_build "$ORIGIN_REPO" --commit "$ORIGIN_COMMIT" --work ".release-work/failure-$scenario" --expected-origin 'https://example.invalid/UtterInk.git'
+  /bin/rm -f "$FIXTURE_LOG.$scenario"
+  [[ "$BUILD_STATUS" -eq 35 ]] || fail "$scenario did not fail at the archive content boundary"
+  [[ "$(/bin/cat "$STDERR")" == 'build candidate error: forbidden-archive-content' ]] ||
+    fail "$scenario did not emit the stable forbidden archive content diagnostic"
   assert_no_partial "$ORIGIN_REPO" ".release-work/failure-$scenario"
 done
 

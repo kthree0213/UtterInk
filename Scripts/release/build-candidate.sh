@@ -1765,6 +1765,135 @@ then
   fail candidate-evidence-invalid 35
 fi
 
+normalize_archive_build_marker() {
+  local archive="$1"
+  $PYTHON -I - "$archive" <<'PY' >/dev/null 2>&1
+from __future__ import annotations
+
+import ctypes
+import os
+from pathlib import Path
+import stat
+import sys
+
+
+archive = Path(sys.argv[1])
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+marker = b"com.apple.xcode.CreatedByBuildSystem"
+provenance = b"com.apple.provenance"
+stable_fields = (
+    "st_dev", "st_ino", "st_mode", "st_uid", "st_nlink", "st_size", "st_mtime_ns",
+)
+libc = ctypes.CDLL(None, use_errno=True)
+flistxattr = libc.flistxattr
+flistxattr.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+flistxattr.restype = ctypes.c_ssize_t
+fgetxattr = libc.fgetxattr
+fgetxattr.argtypes = [
+    ctypes.c_int, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32, ctypes.c_int,
+]
+fgetxattr.restype = ctypes.c_ssize_t
+fremovexattr = libc.fremovexattr
+fremovexattr.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+fremovexattr.restype = ctypes.c_int
+
+
+def same(left: os.stat_result, right: os.stat_result) -> bool:
+    return all(getattr(left, field) == getattr(right, field) for field in stable_fields)
+
+
+def xattr_names(descriptor: int) -> set[bytes]:
+    ctypes.set_errno(0)
+    size = flistxattr(descriptor, None, 0, 0)
+    if size < 0 or size > 64 * 1024:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    if size == 0:
+        return set()
+    buffer = ctypes.create_string_buffer(size)
+    ctypes.set_errno(0)
+    actual = flistxattr(descriptor, buffer, size, 0)
+    if actual < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    if actual != size:
+        raise ValueError
+    return {name for name in buffer.raw[:actual].split(b"\0") if name}
+
+
+def xattr_value(descriptor: int, name: bytes) -> bytes:
+    ctypes.set_errno(0)
+    size = fgetxattr(descriptor, name, None, 0, 0, 0)
+    if size < 0 or size > 64 * 1024:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    buffer = ctypes.create_string_buffer(size)
+    ctypes.set_errno(0)
+    actual = fgetxattr(descriptor, name, buffer, size, 0, 0)
+    if actual < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    if actual != size:
+        raise ValueError
+    return buffer.raw[:actual]
+
+
+def canonical_provenance(descriptor: int, names: set[bytes]) -> bool:
+    if provenance not in names:
+        return True
+    value = xattr_value(descriptor, provenance)
+    return len(value) == 11 and value[:3] == b"\x01\x02\x00"
+
+
+root_fd = products_fd = -1
+try:
+    root_fd = os.open(archive, flags)
+    root = os.fstat(root_fd)
+    if not stat.S_ISDIR(root.st_mode) or root.st_uid != os.geteuid():
+        raise ValueError
+    products_before = os.stat("Products", dir_fd=root_fd, follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(products_before.st_mode)
+        or stat.S_ISLNK(products_before.st_mode)
+        or products_before.st_dev != root.st_dev
+        or products_before.st_uid != os.geteuid()
+    ):
+        raise ValueError
+    products_fd = os.open("Products", flags, dir_fd=root_fd)
+    opened = os.fstat(products_fd)
+    if not same(products_before, opened):
+        raise ValueError
+    names = xattr_names(products_fd)
+    if not names.issubset({marker, provenance}) or not canonical_provenance(products_fd, names):
+        raise ValueError
+    if marker in names:
+        if xattr_value(products_fd, marker) != b"true":
+            raise ValueError
+        ctypes.set_errno(0)
+        if fremovexattr(products_fd, marker, 0) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+    normalized = os.fstat(products_fd)
+    if not same(opened, normalized):
+        raise ValueError
+    names = xattr_names(products_fd)
+    if names not in (set(), {provenance}) or not canonical_provenance(products_fd, names):
+        raise ValueError
+    current = os.stat("Products", dir_fd=root_fd, follow_symlinks=False)
+    if not same(normalized, current):
+        raise ValueError
+except (OSError, ValueError):
+    raise SystemExit(1)
+finally:
+    if products_fd >= 0:
+        os.close(products_fd)
+    if root_fd >= 0:
+        os.close(root_fd)
+PY
+}
+
+normalize_archive_build_marker "$ARCHIVE_PATH" || fail forbidden-archive-content 35
+
 logical_tree_manifest() {
   local mode="$1"
   local tree="$2"
@@ -1954,7 +2083,8 @@ APP_TREE_SHA256="$(logical_tree_manifest capture "$APP" "$APP_MANIFEST")" ||
 
 inspect_archive_content() {
   local inspected_root="$1"
-  $PYTHON -I - "$inspected_root" "$TEST_MODE" "${UTTERINK_FIXTURE_LOG:--}" <<'PY' >/dev/null 2>&1
+  local policy_mode="$2"
+  $PYTHON -I - "$inspected_root" "$policy_mode" "$TEST_MODE" "${UTTERINK_FIXTURE_LOG:--}" <<'PY' >/dev/null 2>&1
 from __future__ import annotations
 
 import os
@@ -1972,9 +2102,12 @@ class ContentError(Exception):
 
 
 archive = Path(sys.argv[1])
-test_mode = sys.argv[2] == "1"
-fixture_log = Path(sys.argv[3]) if test_mode else None
+policy_mode = sys.argv[2]
+test_mode = sys.argv[3] == "1"
+fixture_log = Path(sys.argv[4]) if test_mode else None
 archive_root = archive.resolve(strict=True)
+if policy_mode not in {"archive", "app", "stage"}:
+    raise SystemExit(1)
 private_markers = (
     b"-----BEGIN " + b"PRIVATE KEY-----",
     b"-----BEGIN RSA " + b"PRIVATE KEY-----",
@@ -1988,6 +2121,18 @@ command_markers = (
     b"xattr -dr com.apple.quarantine",
     b"xattr -cr",
 )
+archive_debug_path_exceptions = {
+    "dSYMs/UtterInk.app.dSYM/Contents/Resources/DWARF/UtterInk",
+    "dSYMs/UtterInk.app.dSYM/Contents/Resources/Relocations/aarch64/UtterInk.yml",
+}
+if policy_mode == "archive":
+    debug_path_exceptions = archive_debug_path_exceptions
+elif policy_mode == "stage":
+    debug_path_exceptions = {
+        f"UtterInk.xcarchive/{relative}" for relative in archive_debug_path_exceptions
+    }
+else:
+    debug_path_exceptions = set()
 credential_names = {
     ".env", ".netrc", "auth.json", "credential.json", "credentials.json", "secrets.json", "token.txt"
 }
@@ -2012,18 +2157,37 @@ def reject_extended_attributes(path: Path) -> None:
         names = set(result.stdout.decode("utf-8", errors="strict").splitlines())
     except UnicodeError:
         reject("xattr-read")
-    if names and not (test_mode and names == {"com.apple.provenance"}):
+    if not names:
+        return
+    if names != {"com.apple.provenance"}:
+        reject("xattr-policy")
+    value = subprocess.run(
+        ["/usr/bin/xattr", "-s", "-px", "com.apple.provenance", str(path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C"},
+    )
+    if value.returncode != 0:
+        reject("xattr-read")
+    try:
+        provenance = bytes.fromhex(value.stdout.decode("ascii", errors="strict"))
+    except (UnicodeError, ValueError):
+        reject("xattr-read")
+    if len(provenance) != 11 or provenance[:3] != b"\x01\x02\x00":
         reject("xattr-policy")
 
 
-def scan(path: Path) -> None:
+def scan(path: Path, relative: str) -> None:
     flags = os.O_RDONLY | os.O_NOFOLLOW
     descriptor = os.open(path, flags)
     try:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
             reject("content-marker")
-        needles = private_markers + path_markers + command_markers
+        needles = private_markers + command_markers
+        if relative not in debug_path_exceptions:
+            needles += path_markers
         overlap = max(len(value) for value in needles) - 1
         tail = b""
         while True:
@@ -2076,7 +2240,7 @@ try:
                 except (OSError, RuntimeError, ValueError):
                     reject("symlink-escape")
             elif stat.S_ISREG(metadata.st_mode):
-                scan(path)
+                scan(path, path.relative_to(archive).as_posix())
             elif not stat.S_ISDIR(metadata.st_mode):
                 reject("special-file")
 except ContentError as error:
@@ -2098,7 +2262,7 @@ except (OSError, UnicodeError, ValueError):
 PY
 }
 
-if ! inspect_archive_content "$ARCHIVE_PATH"; then
+if ! inspect_archive_content "$ARCHIVE_PATH" archive; then
   fail forbidden-archive-content 35
 fi
 
@@ -2311,8 +2475,8 @@ fi
   fail staging-copy-failed 36
 [[ "$(logical_tree_manifest verify "$STAGE/candidate/UtterInk.app" "$APP_MANIFEST")" == "$APP_TREE_SHA256" ]] ||
   fail staging-copy-failed 36
-inspect_archive_content "$STAGE/UtterInk.xcarchive" || fail staging-copy-failed 36
-inspect_archive_content "$STAGE/candidate/UtterInk.app" || fail staging-copy-failed 36
+inspect_archive_content "$STAGE/UtterInk.xcarchive" archive || fail staging-copy-failed 36
+inspect_archive_content "$STAGE/candidate/UtterInk.app" app || fail staging-copy-failed 36
 
 UNSIGNED_BUILD_EVIDENCE="$STAGE/candidate/unsigned-build-evidence.json"
 if ! UNSIGNED_BUILD_EVIDENCE_SHA256="$(
@@ -2415,7 +2579,7 @@ if [[ "$TEST_MODE" -eq 1 ]]; then
   exec 9< "$MUTATION_HOOK" || fail test-hook-failed 39
 fi
 safe_remove_tree "$STAGE" .transient "$TRANSIENT_DEVICE" "$TRANSIENT_INODE" 0 || fail work-cleanup-failed 37
-inspect_archive_content "$STAGE" || fail staging-layout-invalid 37
+inspect_archive_content "$STAGE" stage || fail staging-layout-invalid 37
 if ! $PYTHON -I - "$STAGE" <<'PY' >/dev/null 2>&1
 import os
 from pathlib import Path
@@ -2468,7 +2632,6 @@ expected_candidate_hash = sys.argv[7]
 expected_evidence_hash = sys.argv[8]
 expected_app_hash = sys.argv[9]
 expected_archive_hash = sys.argv[10]
-test_mode = sys.argv[11] == "1"
 if any(not name or name in {".", ".."} or "/" in name for name in (source_name, target_name)):
     raise SystemExit(1)
 if any(
@@ -2492,6 +2655,11 @@ libc = ctypes.CDLL(None, use_errno=True)
 flistxattr = libc.flistxattr
 flistxattr.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
 flistxattr.restype = ctypes.c_ssize_t
+fgetxattr = libc.fgetxattr
+fgetxattr.argtypes = [
+    ctypes.c_int, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32, ctypes.c_int,
+]
+fgetxattr.restype = ctypes.c_ssize_t
 
 
 def same(left: os.stat_result, right: os.stat_result) -> bool:
@@ -2508,7 +2676,7 @@ def checked_text(value: str) -> str:
 def reject_extended_attributes(descriptor: int) -> None:
     ctypes.set_errno(0)
     size = flistxattr(descriptor, None, 0, 0)
-    if size < 0:
+    if size < 0 or size > 64 * 1024:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error))
     if size == 0:
@@ -2522,7 +2690,23 @@ def reject_extended_attributes(descriptor: int) -> None:
     if actual != size:
         raise ValueError
     names = {name for name in buffer.raw[:actual].split(b"\0") if name}
-    if not (test_mode and names == {b"com.apple.provenance"}):
+    provenance_name = b"com.apple.provenance"
+    if names != {provenance_name}:
+        raise ValueError
+    ctypes.set_errno(0)
+    value_size = fgetxattr(descriptor, provenance_name, None, 0, 0, 0)
+    if value_size != 11:
+        if value_size < 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+        raise ValueError
+    value = ctypes.create_string_buffer(value_size)
+    ctypes.set_errno(0)
+    value_actual = fgetxattr(descriptor, provenance_name, value, value_size, 0, 0)
+    if value_actual < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    if value_actual != value_size or value.raw[:value_actual][:3] != b"\x01\x02\x00":
         raise ValueError
 
 
