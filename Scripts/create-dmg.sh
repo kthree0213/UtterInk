@@ -615,12 +615,28 @@ def xattrs(path: Path) -> list[list[str]]:
         abort()
     if len(names) != len(set(names)):
         abort()
-    # Distribution bundles must not carry quarantine data, Finder metadata,
-    # credentials, provenance blobs, or any other private extended metadata.
-    # The managed macOS test sandbox force-attaches a non-removable provenance
-    # attribute to every newly-created fixture node. Only the already-validated
-    # /private/tmp marker fixture may ignore that exact system attribute.
-    if names and not (test_fixture and set(names) == {"com.apple.provenance"}):
+    if not names:
+        return values
+    # Current macOS can force-attach an inert, non-removable provenance marker
+    # to newly-created files. Accept only the same canonical marker shape that
+    # the candidate builder validates; quarantine, Finder metadata, credentials,
+    # additional names, and malformed provenance values remain forbidden.
+    if set(names) != {"com.apple.provenance"}:
+        abort()
+    provenance = subprocess.run(
+        ["/usr/bin/xattr", "-s", "-px", "com.apple.provenance", str(path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        env=environment,
+    )
+    if provenance.returncode != 0:
+        abort()
+    try:
+        value = bytes.fromhex(provenance.stdout.decode("ascii", errors="strict"))
+    except (UnicodeError, ValueError):
+        abort()
+    if len(value) != 11 or value[:3] != b"\x01\x02\x00":
         abort()
     return values
 

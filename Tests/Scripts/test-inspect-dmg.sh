@@ -238,6 +238,35 @@ with Path(sys.argv[1]).open("wb") as handle:
 PY
 }
 
+write_resource_bundle_info_plist() {
+  local path="$1"
+  local package_type="${2:-BNDL}"
+  local executable="${3:-}"
+  /usr/bin/python3 -I - "$path" "$package_type" "$executable" <<'PY'
+from pathlib import Path
+import plistlib
+import sys
+
+value = {
+    "CFBundleIdentifier": "dev.utterink.fixture-resources",
+    "CFBundlePackageType": sys.argv[2],
+}
+if sys.argv[3]:
+    value["CFBundleExecutable"] = sys.argv[3]
+with Path(sys.argv[1]).open("wb") as handle:
+    plistlib.dump(value, handle, sort_keys=True)
+PY
+}
+
+add_valid_resource_bundle() {
+  local dmg="$1"
+  local bundle="$dmg.mount/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle"
+  /bin/mkdir -p "$bundle/Contents/Resources/en.lproj"
+  write_resource_bundle_info_plist "$bundle/Contents/Info.plist"
+  /usr/bin/printf '%s\n' '"fixture.localized" = "Fixture";' \
+    > "$bundle/Contents/Resources/en.lproj/Localizable.strings"
+}
+
 make_fixture() {
   local label="$1"
   local signature="${2:-unsigned}"
@@ -300,6 +329,43 @@ set_fixture_xattr() {
     return 1
   fi
   [[ "$actual" == "$value" ]] || return 1
+}
+
+set_fixture_hex_xattr() {
+  local path="$1"
+  local name="$2"
+  local value="$3"
+  local output actual
+  if ! output="$(/usr/bin/xattr -wx "$name" "$value" "$path" 2>&1)"; then
+    if [[ "$output" == *'Operation not supported'* || "$output" == *'not supported'* || "$output" == *'Operation not permitted'* ]]; then
+      return 77
+    fi
+    return 1
+  fi
+  [[ -z "$output" ]] || return 1
+  if ! actual="$(/usr/bin/xattr -px "$name" "$path" 2>/dev/null | /usr/bin/tr -d '[:space:]' | /usr/bin/tr '[:upper:]' '[:lower:]')"; then
+    return 1
+  fi
+  if [[ "$actual" != "$value" ]]; then
+    [[ "$name" != com.apple.provenance ]] || return 77
+    return 1
+  fi
+}
+
+set_fixture_canonical_provenance() {
+  local path="$1"
+  local output actual
+  if ! output="$(/usr/bin/xattr -wx com.apple.provenance 0102001122334455667788 "$path" 2>&1)"; then
+    if [[ "$output" == *'Operation not supported'* || "$output" == *'not supported'* || "$output" == *'Operation not permitted'* ]]; then
+      return 77
+    fi
+    return 1
+  fi
+  [[ -z "$output" ]] || return 1
+  if ! actual="$(/usr/bin/xattr -px com.apple.provenance "$path" 2>/dev/null | /usr/bin/tr -d '[:space:]' | /usr/bin/tr '[:upper:]' '[:lower:]')"; then
+    return 1
+  fi
+  [[ "$actual" =~ ^010200[0-9a-f]{16}$ ]]
 }
 
 set_fixture_symlink_xattr() {
@@ -465,6 +531,104 @@ signed_dmg="$(make_fixture valid-signed developer arm64 signed)"
 expect_success "$signed_dmg" signed
 expect_success "$signed_dmg" final
 
+resource_bundle="$(make_fixture valid-resource-bundle)"
+add_valid_resource_bundle "$resource_bundle"
+expect_success "$resource_bundle" unsigned
+
+signed_resource_bundle="$(make_fixture valid-signed-resource-bundle developer arm64 signed)"
+add_valid_resource_bundle "$signed_resource_bundle"
+expect_success "$signed_resource_bundle" signed
+expect_success "$signed_resource_bundle" final
+
+wrong_resource_bundle_parent="$(make_fixture wrong-resource-bundle-parent)"
+add_valid_resource_bundle "$wrong_resource_bundle_parent"
+/bin/mkdir -p "$wrong_resource_bundle_parent.mount/UtterInk.app/Contents/SharedSupport"
+/bin/mv \
+  "$wrong_resource_bundle_parent.mount/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle" \
+  "$wrong_resource_bundle_parent.mount/UtterInk.app/Contents/SharedSupport/Fixture_FixtureResources.bundle"
+expect_failure "$wrong_resource_bundle_parent" unsigned unsafe-bundle-content
+
+missing_resource_bundle_plist="$(make_fixture missing-resource-bundle-plist)"
+add_valid_resource_bundle "$missing_resource_bundle_plist"
+/bin/rm \
+  "$missing_resource_bundle_plist.mount/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Info.plist"
+expect_failure "$missing_resource_bundle_plist" unsigned unsafe-bundle-content
+
+missing_resource_bundle_resources="$(make_fixture missing-resource-bundle-resources)"
+add_valid_resource_bundle "$missing_resource_bundle_resources"
+/bin/rm -rf \
+  "$missing_resource_bundle_resources.mount/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Resources"
+expect_failure "$missing_resource_bundle_resources" unsigned unsafe-bundle-content
+
+malformed_resource_bundle_plist="$(make_fixture malformed-resource-bundle-plist)"
+add_valid_resource_bundle "$malformed_resource_bundle_plist"
+/usr/bin/printf '%s\n' 'not a property list' \
+  > "$malformed_resource_bundle_plist.mount/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Info.plist"
+expect_failure "$malformed_resource_bundle_plist" unsigned unsafe-bundle-content
+
+wrong_resource_bundle_plist="$(make_fixture wrong-resource-bundle-plist)"
+add_valid_resource_bundle "$wrong_resource_bundle_plist"
+write_resource_bundle_info_plist \
+  "$wrong_resource_bundle_plist.mount/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Info.plist" \
+  APPL
+expect_failure "$wrong_resource_bundle_plist" unsigned forbidden-content
+
+resource_bundle_executable_key="$(make_fixture resource-bundle-executable-key)"
+add_valid_resource_bundle "$resource_bundle_executable_key"
+write_resource_bundle_info_plist \
+  "$resource_bundle_executable_key.mount/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Info.plist" \
+  BNDL FixtureResourceBundle
+expect_failure "$resource_bundle_executable_key" unsigned forbidden-content
+
+resource_bundle_mach_o="$(make_fixture resource-bundle-mach-o)"
+add_valid_resource_bundle "$resource_bundle_mach_o"
+/usr/bin/printf '%s\n' 'MACHO:arm64' \
+  > "$resource_bundle_mach_o.mount/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Resources/UnexpectedMachO"
+/bin/chmod 0644 \
+  "$resource_bundle_mach_o.mount/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Resources/UnexpectedMachO"
+expect_failure "$resource_bundle_mach_o" unsigned forbidden-content
+
+resource_bundle_executable="$(make_fixture resource-bundle-executable)"
+add_valid_resource_bundle "$resource_bundle_executable"
+/usr/bin/printf '%s\n' 'executable fixture resource' \
+  > "$resource_bundle_executable.mount/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Resources/UnexpectedExecutable"
+/bin/chmod 0755 \
+  "$resource_bundle_executable.mount/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Resources/UnexpectedExecutable"
+expect_failure "$resource_bundle_executable" unsigned forbidden-content
+
+resource_bundle_symlink="$(make_fixture resource-bundle-symlink)"
+add_valid_resource_bundle "$resource_bundle_symlink"
+/bin/ln -s en.lproj/Localizable.strings \
+  "$resource_bundle_symlink.mount/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Resources/Localizable.strings"
+expect_failure "$resource_bundle_symlink" unsigned unsafe-symlink
+
+nested_resource_bundle="$(make_fixture nested-resource-bundle)"
+add_valid_resource_bundle "$nested_resource_bundle"
+nested_resource_bundle_path="$nested_resource_bundle.mount/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Resources/Nested_NestedResources.bundle"
+/bin/mkdir -p "$nested_resource_bundle_path/Contents/Resources/en.lproj"
+write_resource_bundle_info_plist "$nested_resource_bundle_path/Contents/Info.plist"
+/usr/bin/printf '%s\n' '"nested.localized" = "Nested";' \
+  > "$nested_resource_bundle_path/Contents/Resources/en.lproj/Localizable.strings"
+expect_failure "$nested_resource_bundle" unsigned unsafe-bundle-content
+
+resource_bundle_extra_directory="$(make_fixture resource-bundle-extra-directory)"
+add_valid_resource_bundle "$resource_bundle_extra_directory"
+/bin/mkdir -p \
+  "$resource_bundle_extra_directory.mount/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Resources/UnexpectedDirectory"
+expect_failure "$resource_bundle_extra_directory" unsigned unsafe-bundle-content
+
+resource_bundle_file_masquerade="$(make_fixture resource-bundle-file-masquerade)"
+/usr/bin/printf '%s\n' 'not a resource bundle directory' \
+  > "$resource_bundle_file_masquerade.mount/UtterInk.app/Contents/Resources/Masquerade.bundle"
+expect_failure "$resource_bundle_file_masquerade" unsigned unsafe-bundle-content
+
+uppercase_resource_bundle="$(make_fixture uppercase-resource-bundle)"
+add_valid_resource_bundle "$uppercase_resource_bundle"
+/bin/mv \
+  "$uppercase_resource_bundle.mount/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle" \
+  "$uppercase_resource_bundle.mount/UtterInk.app/Contents/Resources/Fixture_FixtureResources.BUNDLE"
+expect_failure "$uppercase_resource_bundle" unsigned unsafe-bundle-content
+
 unexpected_signature="$(make_fixture unexpected-signature developer arm64)"
 expect_failure "$unexpected_signature" unsigned
 
@@ -500,6 +664,63 @@ else
   xattr_status=$?
   [[ "$xattr_status" -eq 77 ]] || fail 'credential xattr fixture creation failed unexpectedly'
   /usr/bin/printf '%s\n' 'inspect DMG tests: SKIP credential xattr fixture (test filesystem does not support xattrs)' >&2
+fi
+
+provenance_xattr_supported=1
+canonical_provenance="$(make_fixture canonical-provenance)"
+if set_fixture_canonical_provenance \
+  "$canonical_provenance.mount/UtterInk.app/Contents/Resources/README.txt"; then
+  expect_success "$canonical_provenance" unsigned
+else
+  xattr_status=$?
+  if [[ "$xattr_status" -eq 77 ]]; then
+    provenance_xattr_supported=0
+    /usr/bin/printf '%s\n' 'inspect DMG tests: SKIP custom provenance fixtures (macOS refused custom com.apple.provenance)' >&2
+  else
+    fail 'canonical provenance xattr fixture creation failed unexpectedly'
+  fi
+fi
+
+if [[ "$provenance_xattr_supported" -eq 1 ]]; then
+  wrong_provenance_prefix="$(make_fixture wrong-provenance-prefix)"
+  if set_fixture_hex_xattr \
+    "$wrong_provenance_prefix.mount/UtterInk.app/Contents/Resources/README.txt" \
+    com.apple.provenance \
+    0102011122334455667788; then
+    expect_failure "$wrong_provenance_prefix" unsigned forbidden-content
+  else
+    xattr_status=$?
+    if [[ "$xattr_status" -eq 77 ]]; then
+      /usr/bin/printf '%s\n' 'inspect DMG tests: SKIP wrong-prefix provenance fixture (macOS canonicalized the custom value)' >&2
+    else
+      fail 'wrong-prefix provenance fixture creation failed'
+    fi
+  fi
+
+  wrong_provenance_length="$(make_fixture wrong-provenance-length)"
+  if set_fixture_hex_xattr \
+    "$wrong_provenance_length.mount/UtterInk.app/Contents/Resources/README.txt" \
+    com.apple.provenance \
+    01020011223344556677; then
+    expect_failure "$wrong_provenance_length" unsigned forbidden-content
+  else
+    xattr_status=$?
+    if [[ "$xattr_status" -eq 77 ]]; then
+      /usr/bin/printf '%s\n' 'inspect DMG tests: SKIP wrong-length provenance fixture (macOS canonicalized the custom value)' >&2
+    else
+      fail 'wrong-length provenance fixture creation failed'
+    fi
+  fi
+
+  provenance_extra_xattr="$(make_fixture provenance-extra-xattr)"
+  set_fixture_canonical_provenance \
+    "$provenance_extra_xattr.mount/UtterInk.app/Contents/Resources/README.txt" ||
+    fail 'canonical-plus-extra provenance fixture creation failed'
+  set_fixture_xattr \
+    "$provenance_extra_xattr.mount/UtterInk.app/Contents/Resources/README.txt" \
+    com.utterink.fixture-extra \
+    'extra metadata' || fail 'canonical-plus-extra secondary xattr fixture creation failed'
+  expect_failure "$provenance_extra_xattr" unsigned forbidden-content
 fi
 
 volume_root_xattr="$(make_fixture volume-root-xattr)"

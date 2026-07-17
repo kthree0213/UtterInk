@@ -51,6 +51,78 @@ ORDINARY_LOG="$TMP/ordinary-path.log"
 BASH_ENV_MARKER="$TMP/bash-env-loaded"
 BASH_ENV_CANARY="$TMP/hostile-bash-env"
 printf 'printf loaded > %q\n' "$BASH_ENV_MARKER" > "$BASH_ENV_CANARY"
+
+set_fixture_hex_xattr() {
+  local path="$1"
+  local name="$2"
+  local value="$3"
+  local output actual
+  if ! output="$(/usr/bin/xattr -wx "$name" "$value" "$path" 2>&1)"; then
+    if [[ "$output" == *'Operation not supported'* || "$output" == *'not supported'* || "$output" == *'Operation not permitted'* ]]; then
+      return 77
+    fi
+    return 1
+  fi
+  [[ -z "$output" ]] || return 1
+  if ! actual="$(/usr/bin/xattr -px "$name" "$path" 2>/dev/null | /usr/bin/tr -d '[:space:]' | /usr/bin/tr '[:upper:]' '[:lower:]')"; then
+    return 1
+  fi
+  if [[ "$actual" != "$value" ]]; then
+    [[ "$name" != com.apple.provenance ]] || return 77
+    return 1
+  fi
+}
+
+set_fixture_canonical_provenance() {
+  local path="$1"
+  local output actual
+  if ! output="$(/usr/bin/xattr -wx com.apple.provenance 0102001122334455667788 "$path" 2>&1)"; then
+    if [[ "$output" == *'Operation not supported'* || "$output" == *'not supported'* || "$output" == *'Operation not permitted'* ]]; then
+      return 77
+    fi
+    return 1
+  fi
+  [[ -z "$output" ]] || return 1
+  if ! actual="$(/usr/bin/xattr -px com.apple.provenance "$path" 2>/dev/null | /usr/bin/tr -d '[:space:]' | /usr/bin/tr '[:upper:]' '[:lower:]')"; then
+    return 1
+  fi
+  [[ "$actual" =~ ^010200[0-9a-f]{16}$ ]]
+}
+
+PROVENANCE_XATTR_SUPPORTED=1
+PROVENANCE_WRONG_PREFIX_SUPPORTED=1
+PROVENANCE_WRONG_LENGTH_SUPPORTED=1
+PROVENANCE_PROBE="$TMP/provenance-probe"
+/usr/bin/printf '%s\n' 'provenance capability probe' > "$PROVENANCE_PROBE"
+if set_fixture_canonical_provenance "$PROVENANCE_PROBE"; then
+  :
+else
+  xattr_status=$?
+  if [[ "$xattr_status" -eq 77 ]]; then
+    PROVENANCE_XATTR_SUPPORTED=0
+  else
+    fail 'custom provenance xattr capability probe failed unexpectedly'
+  fi
+fi
+if [[ "$PROVENANCE_XATTR_SUPPORTED" -eq 1 ]]; then
+  if set_fixture_hex_xattr "$PROVENANCE_PROBE" com.apple.provenance 0102011122334455667788; then
+    :
+  else
+    xattr_status=$?
+    [[ "$xattr_status" -eq 77 ]] || fail 'wrong-prefix provenance capability probe failed unexpectedly'
+    PROVENANCE_WRONG_PREFIX_SUPPORTED=0
+  fi
+  if set_fixture_hex_xattr "$PROVENANCE_PROBE" com.apple.provenance 01020011223344556677; then
+    :
+  else
+    xattr_status=$?
+    [[ "$xattr_status" -eq 77 ]] || fail 'wrong-length provenance capability probe failed unexpectedly'
+    PROVENANCE_WRONG_LENGTH_SUPPORTED=0
+  fi
+else
+  PROVENANCE_WRONG_PREFIX_SUPPORTED=0
+  PROVENANCE_WRONG_LENGTH_SUPPORTED=0
+fi
 /bin/mkdir -p \
   "$BASE/Config" \
   "$BASE/FixtureTools" \
@@ -133,6 +205,19 @@ printf '%s\n' '<?xml version="1.0"?><plist version="1.0"><dict/></plist>' > "$ap
 /usr/bin/xattr -cr "$app"
 if [[ -f "${UTTERINK_FIXTURE_LOG:?}.source-xattr" ]]; then
   /usr/bin/xattr -w com.utterink.fixture private-metadata "$app/Contents/MacOS/UtterInk"
+fi
+if [[ -f "$UTTERINK_FIXTURE_LOG.source-provenance-canonical" ]]; then
+  /usr/bin/xattr -wx com.apple.provenance 0102001122334455667788 "$app/Contents/MacOS/UtterInk"
+fi
+if [[ -f "$UTTERINK_FIXTURE_LOG.source-provenance-wrong-prefix" ]]; then
+  /usr/bin/xattr -wx com.apple.provenance 0102011122334455667788 "$app/Contents/MacOS/UtterInk"
+fi
+if [[ -f "$UTTERINK_FIXTURE_LOG.source-provenance-wrong-length" ]]; then
+  /usr/bin/xattr -wx com.apple.provenance 01020011223344556677 "$app/Contents/MacOS/UtterInk"
+fi
+if [[ -f "$UTTERINK_FIXTURE_LOG.source-provenance-extra-xattr" ]]; then
+  /usr/bin/xattr -wx com.apple.provenance 0102001122334455667788 "$app/Contents/MacOS/UtterInk"
+  /usr/bin/xattr -w com.utterink.fixture extra-metadata "$app/Contents/MacOS/UtterInk"
 fi
 EOF
 
@@ -684,6 +769,39 @@ run_package "$BASE" --commit "$BASE_COMMIT" --output dist/source-app-xattr
   fail 'source app xattr did not fail at the create-dmg source boundary'
 [[ ! -e "$BASE/dist/source-app-xattr" ]] || fail 'source app xattr left a package output'
 /bin/rm "$FIXTURE_LOG.source-xattr"
+
+if [[ "$PROVENANCE_XATTR_SUPPORTED" -eq 1 ]]; then
+  /usr/bin/printf '%s\n' 'source app carries canonical provenance' > "$FIXTURE_LOG.source-provenance-canonical"
+  run_package "$BASE" --commit "$BASE_COMMIT" --output dist/source-provenance-canonical
+  [[ "$PACKAGE_STATUS" -eq 0 ]] ||
+    fail "canonical source provenance was rejected: $(/bin/cat "$STDERR")"
+  [[ -f "$BASE/dist/source-provenance-canonical/UtterInk-0.1.0-arm64-UNSIGNED-DO-NOT-DISTRIBUTE.dmg" ]] ||
+    fail 'canonical source provenance did not emit the unsigned DMG'
+  /bin/rm "$FIXTURE_LOG.source-provenance-canonical"
+
+  provenance_scenarios=(source-provenance-extra-xattr)
+  if [[ "$PROVENANCE_WRONG_PREFIX_SUPPORTED" -eq 1 ]]; then
+    provenance_scenarios+=(source-provenance-wrong-prefix)
+  else
+    /usr/bin/printf '%s\n' 'unsigned packaging tests: SKIP wrong-prefix provenance fixture (macOS canonicalized the custom value)' >&2
+  fi
+  if [[ "$PROVENANCE_WRONG_LENGTH_SUPPORTED" -eq 1 ]]; then
+    provenance_scenarios+=(source-provenance-wrong-length)
+  else
+    /usr/bin/printf '%s\n' 'unsigned packaging tests: SKIP wrong-length provenance fixture (macOS canonicalized the custom value)' >&2
+  fi
+  for provenance_scenario in "${provenance_scenarios[@]}"; do
+    /usr/bin/printf '%s\n' "adversarial provenance fixture: $provenance_scenario" > "$FIXTURE_LOG.$provenance_scenario"
+    run_package "$BASE" --commit "$BASE_COMMIT" --output "dist/$provenance_scenario"
+    [[ "$PACKAGE_STATUS" -ne 0 ]] || fail "$provenance_scenario passed DMG creation"
+    /usr/bin/grep -Fq 'DMG creation error: unsafe-app-bundle' "$STDERR" ||
+      fail "$provenance_scenario did not fail at the create-dmg source boundary"
+    [[ ! -e "$BASE/dist/$provenance_scenario" ]] || fail "$provenance_scenario left a package output"
+    /bin/rm "$FIXTURE_LOG.$provenance_scenario"
+  done
+else
+  /usr/bin/printf '%s\n' 'unsigned packaging tests: SKIP custom provenance fixtures (macOS refused custom com.apple.provenance)' >&2
+fi
 
 printf 'fixture\n' > "$FIXTURE_LOG.non-arm64"
 run_package "$BASE" --commit "$BASE_COMMIT" --output dist/non-arm64

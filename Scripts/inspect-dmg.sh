@@ -529,6 +529,7 @@ from __future__ import annotations
 import ctypes
 import os
 from pathlib import Path, PurePosixPath
+import plistlib
 import stat
 import sys
 
@@ -560,7 +561,7 @@ credential_names = {
     "credentials", "credentials.json", "id_ed25519", "id_rsa", "secrets.json", "token.txt",
 }
 credential_suffixes = {".key", ".mobileprovision", ".p12", ".pem", ".pfx"}
-bundle_suffixes = {".app", ".appex", ".bundle", ".framework", ".plugin", ".xpc"}
+code_bundle_suffixes = {".app", ".appex", ".framework", ".plugin", ".xpc"}
 private_key_prefix = b"-----BEGIN "
 private_markers = (
     private_key_prefix + b"PRIVATE KEY-----",
@@ -575,8 +576,15 @@ try:
     list_xattr = libc.listxattr
     list_xattr.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
     list_xattr.restype = ctypes.c_ssize_t
+    get_xattr = libc.getxattr
+    get_xattr.argtypes = [
+        ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t,
+        ctypes.c_uint32, ctypes.c_int,
+    ]
+    get_xattr.restype = ctypes.c_ssize_t
 except (AttributeError, OSError, TypeError):
     list_xattr = None
+    get_xattr = None
 xattr_nofollow = 0x0001
 
 
@@ -611,7 +619,7 @@ def inspect_name(path: Path) -> None:
 
 
 def reject_extended_attributes(path: Path) -> None:
-    if list_xattr is None:
+    if list_xattr is None or get_xattr is None:
         reject("unsafe-bundle-content")
     try:
         encoded = os.fsencode(path)
@@ -635,9 +643,22 @@ def reject_extended_attributes(path: Path) -> None:
     if not names or names[-1] != b"" or any(not name for name in names[:-1]):
         reject("unsafe-bundle-content")
     attributes = names[:-1]
-    if test_mode and attributes == [b"com.apple.provenance"]:
-        return
-    reject("forbidden-content")
+    provenance_name = b"com.apple.provenance"
+    if attributes != [provenance_name]:
+        reject("forbidden-content")
+    ctypes.set_errno(0)
+    value_size = get_xattr(encoded, provenance_name, None, 0, 0, xattr_nofollow)
+    if value_size != 11:
+        reject("forbidden-content" if value_size >= 0 else "unsafe-bundle-content")
+    value = ctypes.create_string_buffer(value_size)
+    ctypes.set_errno(0)
+    value_actual = get_xattr(
+        encoded, provenance_name, value, value_size, 0, xattr_nofollow,
+    )
+    if value_actual != value_size:
+        reject("unsafe-bundle-content")
+    if value.raw[:value_actual][:3] != b"\x01\x02\x00":
+        reject("forbidden-content")
 
 
 def inspect_regular(path: Path) -> None:
@@ -685,6 +706,51 @@ def inspect_regular(path: Path) -> None:
         reject("quarantine-helper")
 
 
+def resource_bundle_ancestor(path: Path, app: Path) -> Path | None:
+    return next(
+        (parent for parent in path.parents if parent != app and parent.suffix == ".bundle"),
+        None,
+    )
+
+
+def read_small_regular(path: Path, maximum_size: int = 1024 * 1024) -> bytes:
+    descriptor = -1
+    try:
+        before = os.lstat(path)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size > maximum_size
+        ):
+            reject("unsafe-bundle-content")
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        opened = os.fstat(descriptor)
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, 65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > maximum_size:
+                reject("unsafe-bundle-content")
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        fingerprint = lambda item: (
+            item.st_dev, item.st_ino, item.st_mode, item.st_uid, item.st_nlink,
+            item.st_size, item.st_mtime_ns, item.st_ctime_ns,
+        )
+        if fingerprint(before) != fingerprint(opened) or fingerprint(opened) != fingerprint(after):
+            reject("unsafe-bundle-content")
+        return b"".join(chunks)
+    except OSError:
+        reject("unsafe-bundle-content")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 try:
     if mount.is_symlink() or not mount.is_dir():
         reject("mount-invalid")
@@ -717,6 +783,8 @@ try:
 
     regular_files: list[Path] = []
     signables: list[Path] = [app]
+    directory_paths: set[Path] = set()
+    resource_bundles: set[Path] = set()
     for current_text, directories, filenames in os.walk(app, topdown=True, followlinks=False):
         current = Path(current_text)
         reject_extended_attributes(current)
@@ -731,6 +799,8 @@ try:
             reject_extended_attributes(path)
             inspect_name(path)
             if stat.S_ISLNK(metadata.st_mode):
+                if path.suffix.lower() == ".bundle" or resource_bundle_ancestor(path, app) is not None:
+                    reject("unsafe-symlink")
                 try:
                     target_text = os.readlink(path)
                     target = Path(target_text)
@@ -742,13 +812,58 @@ try:
                     reject("unsafe-symlink")
                 continue
             if stat.S_ISDIR(metadata.st_mode):
-                if path.suffix.lower() in bundle_suffixes:
+                directory_paths.add(path)
+                suffix = path.suffix
+                bundle_ancestor = resource_bundle_ancestor(path, app)
+                if suffix == ".bundle":
+                    if bundle_ancestor is not None or path.parent != app / "Contents" / "Resources":
+                        reject("unsafe-bundle-content")
+                    resource_bundles.add(path)
+                elif bundle_ancestor is not None:
+                    bundle_contents = bundle_ancestor / "Contents"
+                    bundle_resources = bundle_contents / "Resources"
+                    if path == bundle_contents or path == bundle_resources:
+                        pass
+                    elif suffix == ".lproj" and path.parent == bundle_resources:
+                        pass
+                    else:
+                        reject("unsafe-bundle-content")
+                elif suffix.lower() == ".bundle":
+                    reject("unsafe-bundle-content")
+                elif suffix.lower() in code_bundle_suffixes:
                     signables.append(path)
                 continue
             if not stat.S_ISREG(metadata.st_mode):
                 reject("unsafe-bundle-content")
+            if path.suffix.lower() == ".bundle":
+                reject("unsafe-bundle-content")
+            bundle_ancestor = resource_bundle_ancestor(path, app)
+            if bundle_ancestor is not None:
+                bundle_contents = bundle_ancestor / "Contents"
+                bundle_resources = bundle_contents / "Resources"
+                if path != bundle_contents / "Info.plist" and bundle_resources not in path.parents:
+                    reject("unsafe-bundle-content")
+                if metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) & 0o111:
+                    reject("forbidden-content")
             inspect_regular(path)
             regular_files.append(path)
+
+    for resource_bundle in resource_bundles:
+        bundle_contents = resource_bundle / "Contents"
+        bundle_resources = bundle_contents / "Resources"
+        if bundle_contents not in directory_paths or bundle_resources not in directory_paths:
+            reject("unsafe-bundle-content")
+        info_path = bundle_contents / "Info.plist"
+        try:
+            properties = plistlib.loads(read_small_regular(info_path))
+        except (plistlib.InvalidFileException, ValueError):
+            reject("unsafe-bundle-content")
+        if (
+            not isinstance(properties, dict)
+            or properties.get("CFBundlePackageType") != "BNDL"
+            or "CFBundleExecutable" in properties
+        ):
+            reject("forbidden-content")
 
     info = app / "Contents" / "Info.plist"
     executable = app / "Contents" / "MacOS" / "UtterInk"
@@ -921,6 +1036,9 @@ while IFS= read -r -d '' path; do
     fail architecture-inspection-failed
   fi
   if [[ "$description" == *Mach-O* ]]; then
+    case "$path" in
+      "$MOUNT_POINT/UtterInk.app/Contents/Resources/"*.bundle/*) fail forbidden-content ;;
+    esac
     MACH_O_COUNT=$((MACH_O_COUNT + 1))
     if ! architectures="$($LIPO -archs "$path" 2> "$WORK/lipo-error")"; then
       fail architecture-inspection-failed
