@@ -69,16 +69,20 @@ is_entitlements=0
 is_requirement=0
 is_extract=0
 extract_prefix=''
-previous=''
 for argument in "$@"; do
   [[ "$argument" == --sign ]] && is_sign=1
   [[ "$argument" == --verify ]] && is_verify=1
   [[ "$argument" == --entitlements ]] && is_entitlements=1
   [[ "$argument" == -r- ]] && is_requirement=1
-  if [[ "$previous" == --extract-certificates ]]; then extract_prefix="$argument"; fi
-  [[ "$argument" == --extract-certificates ]] && is_extract=1
+  case "$argument" in
+    --extract-certificates) exit 59 ;;
+    --extract-certificates=*)
+      [[ "$is_extract" -eq 0 ]] || exit 59
+      is_extract=1
+      extract_prefix="${argument#--extract-certificates=}"
+      ;;
+  esac
   [[ "$argument" != --deep ]] || exit 61
-  previous="$argument"
 done
 
 if [[ "$is_extract" -eq 1 ]]; then
@@ -651,7 +655,7 @@ for needle in \
   $'codesign\t--verify --strict --verbose=4 ' \
   $'codesign\t-d --verbose=4 --entitlements :- ' \
   $'codesign\t-d -r- ' \
-  $'codesign\t-d --extract-certificates ' \
+  $'codesign\t-d --extract-certificates=' \
   $'lipo\t-archs '; do
   /usr/bin/grep -Fq "$needle" "$FIXTURE_LOG" || fail "required verification command missing: $needle"
 done

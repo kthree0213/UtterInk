@@ -488,7 +488,7 @@ then fail dmg-signature-invalid 24; fi
 
 # Confirm the DMG is signed by the same actual leaf, not merely an Authority
 # string with the same display name.
-if ! "$CODESIGN" -d --extract-certificates "$WORK/dmg-leaf-" "$DMG" > "$WORK/dmg-extract.out" 2> "$WORK/dmg-extract.err"; then fail dmg-signature-invalid 24; fi
+if ! "$CODESIGN" -d "--extract-certificates=$WORK/dmg-leaf-" "$DMG" > "$WORK/dmg-extract.out" 2> "$WORK/dmg-extract.err"; then fail dmg-signature-invalid 24; fi
 [[ -f "$WORK/dmg-leaf-0" && ! -L "$WORK/dmg-leaf-0" ]] || fail dmg-signature-invalid 24
 if ! "$OPENSSL" x509 -inform DER -in "$WORK/dmg-leaf-0" -out "$WORK/dmg-leaf.pem" 2> "$WORK/tool-error"; then fail dmg-signature-invalid 24; fi
 if ! "$SECURITY" verify-cert -c "$WORK/dmg-leaf.pem" -p codeSign > "$WORK/dmg-trust.out" 2> "$WORK/tool-error"; then fail dmg-signature-invalid 24; fi

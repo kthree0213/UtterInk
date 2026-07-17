@@ -542,7 +542,7 @@ then fail invalid-candidate 24; fi
 
 # Extract the actual embedded leaf certificate from the signed outer app.
 assert_app_unchanged || fail candidate-mutated 24
-if ! "$CODESIGN" -d --extract-certificates "$CONTROL/embedded-leaf-" "$APP" > "$CONTROL/extract.out" 2> "$CONTROL/extract.err"; then
+if ! "$CODESIGN" -d "--extract-certificates=$CONTROL/embedded-leaf-" "$APP" > "$CONTROL/extract.out" 2> "$CONTROL/extract.err"; then
   fail certificate-unavailable 23
 fi
 assert_app_unchanged || fail candidate-mutated 24
