@@ -503,7 +503,7 @@ assert_app_unchanged || fail candidate-mutated 24
 if ! "$OPENSSL" x509 -inform DER -in "$CONTROL/embedded-leaf-0" -out "$CONTROL/certificate.pem" 2> "$CONTROL/tool-error"; then fail certificate-invalid 23; fi
 if ! "$SECURITY" verify-cert -c "$CONTROL/certificate.pem" -p codeSign > "$CONTROL/tool-output" 2> "$CONTROL/tool-error"; then fail certificate-untrusted 23; fi
 if ! "$OPENSSL" x509 -in "$CONTROL/certificate.pem" -checkend 0 -noout > "$CONTROL/tool-output" 2> "$CONTROL/tool-error"; then fail certificate-expired 23; fi
-if ! "$OPENSSL" x509 -in "$CONTROL/certificate.pem" -noout -subject -nameopt sep_multiline -startdate -enddate -fingerprint -sha256 > "$CONTROL/certificate-details" 2> "$CONTROL/tool-error"; then fail certificate-invalid 23; fi
+if ! "$OPENSSL" x509 -in "$CONTROL/certificate.pem" -noout -subject -nameopt sep_multiline,lname,space_eq -startdate -enddate -fingerprint -sha256 > "$CONTROL/certificate-details" 2> "$CONTROL/tool-error"; then fail certificate-invalid 23; fi
 if ! /usr/bin/python3 -I - "$CONTROL/certificate-details" "$IDENTITY" "$TEAM_ID" "$EXPECTED_CERTIFICATE_SHA256" "$CONTROL/certificate.json" <<'PY' >/dev/null 2>&1
 from pathlib import Path
 import json,re,sys

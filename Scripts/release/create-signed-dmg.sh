@@ -416,7 +416,7 @@ PY
 then fail identity-preflight-failed 24; fi
 if ! "$SECURITY" verify-cert -c "$WORK/keychain-certificate.pem" -p codeSign > "$WORK/trust.out" 2> "$WORK/tool-error"; then fail identity-preflight-failed 24; fi
 if ! "$OPENSSL" x509 -in "$WORK/keychain-certificate.pem" -checkend 0 -noout > "$WORK/checkend.out" 2> "$WORK/tool-error"; then fail identity-preflight-failed 24; fi
-if ! "$OPENSSL" x509 -in "$WORK/keychain-certificate.pem" -noout -subject -nameopt sep_multiline -fingerprint -sha1 > "$WORK/keychain-sha1.txt" 2> "$WORK/tool-error"; then fail identity-preflight-failed 24; fi
+if ! "$OPENSSL" x509 -in "$WORK/keychain-certificate.pem" -noout -subject -nameopt sep_multiline,lname,space_eq -fingerprint -sha1 > "$WORK/keychain-sha1.txt" 2> "$WORK/tool-error"; then fail identity-preflight-failed 24; fi
 if ! "$OPENSSL" x509 -in "$WORK/keychain-certificate.pem" -noout -fingerprint -sha256 > "$WORK/keychain-sha256.txt" 2> "$WORK/tool-error"; then fail identity-preflight-failed 24; fi
 if ! /usr/bin/python3 -I - "$WORK/keychain-sha1.txt" "$WORK/keychain-sha256.txt" "$IDENTITY" "$TEAM_ID" "$IDENTITY_SHA1" "$CERTIFICATE_SHA256" <<'PY' >/dev/null 2>&1
 from pathlib import Path

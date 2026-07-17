@@ -385,7 +385,7 @@ fi
   fail identity-preflight-failed 24
 "$OPENSSL" x509 -in "$CONTROL/certificate.pem" -checkend 0 -noout > "$CONTROL/tool-output.txt" 2> "$CONTROL/tool-error.txt" ||
   fail identity-preflight-failed 24
-"$OPENSSL" x509 -in "$CONTROL/certificate.pem" -noout -subject -nameopt sep_multiline > "$CONTROL/subject.txt" 2> "$CONTROL/tool-error.txt" ||
+"$OPENSSL" x509 -in "$CONTROL/certificate.pem" -noout -subject -nameopt sep_multiline,lname,space_eq > "$CONTROL/subject.txt" 2> "$CONTROL/tool-error.txt" ||
   fail identity-preflight-failed 24
 "$OPENSSL" x509 -in "$CONTROL/certificate.pem" -noout -fingerprint -sha1 > "$CONTROL/certificate-sha1.txt" 2> "$CONTROL/tool-error.txt" ||
   fail identity-preflight-failed 24

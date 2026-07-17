@@ -113,7 +113,7 @@ case "$*" in
   *'-fingerprint -sha256'*)
     printf 'sha256 Fingerprint=BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB:BB\n'
     ;;
-  *'-subject -nameopt sep_multiline'*)
+  *'-subject -nameopt sep_multiline,lname,space_eq'*)
     printf '%s\n' \
       'subject=' \
       '    commonName = Developer ID Application: Fixture Author (ABCDE12345)'

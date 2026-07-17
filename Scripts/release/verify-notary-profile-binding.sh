@@ -515,7 +515,7 @@ for identity_sha1, identity in candidates:
             abort()
         try:
             subject_lines = run([
-                openssl, "x509", "-in", str(certificate_path), "-noout", "-subject", "-nameopt", "sep_multiline",
+                openssl, "x509", "-in", str(certificate_path), "-noout", "-subject", "-nameopt", "sep_multiline,lname,space_eq",
             ]).decode("utf-8", errors="strict").splitlines()
         except UnicodeError:
             abort()

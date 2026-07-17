@@ -100,7 +100,7 @@ case "$*" in
   *'-checkend 0 -noout'*)
     [[ ! -f "$log.expired" ]]
     ;;
-  *'-subject -nameopt sep_multiline'*)
+  *'-subject -nameopt sep_multiline,lname,space_eq'*)
     printf '%s\n' 'subject='
     if [[ -f "$log.wrong-common-name" ]]; then
       printf '    commonName = Developer ID Application: Wrong Author (ABCDE12345)\n'

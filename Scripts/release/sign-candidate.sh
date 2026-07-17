@@ -1235,7 +1235,7 @@ if ! "$OPENSSL" x509 -in "$CONTROL/certificate.pem" -checkend 0 -noout \
   > "$CONTROL/openssl-check.txt" 2> "$CONTROL/tool-error.txt"; then
   fail identity-preflight-failed 24
 fi
-if ! "$OPENSSL" x509 -in "$CONTROL/certificate.pem" -noout -subject -nameopt sep_multiline \
+if ! "$OPENSSL" x509 -in "$CONTROL/certificate.pem" -noout -subject -nameopt sep_multiline,lname,space_eq \
   > "$CONTROL/subject.txt" 2> "$CONTROL/tool-error.txt"; then
   fail identity-preflight-failed 24
 fi

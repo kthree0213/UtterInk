@@ -211,6 +211,7 @@ if [[ "$*" == *'-checkend 0'* ]]; then
   exit 0
 fi
 if [[ "$*" == *'-subject'* ]]; then
+  [[ "$*" == *'-nameopt sep_multiline,lname,space_eq'* ]] || exit 74
   /usr/bin/printf '%s\n' 'subject=' '    commonName = Developer ID Application: Fixture Author (ABCDE12345)' '    organizationalUnitName = ABCDE12345'
 fi
 [[ "$*" != *'-startdate'* ]] || /usr/bin/printf '%s\n' 'notBefore=Jul  1 00:00:00 2026 GMT'
