@@ -432,10 +432,39 @@ assert_app_unchanged() {
 # Discover every physical path first; signable discovery is a projection of this
 # complete inventory and every external path operation is bracketed by snapshots.
 if ! /usr/bin/python3 -I - "$APP" "$CONTROL/discovery.bin" <<'PY' >/dev/null 2>&1
-from pathlib import Path
-import os,stat,sys
-app,output=Path(sys.argv[1]),Path(sys.argv[2]); suffixes={".app",".appex",".xpc",".bundle",".plugin",".framework"}
+from pathlib import Path, PurePosixPath
+import os,plistlib,stat,sys
+app,output=Path(sys.argv[1]),Path(sys.argv[2]); code_suffixes={".app",".appex",".xpc",".plugin",".framework"}
 def abort(): raise SystemExit(1)
+def fp(item):
+    return (item.st_dev,item.st_ino,item.st_mode,item.st_uid,item.st_nlink,item.st_size,item.st_mtime_ns,item.st_ctime_ns)
+def resource_bundle_ancestor(path):
+    return next((parent for parent in path.parents if str(parent)!="." and parent.suffix==".bundle"),None)
+def validate_resource_bundle(fd):
+    contents=None; resources=None; info=None
+    try:
+        contents=os.open("Contents",os.O_RDONLY|getattr(os,"O_DIRECTORY",0)|getattr(os,"O_NOFOLLOW",0),dir_fd=fd)
+        contents_meta=os.fstat(contents)
+        if not stat.S_ISDIR(contents_meta.st_mode): abort()
+        resources=os.open("Resources",os.O_RDONLY|getattr(os,"O_DIRECTORY",0)|getattr(os,"O_NOFOLLOW",0),dir_fd=contents)
+        if not stat.S_ISDIR(os.fstat(resources).st_mode): abort()
+        expected=os.stat("Info.plist",dir_fd=contents,follow_symlinks=False)
+        if not stat.S_ISREG(expected.st_mode) or expected.st_nlink!=1 or expected.st_size>1024*1024: abort()
+        info=os.open("Info.plist",os.O_RDONLY|getattr(os,"O_NOFOLLOW",0),dir_fd=contents)
+        opened=os.fstat(info); chunks=[]; remaining=1024*1024+1
+        while remaining:
+            chunk=os.read(info,min(65536,remaining))
+            if not chunk: break
+            chunks.append(chunk); remaining-=len(chunk)
+        after=os.fstat(info)
+        if fp(expected)!=fp(opened) or fp(opened)!=fp(after) or sum(map(len,chunks))>1024*1024: abort()
+        properties=plistlib.loads(b"".join(chunks))
+        if not isinstance(properties,dict) or properties.get("CFBundlePackageType")!="BNDL" or "CFBundleExecutable" in properties: abort()
+    except (OSError,plistlib.InvalidFileException,ValueError): abort()
+    finally:
+        if info is not None: os.close(info)
+        if resources is not None: os.close(resources)
+        if contents is not None: os.close(contents)
 try:
     root=os.lstat(app); fd=os.open(app,os.O_RDONLY|getattr(os,"O_DIRECTORY",0)|getattr(os,"O_NOFOLLOW",0))
     records=[(b"bundle",b"UtterInk.app")]
@@ -444,15 +473,32 @@ try:
             relative=f"{prefix}/{name}" if prefix else name; raw=("UtterInk.app/"+relative).encode("utf-8",errors="strict")
             if any(b<32 or b==127 for b in raw): abort()
             item=os.stat(name,dir_fd=directory,follow_symlinks=False)
+            relative_path=PurePosixPath(relative); bundle_ancestor=resource_bundle_ancestor(relative_path)
             if stat.S_ISDIR(item.st_mode) and not stat.S_ISLNK(item.st_mode):
                 child=os.open(name,os.O_RDONLY|getattr(os,"O_DIRECTORY",0)|getattr(os,"O_NOFOLLOW",0),dir_fd=directory)
-                path=Path(name)
-                if path.suffix in suffixes:
-                    if path.suffix != ".framework": os.close(child); abort()
+                suffix=relative_path.suffix
+                if suffix==".bundle":
+                    if bundle_ancestor is not None or relative_path.parent!=PurePosixPath("Contents/Resources"):
+                        os.close(child); abort()
+                    validate_resource_bundle(child)
+                elif bundle_ancestor is not None:
+                    contents=bundle_ancestor/"Contents"; resources=contents/"Resources"
+                    if relative_path==contents or relative_path==resources: pass
+                    elif suffix==".lproj" and relative_path.parent==resources: pass
+                    else: os.close(child); abort()
+                elif suffix in code_suffixes:
+                    if suffix != ".framework": os.close(child); abort()
                     records.append((b"bundle",raw))
                 walk(child,relative); os.close(child)
-            elif stat.S_ISREG(item.st_mode): records.append((b"file",raw))
-            elif stat.S_ISLNK(item.st_mode): records.append((b"symlink",raw))
+            elif stat.S_ISREG(item.st_mode):
+                if bundle_ancestor is not None:
+                    contents=bundle_ancestor/"Contents"; resources=contents/"Resources"
+                    if relative_path!=contents/"Info.plist" and resources not in relative_path.parents: abort()
+                    records.append((b"resource-file",raw))
+                else: records.append((b"file",raw))
+            elif stat.S_ISLNK(item.st_mode):
+                if bundle_ancestor is not None: abort()
+                records.append((b"symlink",raw))
             else: abort()
     walk(fd,""); os.close(fd)
     with output.open("wb") as stream:
@@ -468,9 +514,10 @@ while IFS= read -r -d '' discovered_kind && IFS= read -r -d '' relative_path; do
   absolute_path="$CANDIDATE/$relative_path"
   if [[ "$discovered_kind" == bundle ]]; then
     printf 'bundle\t%s\n' "$relative_path" >> "$CONTROL/components.unsorted"
-  elif [[ "$discovered_kind" == file ]]; then
+  elif [[ "$discovered_kind" == file || "$discovered_kind" == resource-file ]]; then
     "$FILE_TOOL" -b "$absolute_path" > "$CONTROL/file-description" 2> "$CONTROL/tool-error" || fail file-inspection-failed 24
     if /usr/bin/grep -Fq 'Mach-O' "$CONTROL/file-description"; then
+      [[ "$discovered_kind" == file ]] || fail unexpected-mach-o 24
       [[ -x "$absolute_path" ]] || fail unexpected-mach-o 24
       printf 'mach-o\t%s\n' "$relative_path" >> "$CONTROL/components.unsorted"
     elif [[ -x "$absolute_path" ]]; then fail unexpected-executable 24; fi

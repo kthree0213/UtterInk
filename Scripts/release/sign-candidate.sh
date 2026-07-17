@@ -1319,6 +1319,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import plistlib
 import stat
 import subprocess
 import sys
@@ -1395,6 +1396,45 @@ def hash_regular(path: Path, expected: os.stat_result) -> str:
     return digest.hexdigest()
 
 
+def read_regular(path: Path, expected: os.stat_result, maximum_size: int) -> bytes:
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            opened = os.fstat(descriptor)
+            if opened.st_size > maximum_size:
+                abort()
+            chunks: list[bytes] = []
+            remaining = maximum_size + 1
+            while remaining:
+                chunk = os.read(descriptor, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError:
+        abort()
+    if (
+        fingerprint(expected) != fingerprint(opened)
+        or fingerprint(opened) != fingerprint(after)
+        or sum(map(len, chunks)) > maximum_size
+    ):
+        abort()
+    return b"".join(chunks)
+
+
+def resource_bundle_ancestor(path: Path) -> Path | None:
+    return next(
+        (parent for parent in path.parents if parent != app and parent.suffix == ".bundle"),
+        None,
+    )
+
+
 def record(kind: str, path: Path, metadata: os.stat_result, digest: str = "-") -> str:
     fields = (
         kind, metadata.st_dev, metadata.st_ino, metadata.st_mode,
@@ -1405,6 +1445,7 @@ def record(kind: str, path: Path, metadata: os.stat_result, digest: str = "-") -
 
 files: list[tuple[Path, os.stat_result, str]] = []
 frameworks: list[tuple[Path, os.stat_result]] = []
+resource_bundles: list[tuple[Path, os.stat_result]] = []
 directories: list[tuple[Path, os.stat_result]] = []
 pending = [app]
 app_contents_directories = {"MacOS", "Resources", "Frameworks", "Helpers", "SharedSupport"}
@@ -1428,7 +1469,21 @@ while pending:
         directories.append((path, metadata))
         if path != app:
             suffix = path.suffix
-            if suffix == ".framework":
+            bundle_ancestor = resource_bundle_ancestor(path)
+            if suffix == ".bundle":
+                if bundle_ancestor is not None or path.parent != app / "Contents" / "Resources":
+                    abort()
+                resource_bundles.append((path, metadata))
+            elif bundle_ancestor is not None:
+                bundle_contents = bundle_ancestor / "Contents"
+                bundle_resources = bundle_contents / "Resources"
+                if path == bundle_contents or path == bundle_resources:
+                    pass
+                elif suffix == ".lproj" and path.parent == bundle_resources:
+                    pass
+                else:
+                    abort()
+            elif suffix == ".framework":
                 if path.parent.name != "Frameworks":
                     abort()
                 frameworks.append((path, metadata))
@@ -1471,6 +1526,12 @@ while pending:
     elif stat.S_ISREG(metadata.st_mode):
         if metadata.st_nlink != 1:
             abort()
+        bundle_ancestor = resource_bundle_ancestor(path)
+        if bundle_ancestor is not None:
+            bundle_contents = bundle_ancestor / "Contents"
+            bundle_resources = bundle_contents / "Resources"
+            if path != bundle_contents / "Info.plist" and bundle_resources not in path.parents:
+                abort()
         result = subprocess.run(
             [str(file_tool), "-b", str(path)],
             stdout=subprocess.PIPE,
@@ -1487,7 +1548,7 @@ while pending:
         is_macho = "Mach-O" in description
         executable = bool(metadata.st_mode & stat.S_IXUSR)
         if is_macho:
-            if not executable:
+            if bundle_ancestor is not None or not executable:
                 abort()
             architecture = subprocess.run(
                 [str(lipo), "-archs", str(path)],
@@ -1512,6 +1573,29 @@ while pending:
             abort()
         files.append((path, metadata, description))
     else:
+        abort()
+
+file_metadata = {path: metadata for path, metadata, _ in files}
+directory_paths = {path for path, _ in directories}
+for resource_bundle, _ in resource_bundles:
+    info_plist = resource_bundle / "Contents" / "Info.plist"
+    if (
+        resource_bundle / "Contents" not in directory_paths
+        or resource_bundle / "Contents" / "Resources" not in directory_paths
+    ):
+        abort()
+    metadata = file_metadata.get(info_plist)
+    if metadata is None:
+        abort()
+    try:
+        properties = plistlib.loads(read_regular(info_plist, metadata, 1024 * 1024))
+    except (plistlib.InvalidFileException, ValueError):
+        abort()
+    if (
+        not isinstance(properties, dict)
+        or properties.get("CFBundlePackageType") != "BNDL"
+        or "CFBundleExecutable" in properties
+    ):
         abort()
 
 main_executable = app / "Contents" / "MacOS" / "UtterInk"

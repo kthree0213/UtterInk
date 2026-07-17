@@ -145,7 +145,7 @@ case "$path" in
       printf 'Mach-O 64-bit executable arm64\n'
     fi
     ;;
-  */A.framework/A|*/B.framework/Versions/A/B|*/B.framework/Versions/A/Helpers/BHelper)
+  */A.framework/A|*/B.framework/Versions/A/B|*/B.framework/Versions/A/Helpers/BHelper|*/Fixture_FixtureResources.bundle/Contents/Resources/UnexpectedMachO)
     printf 'Mach-O 64-bit executable arm64\n'
     ;;
   *) printf 'ASCII text\n' ;;
@@ -537,9 +537,11 @@ make_candidate() {
   local name="$1"
   local candidate="$BASE/.release-work/$name"
   local app="$candidate/UtterInk.app"
+  local resource_bundle="$app/Contents/Resources/Fixture_FixtureResources.bundle"
   /bin/mkdir -p \
     "$app/Contents/MacOS" \
     "$app/Contents/Resources" \
+    "$resource_bundle/Contents/Resources/en.lproj" \
     "$app/Contents/Frameworks/A.framework" \
     "$app/Contents/Frameworks/B.framework/Versions/A/Helpers"
   printf 'main\n' > "$app/Contents/MacOS/UtterInk"
@@ -547,6 +549,10 @@ make_candidate() {
   printf 'framework B\n' > "$app/Contents/Frameworks/B.framework/Versions/A/B"
   printf 'helper\n' > "$app/Contents/Frameworks/B.framework/Versions/A/Helpers/BHelper"
   printf 'resource\n' > "$app/Contents/Resources/readme.txt"
+  /usr/bin/printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>dev.utterink.fixture-resources</string><key>CFBundlePackageType</key><string>BNDL</string></dict></plist>' \
+    > "$resource_bundle/Contents/Info.plist"
+  printf '"fixture.localized" = "Fixture";\n' \
+    > "$resource_bundle/Contents/Resources/en.lproj/Localizable.strings"
   /usr/bin/printf '%s\n' \
     "{\"checks\":{\"entitlements\":true,\"generatedProjectClean\":true,\"history\":true,\"infoPolicy\":true,\"metadata\":true,\"packageResolution\":true},\"evidenceType\":\"release-candidate-test\",\"packageResolution\":{\"path\":\"Packages/UtterInkKit/Package.resolved\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"policies\":{\"ciToolchainSHA256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"releaseEntitlementsSHA256\":\"$BASE_POLICY_SHA256\",\"releaseInfoPolicySHA256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"releaseMetadataSHA256\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"},\"product\":\"UtterInk\",\"release\":{\"architecture\":\"arm64\",\"buildNumber\":\"1\",\"bundleIdentifier\":\"dev.utterink.UtterInk\",\"configuration\":\"Release\",\"deploymentTarget\":\"14.0\",\"dmgFilename\":\"UtterInk-0.1.0-arm64.dmg\",\"marketingVersion\":\"0.1.0\"},\"schemaVersion\":1,\"source\":{\"clean\":true,\"commit\":\"$BASE_COMMIT\",\"releaseTag\":\"v0.1.0\",\"tree\":\"$BASE_TREE\"},\"toolchain\":{\"lockSHA256\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"sdkBuild\":\"25A1\",\"sdkVersion\":\"26.4\",\"swiftVersion\":\"Apple Swift version 6.3 (swiftlang-6.3.0 clang-1700.0.0.0)\",\"xcodeBuild\":\"17E202\",\"xcodeVersion\":\"26.4.1\",\"xcodegenBinarySHA256\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"xcodegenVersion\":\"2.45.4\"}}" \
     > "$candidate/candidate.json"
@@ -624,6 +630,18 @@ assert_no_pinned_verifier 'valid signing cleanup'
 [[ ! -s "$STDOUT" && ! -s "$STDERR" ]] || fail 'valid signing emitted unsanitized output'
 [[ -f "$SUCCESS_CANDIDATE/signature-verification.json" && ! -L "$SUCCESS_CANDIDATE/signature-verification.json" ]] ||
   fail 'fixture verifier did not emit signing evidence'
+/usr/bin/python3 -I - "$SUCCESS_CANDIDATE/signature-verification.json" <<'PY' || fail 'data-only resource bundle changed the signable component set'
+from pathlib import Path
+import json
+import sys
+
+value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+components = value["components"]
+if len(components) != 7:
+    raise SystemExit(1)
+if any(item["path"].endswith(".bundle") for item in components):
+    raise SystemExit(1)
+PY
 /usr/bin/python3 -I - "$SUCCESS_CANDIDATE/UtterInk.app" <<'PY' || fail 'valid codesign delta was not modeled or accepted exactly'
 from pathlib import Path
 import os
@@ -1077,6 +1095,82 @@ SYMLINK_CANDIDATE="$(make_candidate symlink)"
 run_sign "$SYMLINK_CANDIDATE" --identity "$IDENTITY" --team-id "$TEAM_ID"
 [[ "$SIGN_STATUS" -ne 0 ]] || fail 'candidate symlink was accepted'
 assert_no_signing 'candidate symlink'
+
+WRONG_BUNDLE_PARENT_CANDIDATE="$(make_candidate wrong-resource-bundle-parent)"
+/bin/mkdir -p "$WRONG_BUNDLE_PARENT_CANDIDATE/UtterInk.app/Contents/SharedSupport"
+/bin/mv \
+  "$WRONG_BUNDLE_PARENT_CANDIDATE/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle" \
+  "$WRONG_BUNDLE_PARENT_CANDIDATE/UtterInk.app/Contents/SharedSupport/Fixture_FixtureResources.bundle"
+refresh_unsigned_evidence "$WRONG_BUNDLE_PARENT_CANDIDATE"
+run_sign "$WRONG_BUNDLE_PARENT_CANDIDATE" --identity "$IDENTITY" --team-id "$TEAM_ID"
+[[ "$SIGN_STATUS" -ne 0 ]] || fail 'data-only resource bundle outside Contents/Resources was accepted'
+assert_no_signing 'wrong data-only resource bundle parent'
+
+WRONG_BUNDLE_PLIST_CANDIDATE="$(make_candidate wrong-resource-bundle-plist)"
+replace_candidate_text \
+  "$WRONG_BUNDLE_PLIST_CANDIDATE/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Info.plist" \
+  '<string>BNDL</string>' '<string>APPL</string>'
+refresh_unsigned_evidence "$WRONG_BUNDLE_PLIST_CANDIDATE"
+run_sign "$WRONG_BUNDLE_PLIST_CANDIDATE" --identity "$IDENTITY" --team-id "$TEAM_ID"
+[[ "$SIGN_STATUS" -ne 0 ]] || fail 'data-only resource bundle with a non-BNDL plist was accepted'
+assert_no_signing 'wrong data-only resource bundle plist'
+
+MISSING_BUNDLE_PLIST_CANDIDATE="$(make_candidate missing-resource-bundle-plist)"
+/bin/rm "$MISSING_BUNDLE_PLIST_CANDIDATE/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Info.plist"
+refresh_unsigned_evidence "$MISSING_BUNDLE_PLIST_CANDIDATE"
+run_sign "$MISSING_BUNDLE_PLIST_CANDIDATE" --identity "$IDENTITY" --team-id "$TEAM_ID"
+[[ "$SIGN_STATUS" -ne 0 ]] || fail 'data-only resource bundle without Info.plist was accepted'
+assert_no_signing 'missing data-only resource bundle plist'
+
+EXECUTABLE_KEY_BUNDLE_CANDIDATE="$(make_candidate resource-bundle-executable-key)"
+replace_candidate_text \
+  "$EXECUTABLE_KEY_BUNDLE_CANDIDATE/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Info.plist" \
+  '</dict>' '<key>CFBundleExecutable</key><string>FixtureResourceBundle</string></dict>'
+refresh_unsigned_evidence "$EXECUTABLE_KEY_BUNDLE_CANDIDATE"
+run_sign "$EXECUTABLE_KEY_BUNDLE_CANDIDATE" --identity "$IDENTITY" --team-id "$TEAM_ID"
+[[ "$SIGN_STATUS" -ne 0 ]] || fail 'resource bundle declaring CFBundleExecutable was accepted'
+assert_no_signing 'resource bundle CFBundleExecutable'
+
+MACHO_RESOURCE_BUNDLE_CANDIDATE="$(make_candidate resource-bundle-mach-o)"
+/usr/bin/printf '%s\n' 'fixture Mach-O' \
+  > "$MACHO_RESOURCE_BUNDLE_CANDIDATE/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Resources/UnexpectedMachO"
+/bin/chmod 0755 \
+  "$MACHO_RESOURCE_BUNDLE_CANDIDATE/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Resources/UnexpectedMachO"
+refresh_unsigned_evidence "$MACHO_RESOURCE_BUNDLE_CANDIDATE"
+run_sign "$MACHO_RESOURCE_BUNDLE_CANDIDATE" --identity "$IDENTITY" --team-id "$TEAM_ID"
+[[ "$SIGN_STATUS" -ne 0 ]] || fail 'Mach-O inside a data-only resource bundle was accepted'
+assert_no_signing 'data-only resource bundle Mach-O'
+
+EXECUTABLE_RESOURCE_BUNDLE_CANDIDATE="$(make_candidate resource-bundle-executable)"
+/usr/bin/printf '%s\n' '#!/bin/sh' \
+  > "$EXECUTABLE_RESOURCE_BUNDLE_CANDIDATE/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Resources/UnexpectedExecutable"
+/bin/chmod 0755 \
+  "$EXECUTABLE_RESOURCE_BUNDLE_CANDIDATE/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Resources/UnexpectedExecutable"
+refresh_unsigned_evidence "$EXECUTABLE_RESOURCE_BUNDLE_CANDIDATE"
+run_sign "$EXECUTABLE_RESOURCE_BUNDLE_CANDIDATE" --identity "$IDENTITY" --team-id "$TEAM_ID"
+[[ "$SIGN_STATUS" -ne 0 ]] || fail 'executable file inside a data-only resource bundle was accepted'
+assert_no_signing 'data-only resource bundle executable'
+
+EXTRA_RESOURCE_BUNDLE_DIRECTORY_CANDIDATE="$(make_candidate resource-bundle-extra-directory)"
+/bin/mkdir -p \
+  "$EXTRA_RESOURCE_BUNDLE_DIRECTORY_CANDIDATE/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Resources/UnexpectedDirectory"
+refresh_unsigned_evidence "$EXTRA_RESOURCE_BUNDLE_DIRECTORY_CANDIDATE"
+run_sign "$EXTRA_RESOURCE_BUNDLE_DIRECTORY_CANDIDATE" --identity "$IDENTITY" --team-id "$TEAM_ID"
+[[ "$SIGN_STATUS" -ne 0 ]] || fail 'extra directory inside a data-only resource bundle was accepted'
+assert_no_signing 'data-only resource bundle extra directory'
+
+NESTED_RESOURCE_BUNDLE_CANDIDATE="$(make_candidate nested-resource-bundle)"
+NESTED_RESOURCE_BUNDLE="$NESTED_RESOURCE_BUNDLE_CANDIDATE/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Resources/Nested_NestedResources.bundle"
+/bin/mkdir -p "$NESTED_RESOURCE_BUNDLE/Contents/Resources/en.lproj"
+/bin/cp \
+  "$NESTED_RESOURCE_BUNDLE_CANDIDATE/UtterInk.app/Contents/Resources/Fixture_FixtureResources.bundle/Contents/Info.plist" \
+  "$NESTED_RESOURCE_BUNDLE/Contents/Info.plist"
+/usr/bin/printf '%s\n' '"nested.localized" = "Nested";' \
+  > "$NESTED_RESOURCE_BUNDLE/Contents/Resources/en.lproj/Localizable.strings"
+refresh_unsigned_evidence "$NESTED_RESOURCE_BUNDLE_CANDIDATE"
+run_sign "$NESTED_RESOURCE_BUNDLE_CANDIDATE" --identity "$IDENTITY" --team-id "$TEAM_ID"
+[[ "$SIGN_STATUS" -ne 0 ]] || fail 'nested data-only resource bundle was accepted'
+assert_no_signing 'nested data-only resource bundle'
 
 for rejected_suffix in xpc component service prefPane qlgenerator mystery; do
   UNKNOWN_BUNDLE_CANDIDATE="$(make_candidate "unknown-bundle-$rejected_suffix")"

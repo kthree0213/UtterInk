@@ -318,22 +318,41 @@ BASE_CERTIFICATE_SHA256=aabbccddeeff00112233445566778899aabbccddeeff001122334455
 
 make_candidate() {
   local name="$1"
+  local variant="${2:-valid}"
   local candidate="$FIXTURE_ROOT/.release-work/$name"
   local app="$candidate/UtterInk.app"
+  local resource_bundle="$app/Contents/Resources/Fixture_FixtureResources.bundle"
   /bin/mkdir -p \
     "$app/Contents/MacOS" \
     "$app/Contents/Frameworks/A.framework" \
     "$app/Contents/Helpers" \
-    "$app/Contents/Resources"
+    "$app/Contents/Resources" \
+    "$resource_bundle/Contents/Resources/en.lproj"
   /bin/chmod 0700 "$candidate"
   /usr/bin/printf '%s\n' 'MACHO:arm64' > "$app/Contents/MacOS/UtterInk"
   /usr/bin/printf '%s\n' 'MACHO:arm64' > "$app/Contents/Frameworks/A.framework/A"
   /usr/bin/printf '%s\n' 'MACHO:arm64' > "$app/Contents/Helpers/Helper"
   /usr/bin/printf '%s\n' 'fixture resource' > "$app/Contents/Resources/readme.txt"
+  /usr/bin/printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>dev.utterink.fixture-resources</string><key>CFBundlePackageType</key><string>BNDL</string></dict></plist>' \
+    > "$resource_bundle/Contents/Info.plist"
+  /usr/bin/printf '%s\n' '"fixture.localized" = "Fixture";' \
+    > "$resource_bundle/Contents/Resources/en.lproj/Localizable.strings"
   /bin/chmod 0755 \
     "$app/Contents/MacOS/UtterInk" \
     "$app/Contents/Frameworks/A.framework/A" \
     "$app/Contents/Helpers/Helper"
+  case "$variant" in
+    valid) ;;
+    wrong-resource-bundle-parent)
+      /bin/mkdir -p "$app/Contents/SharedSupport"
+      /bin/mv "$resource_bundle" "$app/Contents/SharedSupport/Fixture_FixtureResources.bundle"
+      ;;
+    resource-bundle-mach-o)
+      /usr/bin/printf '%s\n' 'MACHO:arm64' > "$resource_bundle/Contents/Resources/UnexpectedMachO"
+      /bin/chmod 0755 "$resource_bundle/Contents/Resources/UnexpectedMachO"
+      ;;
+    *) fail "unknown candidate fixture variant: $variant" ;;
+  esac
   /usr/bin/python3 -I - \
     "$candidate" "$FIXTURE_COMMIT" "$FIXTURE_TREE" "$FIXTURE_ROOT/Config/release-entitlements.json" <<'PY'
 from pathlib import Path, PurePosixPath
@@ -609,6 +628,8 @@ if value["schemaVersion"] != 1 or value["evidenceType"] != "signature-verificati
     raise SystemExit(1)
 if value["product"] != "UtterInk" or value["teamID"] != "ABCDE12345" or len(value["components"]) != 5:
     raise SystemExit(1)
+if any(item["path"].endswith(".bundle") for item in value["components"]):
+    raise SystemExit(1)
 if value["treeAlgorithm"] != "utterink-logical-tree-v1" or len(value["signedAppTreeSHA256"]) != 64:
     raise SystemExit(1)
 if value["certificate"]["trust"] != "valid" or not value["certificate"]["notBefore"] or not value["certificate"]["notAfter"]:
@@ -685,6 +706,12 @@ expect_verify_failure "$unsigned_candidate" invalid-unsigned-evidence
 noncanonical_candidate="$(make_candidate verify-noncanonical-unsigned)"
 /usr/bin/printf ' ' >> "$noncanonical_candidate/unsigned-build-evidence.json"
 expect_verify_failure "$noncanonical_candidate" noncanonical-unsigned-evidence
+
+wrong_bundle_parent_candidate="$(make_candidate verify-wrong-resource-bundle-parent wrong-resource-bundle-parent)"
+expect_verify_failure "$wrong_bundle_parent_candidate" wrong-resource-bundle-parent
+
+bundle_mach_o_candidate="$(make_candidate verify-resource-bundle-mach-o resource-bundle-mach-o)"
+expect_verify_failure "$bundle_mach_o_candidate" resource-bundle-mach-o
 
 signal_candidate="$(make_candidate verify-signals)"
 expect_verify_signal_status "$signal_candidate" HUP 129
