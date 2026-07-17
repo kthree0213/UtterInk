@@ -644,7 +644,7 @@ while IFS=$'\t' read -r component_kind relative_path; do
   role=nested
   if [[ "$relative_path" == UtterInk.app || "$relative_path" == UtterInk.app/Contents/MacOS/UtterInk ]]; then role=app; fi
   if ! /usr/bin/python3 -I - "$component_kind" "$relative_path" "$architecture" "$role" "$IDENTITY" "$TEAM_ID" \
-    "$prefix.metadata.err" "$prefix.entitlements" "$prefix.requirement.err" "$prefix.sha256" "$CONTROL/components.jsonl" <<'PY' >/dev/null 2>&1
+    "$prefix.metadata.err" "$prefix.entitlements" "$prefix.requirement.out" "$prefix.sha256" "$CONTROL/components.jsonl" <<'PY' >/dev/null 2>&1
 from pathlib import Path
 import json,plistlib,re,sys
 kind,relative,architecture,role,identity,team=sys.argv[1:7]; metadata_path,entitlement_path,requirement_path,hash_path,output_path=map(Path,sys.argv[7:12])

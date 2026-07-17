@@ -147,7 +147,7 @@ if [[ "$is_requirement" -eq 1 ]]; then
   [[ "$scenario" != missing-requirement ]] || exit 0
   requirement_identifier="$identifier"
   [[ "$scenario" != wrong-requirement-identifier ]] || requirement_identifier=dev.attacker.Other
-  /usr/bin/printf 'designated => identifier "%s" and certificate leaf[subject.OU] = "ABCDE12345"\n' "$requirement_identifier" >&2
+  /usr/bin/printf 'designated => identifier "%s" and certificate leaf[subject.OU] = "ABCDE12345"\n' "$requirement_identifier"
   exit 0
 fi
 
