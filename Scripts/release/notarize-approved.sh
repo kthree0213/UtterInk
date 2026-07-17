@@ -379,7 +379,8 @@ paths=(
     "Scripts/release/notarize-approved.sh","Scripts/release/prepare-notarization-request.py",
     "Scripts/release/verify-notary-profile-binding.sh","Scripts/release/verify-notarization-result.py",
     "Scripts/inspect-dmg.sh","Scripts/release/read-metadata.py","Scripts/release/verify-info-policy.py",
-    "Config/release-metadata.json","Config/release-info-policy.json","Config/release-entitlements.plist","Config/dmg-allowed-content.txt",
+    "Config/release-metadata.json","Config/release-info-policy.json","Config/release-entitlements.json",
+    "App/Supporting/UtterInk.entitlements","Config/dmg-allowed-content.txt",
 )
 env={"PATH":"/usr/bin:/bin:/usr/sbin:/sbin","LC_ALL":"C","GIT_CONFIG_GLOBAL":"/dev/null","GIT_CONFIG_SYSTEM":"/dev/null","GIT_NO_REPLACE_OBJECTS":"1","GIT_NO_LAZY_FETCH":"1","GIT_TERMINAL_PROMPT":"0"}
 def git(*args):

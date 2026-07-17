@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(CDPATH= cd -P -- "$(/usr/bin/dirname -- "${BASH_SOURCE[0]}")/../.." && /bin/pwd -P)"
 WRAPPER="$ROOT/Scripts/release/notarize-approved.sh"
 
-/usr/bin/python3 -I - "$WRAPPER" <<'PY'
+/usr/bin/python3 -I - "$WRAPPER" "$ROOT" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -20,6 +20,18 @@ import textwrap
 
 
 WRAPPER = Path(os.sys.argv[1])
+REPOSITORY_ROOT = Path(os.sys.argv[2])
+PRODUCTION_ENTITLEMENT_INPUTS = {
+    "Config/release-entitlements.json": REPOSITORY_ROOT / "Config/release-entitlements.json",
+    "App/Supporting/UtterInk.entitlements": REPOSITORY_ROOT / "App/Supporting/UtterInk.entitlements",
+}
+for production_input in PRODUCTION_ENTITLEMENT_INPUTS.values():
+    try:
+        metadata = os.lstat(production_input)
+    except OSError:
+        raise AssertionError(f"production entitlement binding input is missing: {production_input}")
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise AssertionError(f"production entitlement binding input is unsafe: {production_input}")
 PROFILE = "utterink-local-notary"
 TEAM = "ABCDE12345"
 REQUEST_ID = "ab" * 32
@@ -228,17 +240,21 @@ class Fixture:
         for relative in (
             "Config/release-metadata.json",
             "Config/release-info-policy.json",
-            "Config/release-entitlements.plist",
             "Config/dmg-allowed-content.txt",
             "Scripts/release/read-metadata.py",
             "Scripts/release/verify-info-policy.py",
         ):
             write_bytes(self.root / relative, b"fixture-policy\n", 0o600)
+        for relative, production_input in PRODUCTION_ENTITLEMENT_INPUTS.items():
+            write_bytes(self.root / relative, production_input.read_bytes(), 0o600)
+        self.retired_entitlements_plist = self.root / "Config/release-entitlements.plist"
+        if os.path.lexists(self.retired_entitlements_plist):
+            abort("retired release-entitlements.plist unexpectedly exists in fixture")
         subprocess.run(["/usr/bin/git", "init", "-q", str(self.root)], check=True)
         subprocess.run([
             "/usr/bin/git", "-C", str(self.root), "-c", "user.name=UtterInk Test",
             "-c", "user.email=utterink-test@example.invalid", "-c", "commit.gpgsign=false",
-            "add", "Scripts", "Config",
+            "add", "Scripts", "Config", "App",
         ], check=True)
         subprocess.run([
             "/usr/bin/git", "-C", str(self.root), "-c", "user.name=UtterInk Test",
@@ -351,6 +367,31 @@ def rejected_before_xcrun(name: str, mutate) -> None:
         fixture.close()
 
 
+def repository_binding_rejected(name: str, relative: str, mutate) -> None:
+    fixture = Fixture()
+    try:
+        mutate(fixture.root / relative)
+        result = fixture.run()
+        if result.returncode != 22:
+            abort(f"{name}: expected repository binding exit 22, got {result.returncode}: {result.stderr!r}")
+        if result.stdout or result.stderr != "notarization error: repository-binding-invalid\n":
+            abort(f"{name}: repository binding diagnostic drifted")
+        if fixture.xcrun_commands():
+            abort(f"{name}: invoked xcrun")
+        if not fixture.approval.is_file() or fixture.approval.is_symlink():
+            abort(f"{name}: consumed approval before repository binding validation")
+    finally:
+        fixture.close()
+
+
+def remove_binding_input(path: Path) -> None:
+    path.unlink()
+
+
+def tamper_binding_input(path: Path) -> None:
+    path.write_bytes(path.read_bytes() + b"tampered\n")
+
+
 def assert_consumed_file(fixture: Fixture, original: bytes) -> Path:
     approval_hash = hashlib.sha256(original).hexdigest()
     consumed = fixture.root / ".release-approvals/consumed" / f"{REQUEST_ID}-{approval_hash}.json"
@@ -437,6 +478,17 @@ rejected_before_xcrun("world-readable approval", unsafe_approval_mode)
 rejected_before_xcrun("symlink approval", symlink_approval)
 rejected_before_xcrun("helper blob mismatch", helper_mismatch)
 rejected_before_xcrun("approval outlives profile receipt", receipt_expires_before_approval)
+
+for entitlement_input in (
+    "Config/release-entitlements.json",
+    "App/Supporting/UtterInk.entitlements",
+):
+    repository_binding_rejected(
+        f"missing {entitlement_input}", entitlement_input, remove_binding_input,
+    )
+    repository_binding_rejected(
+        f"tampered {entitlement_input}", entitlement_input, tamper_binding_input,
+    )
 
 fixture = Fixture()
 try:
@@ -541,6 +593,8 @@ finally:
 
 fixture = Fixture("accepted")
 try:
+    if os.path.lexists(fixture.retired_entitlements_plist):
+        abort("valid fixture unexpectedly contains retired release-entitlements.plist")
     reusable_copy = fixture.approval.read_bytes()
     prestaple_copy = fixture.dmg.read_bytes()
     result = fixture.run()
