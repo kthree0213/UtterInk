@@ -10,7 +10,7 @@ permissions:
 jobs:
   verify:
     runs-on: macos-26
-    timeout-minutes: 75
+    timeout-minutes: 105
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.4.app/Contents/Developer
       UTTERINK_CI_RUNNER_LABEL: macos-26

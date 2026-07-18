@@ -28,7 +28,7 @@ permissions:
 jobs:
   verify:
     runs-on: macos-26
-    timeout-minutes: 75
+    timeout-minutes: 105
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.4.app/Contents/Developer
       UTTERINK_CI_RUNNER_LABEL: macos-26
@@ -279,13 +279,13 @@ with tempfile.TemporaryDirectory(prefix="utterink-workflow-policy-tests-") as te
         ),
         (
             "timeout-too-low",
-            replace_once(VALID_WORKFLOW, "timeout-minutes: 75", "timeout-minutes: 45"),
+            replace_once(VALID_WORKFLOW, "timeout-minutes: 105", "timeout-minutes: 75"),
             "jobs",
             None,
         ),
         (
             "timeout-string",
-            replace_once(VALID_WORKFLOW, "timeout-minutes: 75", 'timeout-minutes: "75"'),
+            replace_once(VALID_WORKFLOW, "timeout-minutes: 105", 'timeout-minutes: "105"'),
             "jobs",
             None,
         ),
