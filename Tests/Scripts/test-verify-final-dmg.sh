@@ -335,6 +335,16 @@ PY_COPY
         0o700,
     )
 
+    # macOS system tools may legitimately have more than one hard-link name.
+    # Keep the verifier pinned to the original path and inode while proving
+    # that this normal filesystem layout is accepted.
+    shasum_hardlink = tools / "shasum-system-hardlink"
+    os.link(tools / "shasum", shasum_hardlink)
+    shasum_item = os.lstat(tools / "shasum")
+    linked_item = os.lstat(shasum_hardlink)
+    if shasum_item.st_nlink != 2 or (shasum_item.st_dev, shasum_item.st_ino) != (linked_item.st_dev, linked_item.st_ino):
+        abort("system-tool hard-link fixture was not established")
+
     artifact_dir = temp / "artifact"
     artifact_dir.mkdir(mode=0o700)
     dmg = artifact_dir / "UtterInk-0.1.0-arm64.dmg"

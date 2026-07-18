@@ -133,8 +133,10 @@ try:
         raise ValueError
     for name in ("hdiutil","codesign","spctl","xcrun","xattr","shasum","ditto","file"):
         tool=os.lstat(root/name)
+        # Some macOS system tools have legitimate hard-link aliases. The full
+        # fingerprint below still pins and later rechecks the observed count.
         if (not stat.S_ISREG(tool.st_mode) or stat.S_ISLNK(tool.st_mode) or tool.st_uid!=os.geteuid()
-            or tool.st_nlink!=1 or tool.st_mode&0o022 or not tool.st_mode&stat.S_IXUSR): raise ValueError
+            or tool.st_mode&0o022 or not tool.st_mode&stat.S_IXUSR): raise ValueError
 except (OSError,RuntimeError,ValueError): raise SystemExit(1)
 PY
   then fail invalid-test-tool-root 20; fi
@@ -221,8 +223,10 @@ try:
     records={}
     for path in paths:
         item=os.lstat(path)
+        # Accept a stable pre-existing hard-link layout (for example shasum on
+        # macOS 26); fp() records st_nlink and assert_tools_unchanged rechecks it.
         if (not stat.S_ISREG(item.st_mode) or stat.S_ISLNK(item.st_mode) or item.st_uid not in {0,os.geteuid()}
-            or item.st_nlink!=1 or item.st_mode&0o022 or not item.st_mode&stat.S_IXUSR): raise ValueError
+            or item.st_mode&0o022 or not item.st_mode&stat.S_IXUSR): raise ValueError
         records[path]=fp(item)
     raw=(json.dumps(records,sort_keys=True,separators=(",",":"))+"\n").encode()
     fd=os.open(output,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600); os.write(fd,raw); os.close(fd)
