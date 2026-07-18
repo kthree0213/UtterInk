@@ -420,9 +420,9 @@ value = {
     "schemaVersion": 1,
     "runnerImage": {
         "label": "macos-26",
-        "releaseTag": "macos-26-arm64/20260630.0213",
-        "commit": "afadebc447d1a69fc726b50cd5aba055c0cfdf82",
-        "imageVersion": "20260630.0213.1",
+        "releaseTag": "macos-26-arm64/20260715.0248",
+        "commit": "23198d7818f7559e895f1204e30c075442b60dd3",
+        "imageVersion": "20260715.0248.1",
         "osVersion": "26.4",
         "osBuild": "25E246",
         "architecture": "arm64",
@@ -443,8 +443,8 @@ value = {
         "settingPresetsSHA256": presets_hash,
     },
     "sources": {
-        "runnerRelease": "https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260630.0213",
-        "runnerReadme": "https://github.com/actions/runner-images/blob/afadebc447d1a69fc726b50cd5aba055c0cfdf82/images/macos/macos-26-arm64-Readme.md",
+        "runnerRelease": "https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260715.0248",
+        "runnerReadme": "https://github.com/actions/runner-images/blob/23198d7818f7559e895f1204e30c075442b60dd3/images/macos/macos-26-arm64-Readme.md",
         "xcodegenRelease": "https://github.com/yonaskolb/XcodeGen/releases/tag/2.45.4",
         "xcodegenCommit": "https://github.com/yonaskolb/XcodeGen/commit/8d3d3476a69ae3e5d68e1adccc701c410c05eb36",
     },

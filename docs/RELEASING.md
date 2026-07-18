@@ -24,7 +24,7 @@ text, tag, and filename agree.
 ## Current toolchain-lock status
 
 The reviewed CI and release lock is the official `macos-26` arm64 runner image
-`20260630.0213.1` with macOS `26.4` build `25E246`, Xcode `26.4.1` build
+`20260715.0248.1` with macOS `26.4` build `25E246`, Xcode `26.4.1` build
 `17E202`, macOS SDK `26.4` build `25E251`, Apple Swift `6.3.1`, and the official
 XcodeGen `2.45.4` release archive. The archive, exact executable architecture
 set, companion presets, upstream source revision, and complete runner tuple are
@@ -50,8 +50,8 @@ requires a dedicated reviewed lock change and fresh evidence.
 
 The reviewed immutable release and source identities for the lock are:
 
-- GitHub's official [`macos-26-arm64/20260630.0213` runner release](https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260630.0213)
-  and its [commit-pinned software inventory](https://github.com/actions/runner-images/blob/afadebc447d1a69fc726b50cd5aba055c0cfdf82/images/macos/macos-26-arm64-Readme.md);
+- GitHub's official [`macos-26-arm64/20260715.0248` runner release](https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260715.0248)
+  and its [commit-pinned software inventory](https://github.com/actions/runner-images/blob/23198d7818f7559e895f1204e30c075442b60dd3/images/macos/macos-26-arm64-Readme.md);
 - XcodeGen [`2.45.4`](https://github.com/yonaskolb/XcodeGen/releases/tag/2.45.4),
   its content-addressed official
   [`xcodegen.zip`](https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip)
