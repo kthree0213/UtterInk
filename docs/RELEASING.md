@@ -24,15 +24,18 @@ text, tag, and filename agree.
 ## Current toolchain-lock status
 
 The reviewed CI and release lock is the official `macos-26` arm64 runner image
-`20260715.0248.1` with macOS `26.4` build `25E246`, Xcode `26.4.1` build
+`20260720.0258.1` with macOS `26.4` build `25E246`, Xcode `26.4.1` build
 `17E202`, macOS SDK `26.4` build `25E251`, Apple Swift `6.3.1`, and the official
 XcodeGen `2.45.4` release archive. The archive, exact executable architecture
 set, companion presets, upstream source revision, and complete runner tuple are
 independently hash- or commit-locked in `Config/ci-toolchain.json`.
 
-A temporary read-only GitHub Actions probe captured those values on the locked
-runner without repository secrets, signing, notarization, artifact upload, or
-publication. The same probe built a clean unsigned `Release` archive using
+A read-only CI attempt captured the replacement runner's image and OS identity;
+before the expected image-version gate stopped the workflow, it also passed the
+locked Xcode, SDK, Swift, and XcodeGen checks. It used no repository secrets,
+signing, notarization, artifact upload, or publication. A prior read-only probe
+on the immediately preceding runner image, which carried the same OS and
+toolchain tuple, built a clean unsigned `Release` archive using
 `-no_adhoc_codesign`, recorded the exact processed `Info.plist` generated-key
 set, and confirmed that the app has no nested signable code components. Its
 three Swift package `.bundle` directories contain resources rather than
@@ -50,8 +53,8 @@ requires a dedicated reviewed lock change and fresh evidence.
 
 The reviewed immutable release and source identities for the lock are:
 
-- GitHub's official [`macos-26-arm64/20260715.0248` runner release](https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260715.0248)
-  and its [commit-pinned software inventory](https://github.com/actions/runner-images/blob/23198d7818f7559e895f1204e30c075442b60dd3/images/macos/macos-26-arm64-Readme.md);
+- GitHub's official [`macos-26-arm64/20260720.0258` runner release](https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260720.0258)
+  and its [commit-pinned software inventory](https://github.com/actions/runner-images/blob/4872600e5cdb875ed132ff1c98e2599546c51337/images/macos/macos-26-arm64-Readme.md);
 - XcodeGen [`2.45.4`](https://github.com/yonaskolb/XcodeGen/releases/tag/2.45.4),
   its content-addressed official
   [`xcodegen.zip`](https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip)
