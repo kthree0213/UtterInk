@@ -15,6 +15,7 @@ public final class DictationSessionController: DictationControlling {
     public private(set) var recordingTelemetry: RecordingTelemetry?
     public private(set) var sessionPresentation: SessionPresentationContext?
     public let speechModelCatalog: [SpeechModelDescriptor]
+    public private(set) var cachedSpeechModelIDs: Set<String> = []
     public private(set) var activeSpeechModelID: String?
     public private(set) var preparingSpeechModelID: String?
 
@@ -121,6 +122,7 @@ public final class DictationSessionController: DictationControlling {
             return
         }
         let generation = await history.generation()
+        async let cachedModelIDs = models.cachedModelIDs()
         let modelState = await models.state()
         async let microphone = permissions.microphoneState()
         async let accessibility = permissions.accessibilityState()
@@ -131,6 +133,9 @@ public final class DictationSessionController: DictationControlling {
         historyControlStatus = .settled(enabled: loadedSettings.historyEnabled)
         historyRecords = loadedHistory.filter { !tombstones.contains($0.sessionID) }
         currentHistoryGeneration = generation
+        cachedSpeechModelIDs = await cachedModelIDs.intersection(
+            Set(speechModelCatalog.map(\.id))
+        )
         publishModelState(modelState, expectedModelID: loadedSettings.speechModelID)
 
         let selectedModelIsReady: Bool
@@ -143,6 +148,12 @@ public final class DictationSessionController: DictationControlling {
             prepareCachedSpeechModel(loadedSettings.speechModelID)
         }
         bootstrapped = true
+    }
+
+    public func refreshSpeechModelCache() async {
+        cachedSpeechModelIDs = await models.cachedModelIDs().intersection(
+            Set(speechModelCatalog.map(\.id))
+        )
     }
 
     public func send(_ intent: UserIntent) {
@@ -276,6 +287,7 @@ public final class DictationSessionController: DictationControlling {
                     return
                 }
                 try await self.models.deleteCachedModel(modelID: modelID)
+                self.cachedSpeechModelIDs.remove(modelID)
                 self.speechModelCacheActionStatus = .deleted(modelID: modelID)
             } catch {
                 self.speechModelCacheActionStatus = .deleteFailed(modelID: modelID)
@@ -987,7 +999,7 @@ public final class DictationSessionController: DictationControlling {
             await refreshHistory()
         } catch {
             guard isActionCurrent(result.sessionID, generation: actionGeneration) else { return }
-            publishRecoverableActionFailure(.historyWrite, result: updated)
+            publishNonBlockingHistoryFailure(result: updated)
         }
     }
 
@@ -1005,7 +1017,7 @@ public final class DictationSessionController: DictationControlling {
                     source: result.source,
                     warning: result.warning,
                     delivery: result.delivery,
-                    outcome: .finalized,
+                    outcome: result.delivery.map(historyOutcome(for:)) ?? .finalized,
                     expectedGeneration: generation
                 )
                 guard isActionCurrent(result.sessionID, generation: actionGeneration),
@@ -1013,7 +1025,7 @@ public final class DictationSessionController: DictationControlling {
                 await refreshHistory()
             } catch {
                 guard isActionCurrent(result.sessionID, generation: actionGeneration) else { return }
-                publishRecoverableActionFailure(.historyWrite, result: result)
+                publishNonBlockingHistoryFailure(result: result)
                 return
             }
         }
@@ -1103,6 +1115,30 @@ public final class DictationSessionController: DictationControlling {
         publishRecoverableActionFailure(.historyWrite, result: nil)
     }
 
+    private func publishNonBlockingHistoryFailure(result: DictationResult) {
+        let warned = DictationResult(
+            sessionID: result.sessionID,
+            startedAt: result.startedAt,
+            rawText: result.rawText,
+            finalText: result.finalText,
+            source: result.source,
+            warning: .historyWrite,
+            delivery: result.delivery,
+            persistence: result.persistence
+        )
+        upsertVolatile(warned)
+        state = PipelineState(
+            stage: .completed,
+            sessionID: warned.sessionID,
+            token: nil,
+            result: warned,
+            failure: nil
+        )
+        Task { [diagnostics] in
+            await diagnostics.record(stage: .completed, code: .historyWrite)
+        }
+    }
+
     private func publishRecoverableActionFailure(
         _ code: DiagnosticCode,
         result: DictationResult?
@@ -1129,6 +1165,7 @@ public final class DictationSessionController: DictationControlling {
         if case let .ready(modelID) = value,
            speechModelCatalog.contains(where: { $0.id == modelID }) {
             activeSpeechModelID = modelID
+            cachedSpeechModelIDs.insert(modelID)
         }
         let sanitized = sanitizeModelState(value, expectedModelID: expectedModelID)
         speechModelState = sanitized
@@ -1156,9 +1193,10 @@ public final class DictationSessionController: DictationControlling {
     }
 
     private func historyOutcome(for delivery: DeliveryOutcome) -> HistoryOutcome {
-        if case .manualCopyRequired = delivery {
-            return .finalized
-        }
+        // A delivery outcome records the result of the delivery attempt, even
+        // when that result asks the user to copy manually. Keeping every
+        // non-nil delivery in the delivered history shape matches the store's
+        // invariant and preserves the original recovery reason.
         return .delivered
     }
 

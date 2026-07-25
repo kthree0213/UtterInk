@@ -2,11 +2,18 @@ import Observation
 import SwiftUI
 import UtterInkCore
 
+enum OutputModeSelectionResult: Equatable {
+    case selected
+    case providerRequired
+    case failed
+}
+
 @MainActor
 @Observable
 final class OutputModeSettingsViewModel {
     private(set) var modes: [OutputMode] = [.raw]
     private(set) var selectedModeID = OutputMode.rawID
+    private(set) var hasConfiguredProvider = false
     private(set) var isSaving = false
     private(set) var failureMessage: String?
     private(set) var accessibilityEvent: UtterInkAccessibilityEvent?
@@ -113,15 +120,48 @@ final class OutputModeSettingsViewModel {
         }
     }
 
-    func select(id: UUID) async {
-        guard !isSaving else { return }
-        _ = await mutate(
-            failure: "The output mode could not be selected.",
-            success: "Output mode selected for future dictations."
-        ) { settings in
-            Self.repairRawInvariant(&settings)
-            guard settings.outputModes.contains(where: { $0.id == id }) else { return }
-            settings.selectedOutputModeID = id
+    @discardableResult
+    func select(id: UUID) async -> OutputModeSelectionResult {
+        guard !isSaving else { return .failed }
+        isSaving = true
+        failureMessage = nil
+        defer { isSaving = false }
+
+        do {
+            var current = try await writer.current()
+            Self.repairRawInvariant(&current)
+            guard let mode = current.outputModes.first(where: { $0.id == id }) else {
+                failureMessage = "The output mode is no longer available."
+                publish(current)
+                return .failed
+            }
+            guard !mode.requiresProvider || Self.hasConfiguredProvider(in: current) else {
+                failureMessage = "Set up an AI Provider before using \(mode.title)."
+                publish(current)
+                accessibilityEvent = UtterInkAccessibilityEvent(
+                    message: "AI Provider setup is required."
+                )
+                return .providerRequired
+            }
+
+            let saved = try await writer.update { settings in
+                Self.repairRawInvariant(&settings)
+                guard settings.outputModes.contains(where: { $0.id == id }) else { return }
+                settings.selectedOutputModeID = id
+            }
+            guard saved.selectedOutputModeID == id else {
+                failureMessage = "The output mode could not be selected."
+                publish(saved)
+                return .failed
+            }
+            publish(saved)
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Output mode selected for future dictations."
+            )
+            return .selected
+        } catch {
+            failureMessage = "The output mode could not be selected."
+            return .failed
         }
     }
 
@@ -150,6 +190,7 @@ final class OutputModeSettingsViewModel {
         selectedModeID = repaired.contains(where: { $0.id == settings.selectedOutputModeID })
             ? settings.selectedOutputModeID
             : OutputMode.rawID
+        hasConfiguredProvider = Self.hasConfiguredProvider(in: settings)
     }
 
     private nonisolated static func repairRawInvariant(_ settings: inout UserSettings) {
@@ -173,14 +214,28 @@ final class OutputModeSettingsViewModel {
         }
         return [.raw] + custom
     }
+
+    private nonisolated static func hasConfiguredProvider(in settings: UserSettings) -> Bool {
+        guard let selectedID = settings.selectedProviderProfileID else { return false }
+        return settings.providerProfiles.contains(where: { $0.id == selectedID })
+    }
 }
 
 struct OutputModeSettingsView: View {
     @Bindable var model: OutputModeSettingsViewModel
+    let openProvider: () -> Void
     @State private var editorIsPresented = false
     @State private var editingID: UUID?
     @State private var title = ""
     @State private var instructions = ""
+
+    init(
+        model: OutputModeSettingsViewModel,
+        openProvider: @escaping () -> Void = {}
+    ) {
+        self.model = model
+        self.openProvider = openProvider
+    }
 
     var body: some View {
         Form {
@@ -188,7 +243,11 @@ struct OutputModeSettingsView: View {
                 ForEach(model.modes) { mode in
                     HStack {
                         Button {
-                            Task { await model.select(id: mode.id) }
+                            Task {
+                                if await model.select(id: mode.id) == .providerRequired {
+                                    openProvider()
+                                }
+                            }
                         } label: {
                             Image(systemName: model.selectedModeID == mode.id
                                 ? "largecircle.fill.circle"
@@ -200,14 +259,19 @@ struct OutputModeSettingsView: View {
                         .accessibilityValue(model.selectedModeID == mode.id ? "Selected" : "Not selected")
                         .accessibilityIdentifier("settings.outputModes.select.\(mode.id.uuidString.lowercased())")
 
-                        VStack(alignment: .leading) {
+                        VStack(alignment: .leading, spacing: 3) {
                             Text(mode.title)
                             Text(mode == .raw
                                 ? "Local transcript, no provider required"
-                                : mode.instructions)
+                                : mode.presetSummary ?? mode.instructions)
                                 .lineLimit(2)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            if mode.requiresProvider {
+                                Label("AI Provider", systemImage: "sparkles")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         Spacer()
                         if mode == .raw {

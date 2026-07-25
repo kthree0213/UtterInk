@@ -10,8 +10,15 @@ final class ProviderPresentationTests: XCTestCase {
         let model = OutputModeSettingsViewModel(settings: store)
 
         await model.load()
-        XCTAssertEqual(model.modes, [.raw])
+        XCTAssertEqual(model.modes, OutputMode.defaultModes)
         XCTAssertTrue(model.canUse(.raw))
+        let selection = await model.select(id: OutputMode.cleanUpID)
+        XCTAssertEqual(selection, .providerRequired)
+        XCTAssertEqual(model.selectedModeID, OutputMode.rawID)
+        XCTAssertEqual(
+            model.failureMessage,
+            "Set up an AI Provider before using Clean Up."
+        )
         let emptyAddSaved = await model.add(title: "Notes", instructions: "   ")
         let rawEditSaved = await model.update(
             id: OutputMode.rawID,
@@ -21,7 +28,7 @@ final class ProviderPresentationTests: XCTestCase {
         XCTAssertFalse(emptyAddSaved)
         XCTAssertFalse(rawEditSaved)
         await model.delete(id: OutputMode.rawID)
-        XCTAssertEqual(model.modes, [.raw])
+        XCTAssertEqual(model.modes, OutputMode.defaultModes)
 
         let polishAddSaved = await model.add(
             title: "Notes",
@@ -31,9 +38,9 @@ final class ProviderPresentationTests: XCTestCase {
         XCTAssertEqual(model.accessibilityEvent?.message, "Output mode added.")
         let saved = try await store.current()
         XCTAssertEqual(saved.outputModes.first, .raw)
-        XCTAssertEqual(saved.outputModes.count, 2)
-        XCTAssertFalse(saved.outputModes[1].skipsPolishing)
-        XCTAssertEqual(saved.outputModes[1].instructions, "Make this concise.")
+        XCTAssertEqual(saved.outputModes.count, 7)
+        XCTAssertFalse(saved.outputModes.last?.skipsPolishing ?? true)
+        XCTAssertEqual(saved.outputModes.last?.instructions, "Make this concise.")
     }
 
     func testDeletingSelectedPolishModeFallsBackToRawWithoutOverwritingOtherSettings() async throws {
@@ -57,6 +64,24 @@ final class ProviderPresentationTests: XCTestCase {
         XCTAssertEqual(saved.outputModes, [.raw])
         XCTAssertEqual(saved.selectedOutputModeID, OutputMode.rawID)
         XCTAssertEqual(saved.speechModelID, "large-v3")
+    }
+
+    func testOutputModeSelectionSucceedsAfterAProviderIsConfigured() async throws {
+        let profile = providerProfile()
+        var settings = UserSettings.p0Default
+        settings.providerProfiles = [profile]
+        settings.selectedProviderProfileID = profile.id
+        let store = AppSettingsFake(value: settings)
+        let model = OutputModeSettingsViewModel(settings: store)
+
+        await model.load()
+        let result = await model.select(id: OutputMode.cleanUpID)
+
+        XCTAssertEqual(result, .selected)
+        XCTAssertTrue(model.hasConfiguredProvider)
+        XCTAssertEqual(model.selectedModeID, OutputMode.cleanUpID)
+        let saved = try await store.current()
+        XCTAssertEqual(saved.selectedOutputModeID, OutputMode.cleanUpID)
     }
 
     func testRawWorksWithoutProfileOrCredential() async {
@@ -323,6 +348,192 @@ final class ProviderPresentationTests: XCTestCase {
         )
     }
 
+    func testSimpleSetupLoadsModelsAndReplacesLegacyProfilesWithOneActiveChoice() async throws {
+        let firstLegacy = providerProfile()
+        let secondLegacy = providerProfile(
+            baseURL: "https://other.example.test/v1"
+        )
+        var settings = UserSettings.p0Default
+        settings.providerProfiles = [firstLegacy, secondLegacy]
+        settings.selectedProviderProfileID = firstLegacy.id
+        let store = AppSettingsFake(value: settings)
+        let credentials = ProviderCredentialFake(
+            values: [
+                firstLegacy.id: "old-key-one",
+                secondLegacy.id: "old-key-two",
+            ]
+        )
+        let validation = ProviderValidationFake(
+            discoveryResult: .ready(
+                normalizedHost: "api.example.test",
+                modelIDs: ["model-b", "model-a", "model-a"]
+            )
+        )
+        let model = ProviderSettingsViewModel(
+            settings: store,
+            credentials: credentials,
+            migration: ProviderMigrationFake(),
+            validation: validation
+        )
+
+        await model.load()
+        let tested = await model.testKeyAndLoadModels(
+            templateID: .custom,
+            baseURL: "https://api.example.test/v1",
+            credential: "new-key",
+            allowsLoopbackHTTP: false,
+            credentialRevision: 7
+        )
+
+        XCTAssertTrue(tested)
+        XCTAssertEqual(model.availableModelIDs, ["model-a", "model-b"])
+        XCTAssertEqual(
+            model.setupStatus,
+            .modelsLoaded(normalizedHost: "api.example.test", count: 2)
+        )
+        XCTAssertTrue(
+            model.canSaveSetup(
+                templateID: .custom,
+                baseURL: "https://api.example.test/v1",
+                modelID: "model-b",
+                allowsLoopbackHTTP: false,
+                credentialRevision: 7
+            )
+        )
+
+        let saved = await model.saveAndUse(
+            templateID: .custom,
+            baseURL: "https://api.example.test/v1",
+            modelID: "model-b",
+            credential: "new-key",
+            allowsLoopbackHTTP: false,
+            credentialRevision: 7
+        )
+
+        XCTAssertTrue(saved)
+        let persisted = try await store.current()
+        XCTAssertEqual(persisted.providerProfiles.count, 1)
+        let active = try XCTUnwrap(persisted.providerProfiles.first)
+        XCTAssertEqual(persisted.selectedProviderProfileID, active.id)
+        XCTAssertEqual(active.title, "Custom")
+        XCTAssertEqual(active.modelID, "model-b")
+        let storedProfileIDs = await credentials.storedProfileIDs()
+        XCTAssertEqual(storedProfileIDs, [active.id])
+        let readStoredKey = try await credentials.read(profileID: active.id)
+        let storedKey = try XCTUnwrap(readStoredKey)
+        defer { storedKey.clear() }
+        XCTAssertEqual(try storedKey.withUTF8 { $0 }, "new-key")
+        XCTAssertEqual(
+            model.setupStatus,
+            .active(providerTitle: "Custom", modelID: "model-b")
+        )
+        XCTAssertTrue(model.cleanUpOfferPending)
+        XCTAssertEqual(persisted.selectedOutputModeID, OutputMode.rawID)
+
+        let selectedCleanUp = await model.useCleanUpForFutureDictations()
+        XCTAssertTrue(selectedCleanUp)
+        XCTAssertFalse(model.cleanUpOfferPending)
+        let withCleanUp = try await store.current()
+        XCTAssertEqual(withCleanUp.selectedOutputModeID, OutputMode.cleanUpID)
+        XCTAssertEqual(
+            model.accessibilityEvent?.message,
+            "Clean Up selected for future dictations."
+        )
+    }
+
+    func testSimpleSetupMustBeRetestedAfterCredentialChanges() async throws {
+        let store = AppSettingsFake()
+        let credentials = ProviderCredentialFake()
+        let validation = ProviderValidationFake(
+            discoveryResult: .ready(
+                normalizedHost: "api.example.test",
+                modelIDs: ["model-a"]
+            )
+        )
+        let model = ProviderSettingsViewModel(
+            settings: store,
+            credentials: credentials,
+            migration: ProviderMigrationFake(),
+            validation: validation
+        )
+        await model.load()
+
+        let tested = await model.testKeyAndLoadModels(
+            templateID: .custom,
+            baseURL: "https://api.example.test/v1",
+            credential: "first-key",
+            allowsLoopbackHTTP: false,
+            credentialRevision: 1
+        )
+        XCTAssertTrue(tested)
+        XCTAssertFalse(
+            model.canSaveSetup(
+                templateID: .custom,
+                baseURL: "https://api.example.test/v1",
+                modelID: "model-a",
+                allowsLoopbackHTTP: false,
+                credentialRevision: 2
+            )
+        )
+        let saved = await model.saveAndUse(
+            templateID: .custom,
+            baseURL: "https://api.example.test/v1",
+            modelID: "model-a",
+            credential: "changed-key",
+            allowsLoopbackHTTP: false,
+            credentialRevision: 2
+        )
+        XCTAssertFalse(saved)
+        let persisted = try await store.current()
+        XCTAssertTrue(persisted.providerProfiles.isEmpty)
+        let storedProfileIDs = await credentials.storedProfileIDs()
+        XCTAssertTrue(storedProfileIDs.isEmpty)
+    }
+
+    func testSimpleSetupCanTestWithPreviouslySavedKeyWithoutShowingIt() async {
+        let profile = providerProfile()
+        var settings = UserSettings.p0Default
+        settings.providerProfiles = [profile]
+        settings.selectedProviderProfileID = profile.id
+        let credentials = ProviderCredentialFake(
+            values: [profile.id: "saved-key"]
+        )
+        let validation = ProviderValidationFake(
+            discoveryResult: .ready(
+                normalizedHost: "api.example.test",
+                modelIDs: ["model-a"]
+            )
+        )
+        let model = ProviderSettingsViewModel(
+            settings: AppSettingsFake(value: settings),
+            credentials: credentials,
+            migration: ProviderMigrationFake(),
+            validation: validation
+        )
+
+        await model.load()
+        XCTAssertTrue(model.currentConfigurationHasStoredKey)
+        XCTAssertTrue(
+            model.canReuseStoredKey(
+                templateID: .custom,
+                baseURL: profile.baseURL.absoluteString,
+                allowsLoopbackHTTP: false
+            )
+        )
+        let tested = await model.testKeyAndLoadModels(
+            templateID: .custom,
+            baseURL: profile.baseURL.absoluteString,
+            credential: "",
+            allowsLoopbackHTTP: false,
+            credentialRevision: 0
+        )
+        XCTAssertTrue(tested)
+        let credentialEmptyFlags = await validation.credentialEmptyFlags()
+        let retainedCredentialEmptyFlags = await validation.retainedCredentialEmptyFlags()
+        XCTAssertEqual(credentialEmptyFlags, [false])
+        XCTAssertEqual(retainedCredentialEmptyFlags, [true])
+    }
+
     func testMigrationConflictOffersExactValueFreeChoices() async {
         let profile = providerProfile()
         var settings = UserSettings.p0Default
@@ -514,12 +725,18 @@ private actor ProviderMigrationFake: CredentialMigrationService {
 
 private actor ProviderValidationFake: ProviderValidationService {
     var result: ProviderValidationResult
+    var discoveryResult: ProviderModelDiscoveryResult
     private var profileIDs: [UUID] = []
+    private var discoveryProfileIDs: [UUID] = []
     private var emptyFlags: [Bool] = []
     private var retainedCredentials: [SessionSecret] = []
 
-    init(result: ProviderValidationResult = .failed(.credentialMissing)) {
+    init(
+        result: ProviderValidationResult = .failed(.credentialMissing),
+        discoveryResult: ProviderModelDiscoveryResult = .failed(.credentialMissing)
+    ) {
         self.result = result
+        self.discoveryResult = discoveryResult
     }
 
     func validate(
@@ -532,7 +749,18 @@ private actor ProviderValidationFake: ProviderValidationService {
         return result
     }
 
+    func discoverModels(
+        profile: ProviderProfile,
+        credential: SessionSecret
+    ) async -> ProviderModelDiscoveryResult {
+        discoveryProfileIDs.append(profile.id)
+        emptyFlags.append((try? credential.withUTF8 { $0.isEmpty }) ?? false)
+        retainedCredentials.append(credential)
+        return discoveryResult
+    }
+
     func validatedProfileIDs() -> [UUID] { profileIDs }
+    func discoveredProfileIDs() -> [UUID] { discoveryProfileIDs }
     func credentialEmptyFlags() -> [Bool] { emptyFlags }
     func retainedCredentialEmptyFlags() -> [Bool] {
         retainedCredentials.map { (try? $0.withUTF8 { $0.isEmpty }) ?? false }

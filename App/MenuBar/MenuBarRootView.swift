@@ -3,6 +3,61 @@ import AppKit
 import SwiftUI
 import UtterInkCore
 
+@MainActor
+enum FrontmostWindowPresenter {
+    static func present(_ action: () -> Void) {
+        let menuWindow = NSApplication.shared.keyWindow
+        let windowsBeforeAction = Set(
+            NSApplication.shared.windows.map(ObjectIdentifier.init)
+        )
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        action()
+
+        Task { @MainActor in
+            await Task.yield()
+            bringForward(
+                excluding: menuWindow,
+                preferringWindowsNotIn: windowsBeforeAction
+            )
+            for delay in [80, 180, 320] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                bringForward(
+                    excluding: menuWindow,
+                    preferringWindowsNotIn: windowsBeforeAction
+                )
+            }
+        }
+    }
+
+    private static func bringForward(
+        excluding menuWindow: NSWindow?,
+        preferringWindowsNotIn previousWindowIDs: Set<ObjectIdentifier>
+    ) {
+        let application = NSApplication.shared
+        application.activate(ignoringOtherApps: true)
+        let candidates = application.orderedWindows.filter {
+            $0 !== menuWindow
+                && $0.isVisible
+                && $0.canBecomeKey
+                && $0.styleMask.contains(.titled)
+        }
+        guard let target = candidates.first(where: {
+            !previousWindowIDs.contains(ObjectIdentifier($0))
+        }) ?? candidates.first else { return }
+        target.makeKeyAndOrderFront(nil)
+        target.orderFrontRegardless()
+    }
+}
+
+@MainActor
+enum MenuBarFocusReturn {
+    static func perform(_ action: () -> Void) {
+        let menuWindow = NSApplication.shared.keyWindow
+        action()
+        menuWindow?.orderOut(nil)
+    }
+}
+
 struct MenuBarRootView: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
@@ -12,6 +67,7 @@ struct MenuBarRootView: View {
     private let openHistory: (() -> Void)?
     private let openLastResult: (() -> Void)?
     private let openOnboarding: (() -> Void)?
+    private let settingsNavigation: SettingsNavigationModel?
 
     @State private var settings = UserSettings.p0Default
     @State private var isSavingOutputMode = false
@@ -22,32 +78,32 @@ struct MenuBarRootView: View {
         settingsStore: (any SettingsStore)?,
         openHistory: (() -> Void)? = nil,
         openLastResult: (() -> Void)? = nil,
-        openOnboarding: (() -> Void)? = nil
+        openOnboarding: (() -> Void)? = nil,
+        settingsNavigation: SettingsNavigationModel? = nil
     ) {
         self.model = model
         self.settingsStore = settingsStore
         self.openHistory = openHistory
         self.openLastResult = openLastResult
         self.openOnboarding = openOnboarding
+        self.settingsNavigation = settingsNavigation
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    statusContent
+            VStack(alignment: .leading, spacing: 10) {
+                sessionContent
 
-                    if model.readiness == .ready {
-                        Divider()
-                        actionContent
+                if model.readiness == .ready {
+                    if model.latestResult != nil {
                         Divider()
                         latestResultContent
-                        Divider()
-                        configurationContent
                     }
+                    Divider()
+                    configurationContent
                 }
-                .padding(12)
             }
+            .padding(12)
 
             Divider()
             VStack(alignment: .leading, spacing: 8) {
@@ -57,7 +113,9 @@ struct MenuBarRootView: View {
                 }
 
                 Button {
-                    openSettings()
+                    FrontmostWindowPresenter.present {
+                        openSettings()
+                    }
                 } label: {
                     Label(EnglishCopy.settings, systemImage: "gearshape")
                 }
@@ -76,7 +134,7 @@ struct MenuBarRootView: View {
             .padding(12)
         }
         .frame(width: 320)
-        .frame(maxHeight: 640)
+        .fixedSize(horizontal: false, vertical: true)
         .task {
             guard let settingsStore,
                   let loaded = try? await settingsStore.current() else { return }
@@ -85,6 +143,41 @@ struct MenuBarRootView: View {
         .onChange(of: outputSaveWarning) { _, warning in
             guard let warning else { return }
             AccessibilityNotification.Announcement("Error: \(warning)").post()
+        }
+    }
+
+    @ViewBuilder
+    private var sessionContent: some View {
+        switch model.readiness {
+        case .pending, .failed:
+            statusContent
+        case .ready:
+            switch model.pipeline.stage {
+            case .idle, .completed, .failed:
+                Button {
+                    MenuBarFocusReturn.perform {
+                        model.start()
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Label(EnglishCopy.start, systemImage: "waveform")
+                        Spacer(minLength: 12)
+                        Text(EnglishCopy.startShortcut)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("menu.shortcutHint")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .accessibilityIdentifier("menu.start")
+                .help("Start listening with the menu or Right Option")
+            case .requestingPermission, .recording, .stopping, .transcribing,
+                 .polishing, .delivering:
+                statusContent
+                actionContent
+            }
         }
     }
 
@@ -131,7 +224,9 @@ struct MenuBarRootView: View {
         switch stagePresentation.primaryAction {
         case .start:
             Button {
-                model.start()
+                MenuBarFocusReturn.perform {
+                    model.start()
+                }
             } label: {
                 Label(EnglishCopy.start, systemImage: "text.cursor")
             }
@@ -139,7 +234,9 @@ struct MenuBarRootView: View {
             .help(EnglishCopy.start)
         case .stop:
             Button {
-                model.stop()
+                MenuBarFocusReturn.perform {
+                    model.stop()
+                }
             } label: {
                 Label(EnglishCopy.stop, systemImage: "square")
             }
@@ -173,56 +270,71 @@ struct MenuBarRootView: View {
 
     @ViewBuilder
     private var latestResultContent: some View {
-        Text(EnglishCopy.latestResult)
-
         if let result = model.latestResult {
-            Text(result.finalText)
-                .lineLimit(3)
+            Button {
+                FrontmostWindowPresenter.present {
+                    if let openLastResult {
+                        openLastResult()
+                    } else {
+                        openWindow(id: AppWindowID.lastResult)
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(EnglishCopy.latestResult)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(result.finalText)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open latest result")
+            .accessibilityValue(result.finalText)
                 .accessibilityIdentifier("menu.latestResult")
-                .help("Latest dictation result")
+                .help(EnglishCopy.viewLatestResult)
 
-            if let warning = result.warning {
+            if let warning = resultWarningText(for: result) {
                 Label(
-                    EnglishCopy.warning(for: warning),
+                    warning,
                     systemImage: "exclamationmark.triangle.fill"
                 )
                 .accessibilityLabel("Warning")
-                .accessibilityValue(EnglishCopy.warning(for: warning))
+                .accessibilityValue(warning)
                 .accessibilityIdentifier("menu.resultWarning")
             }
 
-            Button {
-                model.copyResult(result.sessionID)
-            } label: {
-                Label(EnglishCopy.copyLatestResult, systemImage: "doc.on.doc")
-            }
-            .disabled(!canRecoverResult)
-            .accessibilityIdentifier("menu.copyLatest")
-            .help(EnglishCopy.copyLatestResult)
-
-            Button {
-                model.pasteAgain(result.sessionID)
-            } label: {
-                Label(EnglishCopy.pasteLatestResult, systemImage: "arrow.up.doc")
-            }
-            .disabled(!canRecoverResult)
-            .accessibilityIdentifier("menu.pasteLatest")
-            .help(EnglishCopy.pasteLatestResult)
-
-            Button {
-                if let openLastResult {
-                    openLastResult()
-                } else {
-                    openWindow(id: AppWindowID.lastResult)
+            HStack(spacing: 8) {
+                Button {
+                    model.copyResult(result.sessionID)
+                } label: {
+                    Label(EnglishCopy.copyResult, systemImage: "doc.on.doc")
                 }
-            } label: {
-                Label(EnglishCopy.viewLatestResult, systemImage: "rectangle.on.rectangle")
+                .disabled(!canRecoverResult)
+                .accessibilityIdentifier("menu.copyLatest")
+                .help(EnglishCopy.copyLatestResult)
+
+                if needsPasteRecovery(result) {
+                    Button {
+                        MenuBarFocusReturn.perform {
+                            model.pasteAgain(result.sessionID)
+                        }
+                    } label: {
+                        Label(EnglishCopy.pasteLatestResult, systemImage: "arrow.up.doc")
+                    }
+                    .disabled(!canRecoverResult)
+                    .accessibilityIdentifier("menu.pasteLatest")
+                    .help(EnglishCopy.pasteLatestResult)
+                }
             }
-            .accessibilityIdentifier("menu.viewLatest")
-            .help(EnglishCopy.viewLatestResult)
-        } else {
-            Text(EnglishCopy.noRecentResult)
-                .foregroundStyle(.secondary)
         }
     }
 
@@ -252,28 +364,22 @@ struct MenuBarRootView: View {
 
         if let outputSaveWarning {
             Label(outputSaveWarning, systemImage: "exclamationmark.triangle.fill")
-                .accessibilityLabel("Error")
+                .accessibilityLabel("Notice")
                 .accessibilityValue(outputSaveWarning)
                 .accessibilityIdentifier("menu.outputModeError")
         }
 
-        Label(
-            "\(EnglishCopy.recognitionLanguage): \(EnglishCopy.recognition(settings.recognition))",
-            systemImage: "character.cursor.ibeam"
-        )
-        Label(
-            "\(EnglishCopy.speechModel): \(EnglishCopy.speechModel(model.speechModel))",
-            systemImage: "internaldrive"
-        )
     }
 
     @ViewBuilder
     private var routeContent: some View {
         Button {
-            if let openHistory {
-                openHistory()
-            } else {
-                openWindow(id: AppWindowID.history)
+            FrontmostWindowPresenter.present {
+                if let openHistory {
+                    openHistory()
+                } else {
+                    openWindow(id: AppWindowID.history)
+                }
             }
         } label: {
             Label(EnglishCopy.history, systemImage: "clock.arrow.circlepath")
@@ -281,18 +387,6 @@ struct MenuBarRootView: View {
         .accessibilityIdentifier("menu.history")
         .help(EnglishCopy.history)
 
-        Button {
-            openOnboarding?()
-        } label: {
-            Label(EnglishCopy.onboarding, systemImage: "list.number")
-        }
-        .disabled(openOnboarding == nil)
-        .accessibilityIdentifier("menu.onboarding")
-        .help(
-            openOnboarding == nil
-                ? EnglishCopy.onboardingUnavailable
-                : EnglishCopy.onboarding
-        )
     }
 
     private var stagePresentation: StagePresentation {
@@ -309,6 +403,21 @@ struct MenuBarRootView: View {
         default:
             return false
         }
+    }
+
+    private func needsPasteRecovery(_ result: DictationResult) -> Bool {
+        FloatingCompletionPolicy.requiresPasteRecovery(
+            stage: model.pipeline.stage,
+            result: result
+        )
+    }
+
+    private func resultWarningText(for result: DictationResult) -> String? {
+        if model.pipeline.result?.sessionID == result.sessionID,
+           let warning = stagePresentation.warning {
+            return warning
+        }
+        return result.warning.map { EnglishCopy.warning(for: $0) }
     }
 
     private var rawFirstOutputModes: [OutputMode] {
@@ -331,6 +440,20 @@ struct MenuBarRootView: View {
         Task { @MainActor in
             defer { isSavingOutputMode = false }
             do {
+                let current = try await settingsStore.current()
+                settings = current
+                guard let mode = current.outputModes.first(where: { $0.id == id }) else {
+                    outputSaveWarning = "That output mode is no longer available."
+                    return
+                }
+                if mode.requiresProvider, !Self.hasConfiguredProvider(in: current) {
+                    outputSaveWarning = "Set up an AI Provider before using \(mode.title)."
+                    FrontmostWindowPresenter.present {
+                        settingsNavigation?.show(.provider)
+                        openSettings()
+                    }
+                    return
+                }
                 settings = try await settingsStore.update {
                     $0.selectedOutputModeID = id
                 }
@@ -338,5 +461,10 @@ struct MenuBarRootView: View {
                 outputSaveWarning = EnglishCopy.outputSaveFailed
             }
         }
+    }
+
+    private static func hasConfiguredProvider(in settings: UserSettings) -> Bool {
+        guard let selectedID = settings.selectedProviderProfileID else { return false }
+        return settings.providerProfiles.contains(where: { $0.id == selectedID })
     }
 }

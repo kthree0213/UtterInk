@@ -45,6 +45,8 @@ protocol HotkeyConfiguring: AnyObject {
     var currentMode: ShortcutMode { get }
     var hasConflict: Bool { get }
     var hasConfiguredShortcut: Bool { get }
+    var usesDefaultRightOption: Bool { get }
+    var shortcutDescription: String { get }
     func reconfigure(mode: ShortcutMode)
     func reset()
 }
@@ -100,6 +102,14 @@ final class LazyHotkeyService: HotkeyProbing, HotkeyConfiguring {
 
     var hasConfiguredShortcut: Bool {
         KeyboardShortcutsHotkeyService.hasConfiguredShortcut
+    }
+
+    var usesDefaultRightOption: Bool {
+        KeyboardShortcutsHotkeyService.usesDefaultRightOption
+    }
+
+    var shortcutDescription: String {
+        KeyboardShortcutsHotkeyService.shortcutDescription
     }
 
     init(

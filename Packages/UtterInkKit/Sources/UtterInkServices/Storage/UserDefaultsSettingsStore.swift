@@ -21,7 +21,7 @@ package enum UserDefaultsSettingsStoreError: Error, Equatable, Sendable, CustomS
 
 public actor UserDefaultsSettingsStore: SettingsStore {
     package static let storageKey = "utterink.user-settings.v1"
-    private static let storageVersion = 1
+    private static let storageVersion = 4
 
     private let defaults: UserDefaults
     private let legacy: any LegacyDefaultsAccess
@@ -64,7 +64,11 @@ public actor UserDefaultsSettingsStore: SettingsStore {
             guard let stored = object as? Data else {
                 throw UserDefaultsSettingsStoreError.corruptStoredSettings
             }
-            return try decodeStored(stored)
+            let decoded = try decodeStored(stored)
+            if decoded.requiresRewrite {
+                try persist(decoded.settings)
+            }
+            return decoded.settings
         }
 
         let migrated: UserSettings
@@ -97,18 +101,57 @@ public actor UserDefaultsSettingsStore: SettingsStore {
             throw UserDefaultsSettingsStoreError.verificationFailed
         }
         let verified = try decodeStored(readback)
-        guard verified == settings else {
+        guard !verified.requiresRewrite, verified.settings == settings else {
             throw UserDefaultsSettingsStoreError.verificationFailed
         }
     }
 
-    private func decodeStored(_ data: Data) throws -> UserSettings {
+    private func decodeStored(_ data: Data) throws -> DecodedStoredSettings {
         do {
             let envelope = try JSONDecoder().decode(StoredSettings.self, from: data)
-            guard envelope.version == Self.storageVersion, Self.isValid(envelope.settings) else {
+            guard Self.isValid(envelope.settings) else {
                 throw UserDefaultsSettingsStoreError.corruptStoredSettings
             }
-            return envelope.settings
+            switch envelope.version {
+            case Self.storageVersion:
+                return DecodedStoredSettings(
+                    settings: envelope.settings,
+                    requiresRewrite: false
+                )
+            case 3:
+                let upgraded = Self.upgradingVersionThreePresets(envelope.settings)
+                guard Self.isValid(upgraded) else {
+                    throw UserDefaultsSettingsStoreError.corruptStoredSettings
+                }
+                return DecodedStoredSettings(
+                    settings: upgraded,
+                    requiresRewrite: true
+                )
+            case 2:
+                let upgraded = Self.upgradingVersionTwoPresets(envelope.settings)
+                guard Self.isValid(upgraded) else {
+                    throw UserDefaultsSettingsStoreError.corruptStoredSettings
+                }
+                return DecodedStoredSettings(
+                    settings: upgraded,
+                    requiresRewrite: true
+                )
+            case 1:
+                var upgraded = envelope.settings
+                upgraded = Self.replacingRetiredNaturalChat(in: upgraded)
+                upgraded.outputModes = Self.appendingMissingPresetModes(
+                    to: upgraded.outputModes
+                )
+                guard Self.isValid(upgraded) else {
+                    throw UserDefaultsSettingsStoreError.corruptStoredSettings
+                }
+                return DecodedStoredSettings(
+                    settings: upgraded,
+                    requiresRewrite: true
+                )
+            default:
+                throw UserDefaultsSettingsStoreError.corruptStoredSettings
+            }
         } catch let error as UserDefaultsSettingsStoreError {
             throw error
         } catch {
@@ -227,8 +270,8 @@ public actor UserDefaultsSettingsStore: SettingsStore {
 
     private func migrateOutputModes(_ domain: [String: Any]) -> (modes: [OutputMode], legacyRawIDs: Set<UUID>) {
         let decoded: [LegacyOutputModeSettings] = decodeLegacyArray(domain["outputModeProfilesV1"])
-        var modes: [OutputMode] = [.raw]
-        var seen: Set<UUID> = [OutputMode.rawID]
+        var modes = OutputMode.defaultModes
+        var seen = Set(modes.map(\.id))
         var legacyRawIDs: Set<UUID> = [OutputMode.rawID]
 
         for legacyMode in decoded {
@@ -250,6 +293,71 @@ public actor UserDefaultsSettingsStore: SettingsStore {
             )
         }
         return (modes, legacyRawIDs)
+    }
+
+    private static func appendingMissingPresetModes(to modes: [OutputMode]) -> [OutputMode] {
+        var result = modes
+        var seen = Set(modes.map(\.id))
+        for preset in OutputMode.defaultPolishModes where seen.insert(preset.id).inserted {
+            result.append(preset)
+        }
+        return result
+    }
+
+    private static func upgradingVersionTwoPresets(_ settings: UserSettings) -> UserSettings {
+        var upgraded = replacingRetiredNaturalChat(in: settings)
+        guard !upgraded.outputModes.contains(where: {
+            $0.id == OutputMode.translateToEnglishID
+        }) else { return upgraded }
+        upgraded.outputModes.append(.translateToEnglish)
+        return upgraded
+    }
+
+    private static func upgradingVersionThreePresets(_ settings: UserSettings) -> UserSettings {
+        var upgraded = replacingRetiredTranslateToChinese(in: settings)
+        guard !upgraded.outputModes.contains(where: {
+            $0.id == OutputMode.translateToEnglishID
+        }) else { return upgraded }
+        upgraded.outputModes.append(.translateToEnglish)
+        return upgraded
+    }
+
+    private static func replacingRetiredNaturalChat(in settings: UserSettings) -> UserSettings {
+        var upgraded = settings
+        guard let retiredIndex = upgraded.outputModes.firstIndex(where: {
+            $0.id == OutputMode.retiredNaturalChatID
+        }), upgraded.outputModes[retiredIndex] == .retiredNaturalChat else {
+            return upgraded
+        }
+
+        if upgraded.outputModes.contains(where: { $0.id == OutputMode.translateToEnglishID }) {
+            upgraded.outputModes.remove(at: retiredIndex)
+        } else {
+            upgraded.outputModes[retiredIndex] = .translateToEnglish
+        }
+        if upgraded.selectedOutputModeID == OutputMode.retiredNaturalChatID {
+            upgraded.selectedOutputModeID = OutputMode.translateToEnglishID
+        }
+        return upgraded
+    }
+
+    private static func replacingRetiredTranslateToChinese(in settings: UserSettings) -> UserSettings {
+        var upgraded = settings
+        guard let retiredIndex = upgraded.outputModes.firstIndex(where: {
+            $0.id == OutputMode.retiredTranslateToChineseID
+        }), upgraded.outputModes[retiredIndex] == .retiredTranslateToChinese else {
+            return upgraded
+        }
+
+        if upgraded.outputModes.contains(where: { $0.id == OutputMode.translateToEnglishID }) {
+            upgraded.outputModes.remove(at: retiredIndex)
+        } else {
+            upgraded.outputModes[retiredIndex] = .translateToEnglish
+        }
+        if upgraded.selectedOutputModeID == OutputMode.retiredTranslateToChineseID {
+            upgraded.selectedOutputModeID = OutputMode.translateToEnglishID
+        }
+        return upgraded
     }
 
     private func migrateRecognition(_ domain: [String: Any]) -> RecognitionConfiguration? {
@@ -469,6 +577,11 @@ public actor UserDefaultsSettingsStore: SettingsStore {
 private struct StoredSettings: Codable {
     let version: Int
     let settings: UserSettings
+}
+
+private struct DecodedStoredSettings {
+    let settings: UserSettings
+    let requiresRewrite: Bool
 }
 
 private struct LegacyProviderSettings: Decodable {

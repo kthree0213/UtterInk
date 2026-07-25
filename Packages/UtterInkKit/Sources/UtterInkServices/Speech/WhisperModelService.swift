@@ -104,6 +104,16 @@ public actor WhisperModelService: SpeechModelService {
         currentState
     }
 
+    public func cachedModelIDs() async -> Set<String> {
+        var cached: Set<String> = []
+        for entry in catalogByID.values {
+            if await backend.isCached(entry, root: root) {
+                cached.insert(entry.id)
+            }
+        }
+        return cached
+    }
+
     public func prepare(modelID: String, token: EffectToken) async -> AsyncStream<SpeechModelState> {
         startPreparation(modelID: modelID, token: token, downloadIfMissing: true)
     }

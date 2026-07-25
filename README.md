@@ -24,9 +24,9 @@ See [Privacy](PRIVACY.md) and the [privacy data flow](docs/privacy-data-flow.md)
 ## Features
 
 - Menu-bar controls plus an optional floating recorder.
-- Toggle and Hold to Talk shortcut modes.
+- Right Option as the default recorder shortcut, plus configurable custom shortcuts and Toggle or Hold to Talk behavior.
 - Local Whisper speech recognition through WhisperKit, with `base`, `small`, and `large-v3` model choices.
-- Raw output by default, plus optional custom polishing instructions.
+- Raw output by default, five built-in polishing modes, and optional custom polishing instructions.
 - Automatic Paste with guarded clipboard restoration, or Copy Only delivery.
 - Per-session recovery, Copy, Paste Again, Delete, and Clear History controls.
 - Automatic or fixed English speech-recognition language selection.
@@ -39,6 +39,18 @@ See [Privacy](PRIVACY.md) and the [privacy data flow](docs/privacy-data-flow.md)
 - An internet connection for the first runtime download of a selected speech model and tokenizer
 
 Speech weights are not included in the repository or app. They are downloaded from pinned Hugging Face revisions and cached under `~/Library/Application Support/UtterInk/huggingface`. Catalog sizes are approximately 149 MB for `base`, 489 MB for `small`, and 3.1 GB for `large-v3`; Settings can delete a cached model only while it is not selected, preparing, loaded, or leased by an active operation.
+
+## Install a Release
+
+Signed and notarized builds are distributed only through the project's
+[GitHub Releases](https://github.com/kthree0213/UtterInk/releases) page. If that
+page does not show a DMG asset, no installable release has been published yet;
+use the source workflow below instead.
+
+For a published release, download the DMG together with `SHA256SUMS`, verify the
+checksum as described in the release notes, open the DMG, and drag UtterInk to
+Applications. Speech models are downloaded separately on first use and are not
+bundled in the DMG.
 
 ## Build from Source
 
@@ -116,8 +128,8 @@ Run the repository's complete local verification, including directed UI smoke te
 ## Unsigned Package
 
 The source command above produces an unsigned development build. It is not
-notarized or intended for redistribution, and this pre-release repository does
-not currently publish an installable package.
+notarized or intended for redistribution. Official signed builds, when
+available, are published only on the GitHub Releases page linked above.
 
 The fail-closed packaging path below requires the reviewed
 `Config/ci-toolchain.json` lock, which is committed with its reviewed source
@@ -146,10 +158,10 @@ publication are separate maintainer phases documented in
 
 Raw mode is the default and works without a provider or credential. To enable custom text polishing:
 
-1. Open **Settings → Providers** and add an OpenAI-compatible profile.
-2. Enter the base URL, model ID, and API key. Remote hosts require HTTPS; plain HTTP is accepted only for an explicitly selected canonical loopback host on the same Mac.
-3. Review the normalized host shown by UtterInk and use **Test Connection**. This performs `GET /models`, uses the profile credential when one is configured, and sends no transcript.
-4. Create or select a custom output mode with saved polish instructions.
+1. Open **Settings → Provider** and select a provider template. Choose **Custom** only when you need to enter your own OpenAI-compatible base URL.
+2. Enter the API key, review the normalized destination host shown by UtterInk, and choose **Test Key & Load Models**. Remote hosts require HTTPS; plain HTTP is accepted only for an explicitly selected canonical loopback host on the same Mac.
+3. Select one of the compatible models returned by the provider, then choose **Save & Use**. The API key is stored in macOS Keychain; it is not placed in ordinary settings, History, or diagnostics.
+4. Open **Settings → Output Modes** and select **Clean Up**, **AI Prompt**, **Translate to English**, **Work Message**, **Classical Chinese**, or a custom mode. Keep **Raw** selected when no text should be sent to a provider.
 
 For a polishing request, UtterInk sends the model ID, saved instructions, and raw transcript in a `POST /chat/completions` request. When the profile has an API key, it is sent as a Bearer credential. Audio is never sent. The provider and network remain subject to their own privacy and retention policies.
 
@@ -180,7 +192,7 @@ Permission state can be reviewed in Settings. UtterInk does not need Accessibili
 - Audio cleanup and history deletion use normal filesystem deletion and do not guarantee secure erasure.
 - A per-item History deletion can disappear from the current UI even if its persistent deletion fails; the failure is recorded as a sanitized local diagnostic, and the item can reappear after relaunch.
 - When the target or clipboard changes, Automatic Paste aborts or attempts the guarded recovery described above; the platform restore can still fail, while the text result remains recoverable from the latest result or history view.
-- This is pre-release source. No installable package is currently published.
+- Installable builds, when available, are published manually on GitHub Releases; UtterInk has no automatic updater.
 
 ## Contributing and Security
 

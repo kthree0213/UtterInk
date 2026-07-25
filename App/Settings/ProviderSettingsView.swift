@@ -72,9 +72,24 @@ enum ProviderReadiness: Equatable, Sendable {
     case failed(DiagnosticCode)
 }
 
+enum ProviderSetupStatus: Equatable, Sendable {
+    case idle
+    case testing
+    case modelsLoaded(normalizedHost: String, count: Int)
+    case saving
+    case active(providerTitle: String, modelID: String)
+    case failed(DiagnosticCode)
+}
+
 private struct ProviderFingerprint: Equatable, Sendable {
     let endpoint: String
     let modelID: String
+    let policy: EndpointPolicy
+    let credentialRevision: UInt64
+}
+
+private struct ProviderSetupFingerprint: Equatable, Sendable {
+    let endpoint: String
     let policy: EndpointPolicy
     let credentialRevision: UInt64
 }
@@ -92,6 +107,9 @@ final class ProviderSettingsViewModel {
     private(set) var failureMessage: String?
     private(set) var credentialCleanupPending: Set<UUID> = []
     private(set) var accessibilityEvent: UtterInkAccessibilityEvent?
+    private(set) var availableModelIDs: [String] = []
+    private(set) var setupStatus: ProviderSetupStatus = .idle
+    private(set) var cleanUpOfferPending = false
 
     @ObservationIgnored private let writer: SettingsMutationCoordinator
     @ObservationIgnored private let credentials: any CredentialStore
@@ -101,6 +119,7 @@ final class ProviderSettingsViewModel {
     @ObservationIgnored private var credentialRevision: [UUID: UInt64] = [:]
     @ObservationIgnored private var migrationResults: [UUID: CredentialMigrationResult] = [:]
     @ObservationIgnored private var validatedFingerprints: [UUID: ProviderFingerprint] = [:]
+    @ObservationIgnored private var testedSetup: ProviderSetupFingerprint?
 
     init(
         settings: any SettingsStore,
@@ -138,6 +157,42 @@ final class ProviderSettingsViewModel {
         )
     }
 
+    var currentConfiguration: ProviderProfile? {
+        guard let selectedProfileID else { return nil }
+        return profiles.first(where: { $0.id == selectedProfileID })
+    }
+
+    var preferredDraftProfile: ProviderProfile? {
+        currentConfiguration ?? profiles.first
+    }
+
+    var currentConfigurationNeedsKey: Bool {
+        guard let profile = currentConfiguration else { return false }
+        return profile.policy == .remoteHTTPS && credentialPresence[profile.id] != true
+    }
+
+    var currentConfigurationHasStoredKey: Bool {
+        guard let profile = currentConfiguration else { return false }
+        return credentialPresence[profile.id] == true
+    }
+
+    func canReuseStoredKey(
+        templateID: ProviderTemplateID,
+        baseURL: String,
+        allowsLoopbackHTTP: Bool
+    ) -> Bool {
+        let template = ProviderTemplate.template(for: templateID)
+        guard let candidate = try? makeProfile(
+            id: UUID(),
+            templateID: templateID,
+            title: template.title,
+            baseURL: baseURL,
+            modelID: template.defaultModelID,
+            allowsLoopbackHTTP: allowsLoopbackHTTP
+        ) else { return false }
+        return reusableCredentialProfile(for: candidate) != nil
+    }
+
     func egressDisclosure(
         forCandidate value: String,
         allowsLoopbackHTTP: Bool = false
@@ -152,6 +207,7 @@ final class ProviderSettingsViewModel {
         guard !isBusy else { return }
         isBusy = true
         failureMessage = nil
+        cleanUpOfferPending = false
         defer { isBusy = false }
 
         do {
@@ -170,9 +226,313 @@ final class ProviderSettingsViewModel {
                     ? .notValidated
                     : .incomplete
             }
+            if let currentConfiguration,
+               !currentConfigurationNeedsKey {
+                setupStatus = .active(
+                    providerTitle: currentConfiguration.title,
+                    modelID: currentConfiguration.modelID
+                )
+            } else {
+                setupStatus = .idle
+            }
         } catch {
             failureMessage = "Provider settings could not be loaded. Your current values were kept."
         }
+    }
+
+    func resetSetupTest() {
+        guard !isBusy else { return }
+        availableModelIDs = []
+        testedSetup = nil
+        failureMessage = nil
+        setupStatus = .idle
+    }
+
+    @discardableResult
+    func testKeyAndLoadModels(
+        templateID: ProviderTemplateID,
+        baseURL: String,
+        credential: String,
+        allowsLoopbackHTTP: Bool,
+        credentialRevision: UInt64
+    ) async -> Bool {
+        guard !isBusy else { return false }
+        let template = ProviderTemplate.template(for: templateID)
+        let candidate: ProviderProfile
+        do {
+            candidate = try makeProfile(
+                id: UUID(),
+                templateID: templateID,
+                title: template.title,
+                baseURL: baseURL,
+                modelID: template.defaultModelID,
+                allowsLoopbackHTTP: allowsLoopbackHTTP
+            )
+        } catch {
+            recordSetupFailure(
+                .polishTransport,
+                message: "Enter a valid HTTPS provider address. Plain HTTP is available only for a local loopback provider."
+            )
+            return false
+        }
+
+        isBusy = true
+        failureMessage = nil
+        availableModelIDs = []
+        testedSetup = nil
+        setupStatus = .testing
+        accessibilityEvent = UtterInkAccessibilityEvent(
+            message: "Testing API Key and loading models."
+        )
+        defer { isBusy = false }
+
+        let secret: SessionSecret
+        do {
+            guard let resolved = try await setupCredential(
+                input: credential,
+                for: candidate
+            ) else {
+                recordSetupFailure(.credentialMissing)
+                return false
+            }
+            secret = resolved
+        } catch {
+            recordSetupFailure(
+                .credentialMissing,
+                message: "The saved API Key could not be used. Enter the API Key again and retry."
+            )
+            return false
+        }
+        defer { secret.clear() }
+
+        let result = await validation.discoverModels(
+            profile: candidate,
+            credential: secret
+        )
+        let endpoint = try? EndpointValidator.validate(candidate.baseURL.absoluteString)
+
+        switch result {
+        case let .ready(normalizedHost, modelIDs)
+            where normalizedHost == endpoint?.displayAuthority:
+            let cleaned = Set(modelIDs.compactMap { value -> String? in
+                let modelID = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                return modelID.isEmpty ? nil : modelID
+            })
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            guard !cleaned.isEmpty else {
+                recordSetupFailure(.polishInvalidResponse)
+                return false
+            }
+            availableModelIDs = cleaned
+            testedSetup = setupFingerprint(
+                for: candidate,
+                credentialRevision: credentialRevision
+            )
+            setupStatus = .modelsLoaded(
+                normalizedHost: normalizedHost,
+                count: cleaned.count
+            )
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "API Key works. \(cleaned.count) models loaded."
+            )
+            return true
+        case .ready:
+            recordSetupFailure(.polishInvalidResponse)
+            return false
+        case let .failed(code):
+            recordSetupFailure(code)
+            return false
+        }
+    }
+
+    func canSaveSetup(
+        templateID: ProviderTemplateID,
+        baseURL: String,
+        modelID: String,
+        allowsLoopbackHTTP: Bool,
+        credentialRevision: UInt64
+    ) -> Bool {
+        guard let candidate = try? makeProfile(
+            id: UUID(),
+            templateID: templateID,
+            title: ProviderTemplate.template(for: templateID).title,
+            baseURL: baseURL,
+            modelID: modelID,
+            allowsLoopbackHTTP: allowsLoopbackHTTP
+        ) else { return false }
+        return testedSetup == setupFingerprint(
+            for: candidate,
+            credentialRevision: credentialRevision
+        ) && availableModelIDs.contains(candidate.modelID)
+    }
+
+    @discardableResult
+    func saveAndUse(
+        templateID: ProviderTemplateID,
+        baseURL: String,
+        modelID: String,
+        credential: String,
+        allowsLoopbackHTTP: Bool,
+        credentialRevision: UInt64
+    ) async -> Bool {
+        guard !isBusy,
+              canSaveSetup(
+                  templateID: templateID,
+                  baseURL: baseURL,
+                  modelID: modelID,
+                  allowsLoopbackHTTP: allowsLoopbackHTTP,
+                  credentialRevision: credentialRevision
+              ) else {
+            failureMessage = "Test the API Key and choose one of the returned models first."
+            return false
+        }
+
+        let template = ProviderTemplate.template(for: templateID)
+        let profile: ProviderProfile
+        do {
+            profile = try makeProfile(
+                id: UUID(),
+                templateID: templateID,
+                title: template.title,
+                baseURL: baseURL,
+                modelID: modelID,
+                allowsLoopbackHTTP: allowsLoopbackHTTP
+            )
+        } catch {
+            resetSetupTest()
+            failureMessage = "The provider settings changed. Test the API Key again."
+            return false
+        }
+
+        isBusy = true
+        failureMessage = nil
+        setupStatus = .saving
+        defer { isBusy = false }
+
+        let secret: SessionSecret
+        do {
+            guard let resolved = try await setupCredential(
+                input: credential,
+                for: profile
+            ) else {
+                recordSetupFailure(.credentialMissing)
+                return false
+            }
+            secret = resolved
+        } catch {
+            recordSetupFailure(
+                .credentialMissing,
+                message: "The saved API Key could not be used. Enter it again and retry."
+            )
+            return false
+        }
+        defer { secret.clear() }
+
+        let hasCredential = (try? secret.withUTF8 {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) ?? false
+        let previousProfileIDs = profiles.map(\.id)
+        var storedNewCredential = false
+
+        do {
+            if hasCredential {
+                try await credentials.write(secret, profileID: profile.id)
+                storedNewCredential = true
+            }
+            let saved = try await writer.update { settings in
+                settings.providerProfiles = [profile]
+                settings.selectedProviderProfileID = profile.id
+            }
+            guard saved.providerProfiles == [profile],
+                  saved.selectedProviderProfileID == profile.id else {
+                throw ProviderDraftError.persistenceConflict
+            }
+
+            publish(saved)
+            credentialPresence[profile.id] = hasCredential
+            self.credentialRevision[profile.id, default: 0] &+= 1
+            migrationResults[profile.id] = .noLegacyValue
+            let endpoint = try EndpointValidator.validate(profile.baseURL.absoluteString)
+            let fingerprint = fingerprint(for: profile)
+            validatedFingerprints[profile.id] = fingerprint
+            readiness[profile.id] = .ready(
+                normalizedHost: endpoint.displayAuthority,
+                modelID: profile.modelID
+            )
+            setupStatus = .active(
+                providerTitle: profile.title,
+                modelID: profile.modelID
+            )
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Provider saved and ready to use."
+            )
+            cleanUpOfferPending = saved.selectedOutputModeID == OutputMode.rawID
+                && saved.outputModes.contains(where: { $0.id == OutputMode.cleanUpID })
+
+            for previousID in previousProfileIDs where previousID != profile.id {
+                removePresentationState(profileID: previousID)
+                do {
+                    try await credentials.delete(profileID: previousID)
+                    credentialCleanupPending.remove(previousID)
+                } catch {
+                    credentialCleanupPending.insert(previousID)
+                }
+            }
+            return true
+        } catch {
+            if storedNewCredential {
+                do {
+                    try await credentials.delete(profileID: profile.id)
+                } catch {
+                    credentialCleanupPending.insert(profile.id)
+                }
+            }
+            setupStatus = .idle
+            failureMessage = "The provider could not be saved. Your previous setup is unchanged."
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Provider could not be saved."
+            )
+            return false
+        }
+    }
+
+    @discardableResult
+    func useCleanUpForFutureDictations() async -> Bool {
+        guard !isBusy else { return false }
+        isBusy = true
+        cleanUpOfferPending = false
+        failureMessage = nil
+        defer { isBusy = false }
+
+        do {
+            let saved = try await writer.update { settings in
+                guard settings.outputModes.contains(where: {
+                    $0.id == OutputMode.cleanUpID && !$0.skipsPolishing
+                }) else { return }
+                settings.selectedOutputModeID = OutputMode.cleanUpID
+            }
+            guard saved.selectedOutputModeID == OutputMode.cleanUpID else {
+                throw ProviderDraftError.persistenceConflict
+            }
+            publish(saved)
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Clean Up selected for future dictations."
+            )
+            return true
+        } catch {
+            failureMessage = "Clean Up could not be selected. Raw remains in use."
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Clean Up could not be selected."
+            )
+            return false
+        }
+    }
+
+    func keepRawForFutureDictations() {
+        cleanUpOfferPending = false
+        accessibilityEvent = UtterInkAccessibilityEvent(
+            message: "Raw remains selected for future dictations."
+        )
     }
 
     func canUse(_ mode: OutputMode) -> Bool {
@@ -658,6 +1018,77 @@ final class ProviderSettingsViewModel {
         }
     }
 
+    private func setupCredential(
+        input: String,
+        for candidate: ProviderProfile
+    ) async throws -> SessionSecret? {
+        let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !value.isEmpty {
+            return SessionSecret(utf8: value)
+        }
+        if let existing = reusableCredentialProfile(for: candidate),
+           let stored = try await credentials.read(profileID: existing.id) {
+            return stored
+        }
+        if candidate.policy == .loopbackHTTP {
+            return SessionSecret(utf8: "")
+        }
+        return nil
+    }
+
+    private func reusableCredentialProfile(
+        for candidate: ProviderProfile
+    ) -> ProviderProfile? {
+        let ordered = [currentConfiguration].compactMap { $0 }
+            + profiles.filter { $0.id != currentConfiguration?.id }
+        return ordered.first {
+            $0.baseURL == candidate.baseURL
+                && $0.policy == candidate.policy
+                && credentialPresence[$0.id] == true
+        }
+    }
+
+    private func setupFingerprint(
+        for profile: ProviderProfile,
+        credentialRevision: UInt64
+    ) -> ProviderSetupFingerprint {
+        ProviderSetupFingerprint(
+            endpoint: profile.baseURL.absoluteString,
+            policy: profile.policy,
+            credentialRevision: credentialRevision
+        )
+    }
+
+    private func recordSetupFailure(
+        _ code: DiagnosticCode,
+        message: String? = nil
+    ) {
+        availableModelIDs = []
+        testedSetup = nil
+        setupStatus = .failed(code)
+        failureMessage = message ?? setupFailureMessage(for: code)
+        accessibilityEvent = UtterInkAccessibilityEvent(
+            message: "Provider test failed. \(failureMessage ?? "Try again.")"
+        )
+    }
+
+    private func setupFailureMessage(for code: DiagnosticCode) -> String {
+        switch code {
+        case .credentialMissing:
+            return "Enter an API Key, then test it."
+        case .polishAuthentication:
+            return "That API Key was rejected. Check it and try again."
+        case .polishTransport:
+            return "The provider could not be reached. Check your network and provider selection."
+        case .polishInvalidResponse:
+            return "The provider responded, but no compatible models were returned."
+        case .cancelled:
+            return "The provider test was cancelled."
+        default:
+            return "The provider test failed. Check the API Key and try again."
+        }
+    }
+
     private func makeProfile(
         id: UUID,
         templateID: ProviderTemplateID,
@@ -776,7 +1207,7 @@ private enum ProviderDraftError: Error {
     case persistenceConflict
 }
 
-struct ProviderSettingsView: View {
+private struct LegacyProviderSettingsView: View {
     @Bindable var model: ProviderSettingsViewModel
     @State private var editingID: UUID?
     @State private var templateID: ProviderTemplateID = .openRouter
@@ -1015,5 +1446,287 @@ struct ProviderSettingsView: View {
         modelID = "openrouter/free"
         credential.removeAll(keepingCapacity: false)
         allowsLoopbackHTTP = false
+    }
+}
+
+struct ProviderSettingsView: View {
+    @Bindable var model: ProviderSettingsViewModel
+    @State private var templateID: ProviderTemplateID = .openRouter
+    @State private var baseURL = "https://openrouter.ai/api/v1"
+    @State private var credential = ""
+    @State private var credentialRevision: UInt64 = 0
+    @State private var selectedModelID = ""
+    @State private var allowsLoopbackHTTP = false
+
+    var body: some View {
+        Form {
+            if let current = model.currentConfiguration {
+                Section("Current") {
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(current.title)
+                                .font(.headline)
+                            Text(current.modelID)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Label(
+                            model.currentConfigurationNeedsKey
+                                ? "API Key required"
+                                : "Ready to use",
+                            systemImage: model.currentConfigurationNeedsKey
+                                ? "exclamationmark.triangle.fill"
+                                : "checkmark.circle.fill"
+                        )
+                        .foregroundStyle(
+                            model.currentConfigurationNeedsKey ? .orange : .green
+                        )
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("settings.provider.current")
+                }
+            }
+
+            Section("AI Provider") {
+                Picker("Provider", selection: $templateID) {
+                    ForEach(ProviderTemplate.all) { template in
+                        Text(template.title).tag(template.id)
+                    }
+                }
+                .accessibilityLabel("Provider")
+                .accessibilityIdentifier("settings.provider.template")
+
+                if templateID == .custom {
+                    TextField("Base URL", text: $baseURL)
+                        .accessibilityLabel("Provider Base URL")
+                        .accessibilityIdentifier("settings.provider.baseURL")
+                    Toggle(
+                        ProviderSettingsViewModel.loopbackOptInLabel,
+                        isOn: $allowsLoopbackHTTP
+                    )
+                    .accessibilityIdentifier("settings.provider.allowLoopbackHTTP")
+                }
+
+                SecureField("API Key", text: $credential)
+                    .accessibilityLabel("API Key")
+                    .accessibilityIdentifier("settings.provider.apiKey")
+
+                if credential.isEmpty,
+                   model.canReuseStoredKey(
+                       templateID: templateID,
+                       baseURL: baseURL,
+                       allowsLoopbackHTTP: allowsLoopbackHTTP
+                   ) {
+                    Label(
+                        "An API Key is already saved. Leave this field blank to keep using it.",
+                        systemImage: "checkmark.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                if let disclosure = model.egressDisclosure(
+                    forCandidate: endpointDraft,
+                    allowsLoopbackHTTP: allowsLoopbackHTTP
+                ) {
+                    Label(disclosure, systemImage: "network")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Button {
+                    testKeyAndLoadModels()
+                } label: {
+                    if model.setupStatus == .testing {
+                        Label("Testing and Loading Models…", systemImage: "arrow.triangle.2.circlepath")
+                    } else {
+                        Label("Test Key & Load Models", systemImage: "checkmark.shield")
+                    }
+                }
+                .disabled(model.isBusy)
+                .accessibilityIdentifier("settings.provider.testKey")
+            }
+            .disabled(model.isBusy)
+
+            if !model.availableModelIDs.isEmpty {
+                Section("Model") {
+                    Picker("Model", selection: $selectedModelID) {
+                        ForEach(model.availableModelIDs, id: \.self) { modelID in
+                            Text(modelID).tag(modelID)
+                        }
+                    }
+                    .accessibilityLabel("Model")
+                    .accessibilityIdentifier("settings.provider.modelPicker")
+
+                    if case let .modelsLoaded(_, count) = model.setupStatus {
+                        Label(
+                            "API Key works. \(count) compatible \(count == 1 ? "model" : "models") found.",
+                            systemImage: "checkmark.circle.fill"
+                        )
+                        .foregroundStyle(.green)
+                        .accessibilityIdentifier("settings.provider.testSuccess")
+                    }
+
+                    Button {
+                        saveAndUse()
+                    } label: {
+                        if model.setupStatus == .saving {
+                            Label("Saving…", systemImage: "arrow.triangle.2.circlepath")
+                        } else {
+                            Label("Save & Use", systemImage: "checkmark")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        model.isBusy
+                            || !model.canSaveSetup(
+                                templateID: templateID,
+                                baseURL: baseURL,
+                                modelID: selectedModelID,
+                                allowsLoopbackHTTP: allowsLoopbackHTTP,
+                                credentialRevision: credentialRevision
+                            )
+                    )
+                    .accessibilityIdentifier("settings.provider.saveAndUse")
+                }
+            } else if model.setupStatus != .testing {
+                Section("Model") {
+                    Text("Test the API Key to load this provider’s available models.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let failureMessage = model.failureMessage {
+                Section {
+                    Label(failureMessage, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .accessibilityLabel("Error")
+                        .accessibilityValue(failureMessage)
+                        .accessibilityIdentifier("settings.provider.error")
+                        .accessibilityAddTraits(.updatesFrequently)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .accessibilityIdentifier("settings.provider")
+        .utterInkAccessibilityAnnouncement(model.failureMessage.map { "Error: \($0)" })
+        .utterInkAccessibilityAnnouncement(model.accessibilityEvent)
+        .navigationTitle("Provider")
+        .task {
+            await model.load()
+            applyLoadedDraft()
+        }
+        .onChange(of: templateID) { _, newValue in
+            let template = ProviderTemplate.template(for: newValue)
+            if let fixed = template.fixedBaseURL {
+                baseURL = fixed
+            }
+            selectedModelID = ""
+            credential.removeAll(keepingCapacity: false)
+            credentialRevision &+= 1
+            if newValue != .custom {
+                allowsLoopbackHTTP = false
+            }
+            model.resetSetupTest()
+        }
+        .onChange(of: baseURL) { _, _ in
+            guard templateID == .custom else { return }
+            selectedModelID = ""
+            model.resetSetupTest()
+        }
+        .onChange(of: allowsLoopbackHTTP) { _, _ in
+            guard templateID == .custom else { return }
+            selectedModelID = ""
+            model.resetSetupTest()
+        }
+        .onChange(of: credential) { _, _ in
+            credentialRevision &+= 1
+            selectedModelID = ""
+            model.resetSetupTest()
+        }
+        .alert(
+            "Use Clean Up for future dictations?",
+            isPresented: Binding(
+                get: { model.cleanUpOfferPending },
+                set: { presented in
+                    if !presented, model.cleanUpOfferPending {
+                        model.keepRawForFutureDictations()
+                    }
+                }
+            )
+        ) {
+            Button("Use Clean Up") {
+                Task { await model.useCleanUpForFutureDictations() }
+            }
+            .accessibilityIdentifier("settings.provider.useCleanUp")
+            Button("Keep Raw", role: .cancel) {
+                model.keepRawForFutureDictations()
+            }
+            .accessibilityIdentifier("settings.provider.keepRaw")
+        } message: {
+            Text(
+                "Your provider is ready. Clean Up removes filler words and fixes punctuation without changing meaning."
+            )
+        }
+    }
+
+    private var endpointDraft: String {
+        ProviderTemplate.template(for: templateID).fixedBaseURL ?? baseURL
+    }
+
+    private func applyLoadedDraft() {
+        guard let profile = model.preferredDraftProfile else { return }
+        let template = ProviderTemplate.matching(profile)
+        templateID = template.id
+        baseURL = profile.baseURL.absoluteString
+        selectedModelID = profile.modelID
+        allowsLoopbackHTTP = profile.policy == .loopbackHTTP
+    }
+
+    private func testKeyAndLoadModels() {
+        let capturedTemplate = templateID
+        let capturedBaseURL = baseURL
+        let capturedCredential = credential
+        let capturedLoopbackOptIn = allowsLoopbackHTTP
+        let capturedRevision = credentialRevision
+        Task {
+            let succeeded = await model.testKeyAndLoadModels(
+                templateID: capturedTemplate,
+                baseURL: capturedBaseURL,
+                credential: capturedCredential,
+                allowsLoopbackHTTP: capturedLoopbackOptIn,
+                credentialRevision: capturedRevision
+            )
+            guard succeeded else { return }
+            let defaultModelID = ProviderTemplate
+                .template(for: capturedTemplate)
+                .defaultModelID
+            selectedModelID = model.availableModelIDs.contains(defaultModelID)
+                ? defaultModelID
+                : model.availableModelIDs.first ?? ""
+        }
+    }
+
+    private func saveAndUse() {
+        let capturedTemplate = templateID
+        let capturedBaseURL = baseURL
+        let capturedModelID = selectedModelID
+        let capturedCredential = credential
+        let capturedLoopbackOptIn = allowsLoopbackHTTP
+        let capturedRevision = credentialRevision
+        Task {
+            let saved = await model.saveAndUse(
+                templateID: capturedTemplate,
+                baseURL: capturedBaseURL,
+                modelID: capturedModelID,
+                credential: capturedCredential,
+                allowsLoopbackHTTP: capturedLoopbackOptIn,
+                credentialRevision: capturedRevision
+            )
+            if saved {
+                credential.removeAll(keepingCapacity: false)
+            }
+        }
     }
 }

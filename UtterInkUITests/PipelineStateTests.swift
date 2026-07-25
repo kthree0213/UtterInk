@@ -19,11 +19,11 @@ final class PipelineStateTests: XCTestCase {
 
         assertAccessibleText(requireElement("floating.status", in: app), contains: "Listening")
         assertEnabled("floating.stop", in: app)
-        assertEnabled("floating.cancel", in: app)
+        assertAbsent("floating.cancel", in: app)
         assertAbsent("floating.start", in: app)
         _ = requireElement("floating.elapsed", in: app)
         _ = requireElement("floating.inputLevel", in: app)
-        assertNonEmptyLabels(["floating.stop", "floating.cancel"], in: app)
+        assertNonEmptyLabels(["floating.stop"], in: app)
     }
 
     func testRequestingPermissionScenarioShowsCancelOnly() {
@@ -100,15 +100,15 @@ final class PipelineStateTests: XCTestCase {
 
     private func assertCompletedRecoveryControls(in app: XCUIApplication) {
         let identifiers = [
-            "floating.start",
             "floating.dismiss",
-            "floating.viewLatest",
             "floating.copyLatest",
             "floating.pasteLatest"
         ]
         for identifier in identifiers {
             assertEnabled(identifier, in: app)
         }
+        assertAbsent("floating.start", in: app)
+        assertAbsent("floating.viewLatest", in: app)
         assertNonEmptyLabels(identifiers, in: app)
 
         requireElement("floating.copyLatest", in: app).click()

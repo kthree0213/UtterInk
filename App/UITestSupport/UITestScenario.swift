@@ -138,6 +138,8 @@ private final class UITestHotkeyService: HotkeyProbing, HotkeyConfiguring {
     private(set) var currentMode: ShortcutMode = .toggle
     private(set) var hasConflict = false
     private(set) var hasConfiguredShortcut = true
+    private(set) var usesDefaultRightOption = true
+    private(set) var shortcutDescription = "Right Option"
 
     func arm() async -> AsyncStream<Void> { finishedStream() }
     func armProbeOnly() async -> AsyncStream<Void> { finishedStream() }
@@ -147,8 +149,10 @@ private final class UITestHotkeyService: HotkeyProbing, HotkeyConfiguring {
     }
 
     func reset() {
-        hasConfiguredShortcut = false
+        hasConfiguredShortcut = true
         hasConflict = false
+        usesDefaultRightOption = true
+        shortcutDescription = "Right Option"
     }
 
     private func finishedStream() -> AsyncStream<Void> {
@@ -186,7 +190,27 @@ private actor UITestProviderValidationService: ProviderValidationService {
         profile: ProviderProfile,
         credential: SessionSecret
     ) -> ProviderValidationResult {
-        .ready(normalizedHost: "fixture.invalid", modelID: profile.modelID)
+        .ready(
+            normalizedHost: normalizedHost(for: profile),
+            modelID: profile.modelID
+        )
+    }
+
+    func discoverModels(
+        profile: ProviderProfile,
+        credential: SessionSecret
+    ) -> ProviderModelDiscoveryResult {
+        .ready(
+            normalizedHost: normalizedHost(for: profile),
+            modelIDs: [profile.modelID, "fixture-model"]
+        )
+    }
+
+    private func normalizedHost(for profile: ProviderProfile) -> String {
+        if let endpoint = try? EndpointValidator.validate(profile.baseURL.absoluteString) {
+            return endpoint.displayAuthority
+        }
+        return profile.baseURL.host ?? "fixture.invalid"
     }
 }
 
@@ -229,12 +253,25 @@ private final class UITestDictationController: DictationControlling {
     )
     let speechModelCatalog: [SpeechModelDescriptor] = [
         SpeechModelDescriptor(
+            id: "base",
+            displayName: "Base",
+            approximateBytes: 150_000_000,
+            preset: "Fast"
+        ),
+        SpeechModelDescriptor(
             id: "small",
             displayName: "Small",
-            approximateBytes: 466_000_000,
+            approximateBytes: 500_000_000,
             preset: "Recommended"
         ),
+        SpeechModelDescriptor(
+            id: "large-v3",
+            displayName: "Large V3",
+            approximateBytes: 1_600_000_000,
+            preset: "Best Quality"
+        ),
     ]
+    var cachedSpeechModelIDs: Set<String> = ["small"]
     var activeSpeechModelID: String? = "small"
     var preparingSpeechModelID: String?
 
@@ -339,16 +376,20 @@ private final class UITestDictationController: DictationControlling {
     }
 
     func prepareSpeechModel(_ modelID: String) {
+        cachedSpeechModelIDs.insert(modelID)
         activeSpeechModelID = modelID
         preparingSpeechModelID = nil
         speechModelState = .ready(modelID: modelID)
     }
+
+    func refreshSpeechModelCache() async {}
 
     func cancelSpeechModelPreparation() {
         preparingSpeechModelID = nil
     }
 
     func deleteCachedSpeechModel(_ modelID: String) {
+        cachedSpeechModelIDs.remove(modelID)
         if activeSpeechModelID == modelID { activeSpeechModelID = nil }
         speechModelState = .missing(modelID: modelID)
         speechModelCacheActionStatus = .deleted(modelID: modelID)

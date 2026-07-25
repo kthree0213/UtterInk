@@ -18,10 +18,14 @@ final class LaunchAndNavigationTests: XCTestCase {
         let app = launch(.idle)
         openMenuBarExtra(in: app)
 
-        assertAccessibleText(requireElement("menu.status", in: app), contains: "Ready")
         assertEnabled("menu.start", in: app)
+        assertAccessibleText(
+            requireElement("menu.shortcutHint", in: app),
+            contains: "Right"
+        )
         assertAbsent("menu.stop", in: app)
         assertAbsent("menu.cancel", in: app)
+        assertAbsent("menu.onboarding", in: app)
 
         requireElement("menu.settings", in: app).click()
         _ = requireElement("settings.sidebar", in: app)
@@ -79,6 +83,63 @@ final class LaunchAndNavigationTests: XCTestCase {
         assertAccessibleText(
             requireElement("history.variant.\(latestSession)", in: app),
             contains: "Polished"
+        )
+    }
+
+    func testShortcutRecorderAndSpeechModelDownloadConfirmationAreInteractive() {
+        let app = launch(.idle)
+        openMenuBarExtra(in: app)
+        requireElement("menu.settings", in: app).click()
+        _ = requireElement("settings.sidebar", in: app)
+
+        requireElement("settings.route.shortcuts", in: app).click()
+        assertAccessibleText(
+            requireElement("settings.shortcuts.status", in: app),
+            contains: "Right Option"
+        )
+        let recorder = requireElement("settings.shortcuts.recorder", in: app)
+        recorder.click()
+        assertEventuallyAccessibleText(recorder, contains: "Recording")
+        app.typeKey(.escape, modifierFlags: [])
+        assertEventuallyAccessibleText(recorder, contains: "Right Option")
+
+        requireElement("settings.route.speechModel", in: app).click()
+        _ = requireElement("settings.speechModel.downloaded.small", in: app)
+        requireElement("settings.speechModel.select.base", in: app).click()
+
+        let downloadAlert = app.alerts["Download Speech Model?"]
+        XCTAssertTrue(downloadAlert.waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            downloadAlert.staticTexts.matching(
+                NSPredicate(format: "label CONTAINS %@", "150 MB")
+            ).firstMatch.exists,
+            "The confirmation must disclose the approximate download size"
+        )
+        assertEnabled("settings.speechModel.confirmDownload", in: app)
+        requireElement("settings.speechModel.cancelDownload", in: app).click()
+        assertAbsent("settings.speechModel.confirmDownload", in: app)
+        assertAccessibleText(
+            requireElement("settings.speechModel.select.small", in: app),
+            contains: "Selected"
+        )
+        assertAccessibleText(
+            requireElement("settings.speechModel.select.base", in: app),
+            contains: "Not selected"
+        )
+    }
+
+    func testGeneralSettingsCanReplayCompletedOnboardingFromPrivacy() {
+        let app = launch(.idle)
+        openMenuBarExtra(in: app)
+        requireElement("menu.settings", in: app).click()
+        _ = requireElement("settings.sidebar", in: app)
+
+        requireElement("settings.general.replayOnboarding", in: app).click()
+
+        _ = requireElement("onboarding.flow", in: app)
+        assertAccessibleText(
+            requireElement("onboarding.step", in: app),
+            contains: "Privacy"
         )
     }
 

@@ -39,6 +39,7 @@ final class RecordingIntentControllerSpy: DictationControlling {
     var recordingTelemetry: RecordingTelemetry?
     var sessionPresentation: SessionPresentationContext?
     var speechModelCatalog: [SpeechModelDescriptor] = []
+    var cachedSpeechModelIDs: Set<String> = []
     var activeSpeechModelID: String?
     var preparingSpeechModelID: String?
     var intents: [UserIntent] = []
@@ -48,12 +49,16 @@ final class RecordingIntentControllerSpy: DictationControlling {
     var rejectPreparation = false
     var bootstrapCount = 0
     var bootstrapGate: AppBootstrapGate?
+    var refreshSpeechModelCacheCount = 0
     var historyChangeHandler: (@MainActor (Bool) async -> Bool)?
     private var historyControlRevision: UInt64 = 0
 
     func bootstrap() async {
         bootstrapCount += 1
         await bootstrapGate?.wait()
+    }
+    func refreshSpeechModelCache() async {
+        refreshSpeechModelCacheCount += 1
     }
     func send(_ intent: UserIntent) {
         intents.append(intent)
@@ -87,6 +92,7 @@ final class RecordingIntentControllerSpy: DictationControlling {
     }
     func deleteCachedSpeechModel(_ modelID: String) {
         deletedSpeechModelIDs.append(modelID)
+        cachedSpeechModelIDs.remove(modelID)
         speechModelCacheActionStatus = .deleted(modelID: modelID)
     }
 }

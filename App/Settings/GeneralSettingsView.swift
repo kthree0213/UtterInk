@@ -11,6 +11,12 @@ final class GeneralSettingsViewModel {
         "Copy Only uses your snapshotted pre-authorization to replace the clipboard with each completed dictation. It does not send Command-V and does not automatically restore the previous clipboard."
     static let safetyFallbackExplanation =
         "When automatic delivery is unsafe, UtterInk keeps the result available and waits for you to choose Copy; it does not claim the text was copied."
+    static let historyRetentionExplanation =
+        "Keep up to 20 recent dictations on this Mac, including original and polished text when available. Audio is never kept in History."
+    static let historyDisabledExplanation =
+        "Turning this off stops saving new dictations. Existing history remains until cleared."
+    static let historyClearExplanation =
+        "This deletes original and polished text from this Mac. This can’t be undone."
 
     private(set) var launchAtLoginEnabled = false
     private(set) var showFloatingRecorder = UserSettings.p0Default.showFloatingRecorder
@@ -25,6 +31,7 @@ final class GeneralSettingsViewModel {
     @ObservationIgnored private let controller: any DictationControlling
     @ObservationIgnored private let launchAtLogin: any LaunchAtLoginManaging
     @ObservationIgnored private let setFloatingRecorderVisibility: @MainActor (Bool) -> Void
+    @ObservationIgnored private var replayOnboardingHandler: @MainActor () -> Void = {}
 
     init(
         settings: any SettingsStore,
@@ -71,6 +78,47 @@ final class GeneralSettingsViewModel {
 
     var historyControlIsPending: Bool {
         controller.historyControlStatus.isPending
+    }
+
+    var historyItemCount: Int {
+        var sessionIDs = Set(controller.historyRecords.map(\.sessionID))
+        sessionIDs.formUnion(controller.volatileResults.map(\.sessionID))
+        return sessionIDs.count
+    }
+
+    var historyItemSummary: String {
+        if historyItemCount == 0, historyClearNeedsRetry {
+            return "Saved history still needs clearing"
+        }
+        switch historyItemCount {
+        case 0:
+            return "No saved dictations"
+        case 1:
+            return "1 saved dictation"
+        case let count:
+            return "\(count) saved dictations"
+        }
+    }
+
+    var canClearHistory: Bool {
+        (historyItemCount > 0 || historyClearNeedsRetry) && !historyControlIsPending
+    }
+
+    var clearHistoryConfirmationTitle: String {
+        let count = historyItemCount
+        if count == 0, historyClearNeedsRetry {
+            return "Try clearing saved history again?"
+        }
+        return count == 1
+            ? "Clear 1 saved dictation?"
+            : "Clear \(count) saved dictations?"
+    }
+
+    private var historyClearNeedsRetry: Bool {
+        guard case .failed(_, .clearFailed) = controller.historyControlStatus else {
+            return false
+        }
+        return true
     }
 
     var historyControlWarning: String? {
@@ -170,6 +218,14 @@ final class GeneralSettingsViewModel {
         controller.send(.clearHistory)
     }
 
+    func setReplayOnboardingHandler(_ handler: @escaping @MainActor () -> Void) {
+        replayOnboardingHandler = handler
+    }
+
+    func replayOnboarding() {
+        replayOnboardingHandler()
+    }
+
     func setDeliveryPreference(_ preference: DeliveryPreference) async {
         guard !isSaving, preference != deliveryPreference else { return }
         isSaving = true
@@ -211,31 +267,44 @@ struct GeneralSettingsView: View {
                     .accessibilityValue(model.launchAtLoginStatus)
                     .accessibilityIdentifier("settings.general.launchAtLoginStatus")
                 Toggle(
-                    "Show Floating Recorder",
+                    "Show Recording Overlay",
                     isOn: Binding(
                         get: { model.showFloatingRecorder },
                         set: { value in Task { await model.setFloatingRecorderEnabled(value) } }
                     )
                 )
-                .accessibilityLabel("Show Floating Recorder")
+                .accessibilityLabel("Show Recording Overlay")
                 .accessibilityIdentifier("settings.general.floatingRecorder")
             }
             .disabled(model.isSaving)
 
             Section("History") {
                 Toggle(
-                    "Save History",
+                    "Save Recent History",
                     isOn: Binding(
                         get: { model.historyEnabled },
                         set: model.setHistoryEnabled
                     )
                 )
-                .accessibilityLabel("Save History")
+                .accessibilityLabel("Save Recent History")
                 .accessibilityIdentifier("settings.general.historyEnabled")
-                Text("Turning History off keeps existing saved results until you choose Clear History.")
-                    .foregroundStyle(.secondary)
-                Button("Clear History", role: .destructive) { confirmsClear = true }
-                    .accessibilityIdentifier("settings.general.clearHistory")
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(GeneralSettingsViewModel.historyRetentionExplanation)
+                    Text(GeneralSettingsViewModel.historyDisabledExplanation)
+                }
+                .foregroundStyle(.secondary)
+                HStack {
+                    Text(model.historyItemSummary)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Saved history")
+                        .accessibilityValue(model.historyItemSummary)
+                        .accessibilityIdentifier("settings.general.historySummary")
+                    Spacer()
+                    Button("Clear History…", role: .destructive) { confirmsClear = true }
+                        .disabled(!model.canClearHistory)
+                        .accessibilityHint("Deletes all text in History from this Mac")
+                        .accessibilityIdentifier("settings.general.clearHistory")
+                }
                 if model.historyControlIsPending {
                     Label("Applying history privacy change…", systemImage: "clock")
                         .accessibilityLabel("History status")
@@ -283,6 +352,20 @@ struct GeneralSettingsView: View {
                     .accessibilityIdentifier("settings.general.error")
                     .accessibilityAddTraits(.updatesFrequently)
             }
+
+            Section("Getting Started") {
+                Button {
+                    model.replayOnboarding()
+                } label: {
+                    Label("Run Onboarding Again", systemImage: "list.number")
+                }
+                .buttonStyle(.link)
+                .accessibilityLabel("Run Onboarding Again")
+                .accessibilityIdentifier("settings.general.replayOnboarding")
+
+                Text("Review privacy, permissions, the shortcut, and a local test dictation. Your current settings stay in place.")
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .accessibilityIdentifier("settings.general")
@@ -294,11 +377,14 @@ struct GeneralSettingsView: View {
         .navigationTitle("General")
         .task { await model.load() }
         .confirmationDialog(
-            "Clear all saved and in-memory history?",
-            isPresented: $confirmsClear
+            model.clearHistoryConfirmationTitle,
+            isPresented: $confirmsClear,
+            titleVisibility: .visible
         ) {
             Button("Clear History", role: .destructive, action: model.clearHistory)
                 .accessibilityIdentifier("settings.general.confirmClearHistory")
+        } message: {
+            Text(GeneralSettingsViewModel.historyClearExplanation)
         }
     }
 }

@@ -75,7 +75,7 @@ final class OnboardingViewModel {
         controller.speechModelCatalog.map { descriptor in
             SpeechModelOption(
                 descriptor: descriptor,
-                title: descriptor.preset ?? descriptor.displayName
+                title: SpeechModelOption.displayTitle(for: descriptor)
             )
         }
     }

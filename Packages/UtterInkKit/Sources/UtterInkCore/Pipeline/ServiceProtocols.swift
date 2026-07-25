@@ -52,12 +52,17 @@ public protocol AudioRecordingService: Sendable {
 
 public protocol SpeechModelService: Sendable {
     func state() async -> SpeechModelState
+    func cachedModelIDs() async -> Set<String>
     func prepare(modelID: String, token: EffectToken) async -> AsyncStream<SpeechModelState>
     func prepareCached(modelID: String, token: EffectToken) async -> AsyncStream<SpeechModelState>
     func cancelPreparation() async
     func acquireReadyModel(modelID: String, token: EffectToken) async throws -> SpeechModelLease
     func release(_ lease: SpeechModelLease) async
     func deleteCachedModel(modelID: String) async throws
+}
+
+public extension SpeechModelService {
+    func cachedModelIDs() async -> Set<String> { [] }
 }
 
 public protocol TranscriptionService: Sendable {
@@ -78,11 +83,21 @@ public enum ProviderValidationResult: Equatable, Sendable {
     case failed(DiagnosticCode)
 }
 
+public enum ProviderModelDiscoveryResult: Equatable, Sendable {
+    case ready(normalizedHost: String, modelIDs: [String])
+    case failed(DiagnosticCode)
+}
+
 public protocol ProviderValidationService: Sendable {
     func validate(
         profile: ProviderProfile,
         credential: SessionSecret
     ) async -> ProviderValidationResult
+
+    func discoverModels(
+        profile: ProviderProfile,
+        credential: SessionSecret
+    ) async -> ProviderModelDiscoveryResult
 }
 
 public protocol DeliveryService: Sendable {
@@ -172,12 +187,19 @@ public protocol DictationControlling: AnyObject {
     var recordingTelemetry: RecordingTelemetry? { get }
     var sessionPresentation: SessionPresentationContext? { get }
     var speechModelCatalog: [SpeechModelDescriptor] { get }
+    var cachedSpeechModelIDs: Set<String> { get }
     var activeSpeechModelID: String? { get }
     var preparingSpeechModelID: String? { get }
 
     func bootstrap() async
+    func refreshSpeechModelCache() async
     func send(_ intent: UserIntent)
     func prepareSpeechModel(_ modelID: String)
     func cancelSpeechModelPreparation()
     func deleteCachedSpeechModel(_ modelID: String)
+}
+
+public extension DictationControlling {
+    var cachedSpeechModelIDs: Set<String> { [] }
+    func refreshSpeechModelCache() async {}
 }

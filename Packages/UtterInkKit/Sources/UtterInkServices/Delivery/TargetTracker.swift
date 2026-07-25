@@ -60,6 +60,7 @@ public final class TargetTracker: TargetSnapshotService, TargetValidating, @unch
         platform.installChangeHandler { [weak self] in
             self?.handleObservedFocusChange()
         }
+        primeExternalFocusTracking()
     }
 
     deinit {
@@ -143,11 +144,18 @@ public final class TargetTracker: TargetSnapshotService, TargetValidating, @unch
     }
 
     private func handleObservedFocusChange() {
+        let previous = lastEligibleExternal
         switch platform.currentFocus() {
         case .ownApplication:
             return
         case let .target(current):
             lastEligibleExternal = current
+            // Several custom editors emit focused-element notifications even
+            // though the actual window and input target did not change. Do
+            // not invalidate an active dictation for those no-op events.
+            if let previous, platform.sameTarget(previous, current) {
+                return
+            }
         case .none, .unavailable:
             lastEligibleExternal = nil
         }
@@ -157,10 +165,20 @@ public final class TargetTracker: TargetSnapshotService, TargetValidating, @unch
             records[id]?.invalidated = true
         }
     }
+
+    private func primeExternalFocusTracking() {
+        guard case let .target(current) = platform.currentFocus() else { return }
+        lastEligibleExternal = current
+    }
 }
 
 @MainActor
 private final class AppKitTargetSystemPlatform: TargetSystemPlatform {
+    private struct ResolvedFocus {
+        let element: AXUIElement
+        let scope: AppKitFocusScope
+    }
+
     private var changeHandler: (@MainActor @Sendable () -> Void)?
     private var workspaceTokens: [NSObjectProtocol] = []
     private var axObserver: AXObserver?
@@ -217,15 +235,29 @@ private final class AppKitTargetSystemPlatform: TargetSystemPlatform {
             from: applicationElement,
             attribute: kAXFocusedWindowAttribute as CFString
         ),
-        let focused = copiedElement(
+        elementPID(applicationElement) == pid,
+        elementPID(window) == pid
+        else {
+            return .none
+        }
+
+        let focusedResult = copiedElementResult(
             from: applicationElement,
             attribute: kAXFocusedUIElementAttribute as CFString
-        ),
-        elementPID(applicationElement) == pid,
-        elementPID(window) == pid,
-        elementPID(focused) == pid,
-        isExactlyEditable(focused)
-        else {
+        )
+        let resolved: ResolvedFocus
+        if focusedResult.error == .success,
+           let focused = focusedResult.element,
+           elementPID(focused) == pid,
+           let focus = resolvedFocus(
+               focused: focused,
+               window: window,
+               pid: pid
+           ) {
+            resolved = focus
+        } else if let fallback = windowScopedFocus(in: window, pid: pid) {
+            resolved = fallback
+        } else {
             return .none
         }
 
@@ -233,7 +265,7 @@ private final class AppKitTargetSystemPlatform: TargetSystemPlatform {
             pid: pid,
             application: applicationElement,
             window: window,
-            focused: focused
+            focused: resolved.element
         )
         return .target(
             TargetFocusReference(
@@ -242,7 +274,8 @@ private final class AppKitTargetSystemPlatform: TargetSystemPlatform {
                     application: application,
                     applicationElement: applicationElement,
                     windowElement: window,
-                    focusedElement: focused
+                    focusedElement: resolved.element,
+                    scope: resolved.scope
                 )
             )
         )
@@ -259,7 +292,7 @@ private final class AppKitTargetSystemPlatform: TargetSystemPlatform {
               elementPID(capturedIdentity.focusedElement) == captured.pid,
               CFEqual(capturedIdentity.windowElement, liveIdentity.windowElement),
               CFEqual(capturedIdentity.focusedElement, liveIdentity.focusedElement),
-              isExactlyEditable(liveIdentity.focusedElement)
+              sameFocusScope(capturedIdentity.scope, liveIdentity.scope, live: liveIdentity)
         else {
             return false
         }
@@ -305,15 +338,33 @@ private final class AppKitTargetSystemPlatform: TargetSystemPlatform {
         changeHandler = nil
     }
 
-    private func copiedElement(from element: AXUIElement, attribute: CFString) -> AXUIElement? {
+    private func copiedElementResult(
+        from element: AXUIElement,
+        attribute: CFString
+    ) -> (error: AXError, element: AXUIElement?) {
         var raw: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute, &raw) == .success,
+        let error = AXUIElementCopyAttributeValue(element, attribute, &raw)
+        guard error == .success,
               let raw,
               CFGetTypeID(raw) == AXUIElementGetTypeID()
         else {
-            return nil
+            return (error, nil)
         }
-        return (raw as! AXUIElement)
+        return (error, (raw as! AXUIElement))
+    }
+
+    private func copiedElement(from element: AXUIElement, attribute: CFString) -> AXUIElement? {
+        copiedElementResult(from: element, attribute: attribute).element
+    }
+
+    private func copiedElements(from element: AXUIElement, attribute: CFString) -> [AXUIElement] {
+        var raw: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &raw) == .success,
+              let values = raw as? [AXUIElement]
+        else {
+            return []
+        }
+        return values
     }
 
     private func elementPID(_ element: AXUIElement) -> pid_t? {
@@ -323,29 +374,253 @@ private final class AppKitTargetSystemPlatform: TargetSystemPlatform {
     }
 
     private func isExactlyEditable(_ element: AXUIElement) -> Bool {
+        guard isEnabledOrUnknown(element) else { return false }
+        return isAttributeSettable(kAXValueAttribute as CFString, on: element)
+            || isAttributeSettable(kAXSelectedTextAttribute as CFString, on: element)
+            || isAttributeSettable(kAXSelectedTextRangeAttribute as CFString, on: element)
+    }
+
+    private func isAttributeSettable(_ attribute: CFString, on element: AXUIElement) -> Bool {
         var settable = DarwinBoolean(false)
-        guard AXUIElementIsAttributeSettable(
+        return AXUIElementIsAttributeSettable(element, attribute, &settable) == .success
+            && settable.boolValue
+    }
+
+    private func isEnabledOrUnknown(_ element: AXUIElement) -> Bool {
+        var rawEnabled: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(
             element,
-            kAXValueAttribute as CFString,
-            &settable
+            kAXEnabledAttribute as CFString,
+            &rawEnabled
+        )
+        if error == .success, let enabled = rawEnabled as? Bool {
+            return enabled
+        }
+        // Some Electron and custom AppKit controls omit AXEnabled while still
+        // exposing a stable focused text target. Reject explicit false, but do
+        // not reject an otherwise usable target solely for a missing value.
+        return error == .noValue || error == .attributeUnsupported
+    }
+
+    private func resolvedFocus(
+        focused: AXUIElement,
+        window: AXUIElement,
+        pid: pid_t
+    ) -> ResolvedFocus? {
+        if isExactlyEditable(focused) {
+            return ResolvedFocus(element: focused, scope: .exact)
+        }
+        if let descendant = singleEditableDescendant(in: focused, pid: pid) {
+            return ResolvedFocus(element: descendant, scope: .exact)
+        }
+        if let role = focusProxyRole(focused) {
+            return ResolvedFocus(
+                element: focused,
+                scope: .focusedProxy(role: role)
+            )
+        }
+        return windowScopedFocus(in: window, pid: pid)
+    }
+
+    private func singleEditableDescendant(
+        in root: AXUIElement,
+        pid: pid_t
+    ) -> AXUIElement? {
+        var queue = copiedElements(
+            from: root,
+            attribute: kAXChildrenAttribute as CFString
+        ).map { (element: $0, depth: 1) }
+        var index = 0
+        var match: AXUIElement?
+
+        while index < queue.count, index < 96 {
+            let item = queue[index]
+            index += 1
+            guard item.depth <= 6, elementPID(item.element) == pid else { continue }
+
+            if isExactlyEditable(item.element) {
+                // More than one editable descendant is ambiguous and must not
+                // be used for automatic delivery.
+                guard match == nil else { return nil }
+                match = item.element
+            }
+            if item.depth < 6 {
+                queue.append(contentsOf: copiedElements(
+                    from: item.element,
+                    attribute: kAXChildrenAttribute as CFString
+                ).map { (element: $0, depth: item.depth + 1) })
+            }
+        }
+        return match
+    }
+
+    private func focusProxyRole(_ element: AXUIElement) -> String? {
+        guard isEnabledOrUnknown(element),
+              let role = copiedString(
+                  from: element,
+                  attribute: kAXRoleAttribute as CFString
+              ),
+              Self.supportedFocusProxyRoles.contains(role),
+              elementFrame(element) != nil else {
+            return nil
+        }
+        return role
+    }
+
+    private func copiedString(from element: AXUIElement, attribute: CFString) -> String? {
+        var raw: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &raw) == .success else {
+            return nil
+        }
+        return raw as? String
+    }
+
+    private func windowScopedFocus(in window: AXUIElement, pid: pid_t) -> ResolvedFocus? {
+        guard let windowFrame = elementFrame(window) else { return nil }
+
+        var parent = window
+        var selected: ResolvedFocus?
+        for _ in 0..<32 {
+            let candidates = copiedElements(
+                from: parent,
+                attribute: kAXChildrenAttribute as CFString
+            ).compactMap { candidate -> ResolvedFocus? in
+                guard elementPID(candidate) == pid,
+                      isWindowScopedEditableProxy(candidate),
+                      let frame = elementFrame(candidate),
+                      framesMatch(frame, windowFrame),
+                      let selection = selectionFingerprint(candidate)
+                else {
+                    return nil
+                }
+                return ResolvedFocus(
+                    element: candidate,
+                    scope: .windowScoped(selection: selection)
+                )
+            }
+
+            // More than one editable proxy would make the target ambiguous.
+            guard candidates.count <= 1 else { return nil }
+            guard let candidate = candidates.first else { break }
+            selected = candidate
+            parent = candidate.element
+        }
+        return selected
+    }
+
+    private func isWindowScopedEditableProxy(_ element: AXUIElement) -> Bool {
+        var rawRole: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXRoleAttribute as CFString,
+            &rawRole
         ) == .success,
-        settable.boolValue
+        (rawRole as? String) == (kAXGroupRole as String),
+        isEnabledOrUnknown(element),
+        isAttributeSettable(kAXValueAttribute as CFString, on: element),
+        isAttributeSettable(kAXSelectedTextAttribute as CFString, on: element),
+        isAttributeSettable(kAXSelectedTextRangeAttribute as CFString, on: element)
         else {
             return false
         }
 
-        var rawEnabled: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            element,
-            kAXEnabledAttribute as CFString,
-            &rawEnabled
-        ) == .success,
-        let enabled = rawEnabled as? Bool
+        var rawActions: CFArray?
+        guard AXUIElementCopyActionNames(element, &rawActions) == .success,
+              (rawActions as? [String])?.isEmpty == true
         else {
             return false
         }
-        return enabled
+        return true
     }
+
+    private func selectionFingerprint(_ element: AXUIElement) -> AppKitSelectionFingerprint? {
+        var raw: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &raw
+        ) == .success,
+        let raw,
+        CFGetTypeID(raw) == AXValueGetTypeID(),
+        AXValueGetType(raw as! AXValue) == .cfRange
+        else {
+            return nil
+        }
+        var range = CFRange()
+        guard AXValueGetValue(raw as! AXValue, .cfRange, &range) else { return nil }
+        return AppKitSelectionFingerprint(location: range.location, length: range.length)
+    }
+
+    private func elementFrame(_ element: AXUIElement) -> CGRect? {
+        var rawPosition: CFTypeRef?
+        var rawSize: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXPositionAttribute as CFString,
+            &rawPosition
+        ) == .success,
+        AXUIElementCopyAttributeValue(
+            element,
+            kAXSizeAttribute as CFString,
+            &rawSize
+        ) == .success,
+        let rawPosition,
+        let rawSize,
+        CFGetTypeID(rawPosition) == AXValueGetTypeID(),
+        CFGetTypeID(rawSize) == AXValueGetTypeID(),
+        AXValueGetType(rawPosition as! AXValue) == .cgPoint,
+        AXValueGetType(rawSize as! AXValue) == .cgSize
+        else {
+            return nil
+        }
+
+        var position = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(rawPosition as! AXValue, .cgPoint, &position),
+              AXValueGetValue(rawSize as! AXValue, .cgSize, &size)
+        else {
+            return nil
+        }
+        return CGRect(origin: position, size: size)
+    }
+
+    private func framesMatch(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+        abs(lhs.minX - rhs.minX) <= 1
+            && abs(lhs.minY - rhs.minY) <= 1
+            && abs(lhs.width - rhs.width) <= 1
+            && abs(lhs.height - rhs.height) <= 1
+    }
+
+    private func sameFocusScope(
+        _ captured: AppKitFocusScope,
+        _ liveScope: AppKitFocusScope,
+        live: AppKitFocusIdentity
+    ) -> Bool {
+        switch (captured, liveScope) {
+        case (.exact, .exact):
+            return isExactlyEditable(live.focusedElement)
+        case let (.focusedProxy(capturedRole), .focusedProxy(liveRole)):
+            return capturedRole == liveRole
+                && focusProxyRole(live.focusedElement) == liveRole
+        case let (.windowScoped(capturedSelection), .windowScoped(liveSelection)):
+            return capturedSelection == liveSelection
+                && isWindowScopedEditableProxy(live.focusedElement)
+                && selectionFingerprint(live.focusedElement) == liveSelection
+        case (.exact, .focusedProxy), (.exact, .windowScoped),
+             (.focusedProxy, .exact), (.focusedProxy, .windowScoped),
+             (.windowScoped, .exact), (.windowScoped, .focusedProxy):
+            return false
+        }
+    }
+
+    private static let supportedFocusProxyRoles: Set<String> = [
+        "AXTextField",
+        "AXTextArea",
+        "AXComboBox",
+        "AXGroup",
+        "AXWebArea",
+        "AXScrollArea",
+    ]
 
     private func configureAXObserver(
         pid: pid_t,
@@ -447,18 +722,32 @@ private final class AppKitFocusIdentity {
     let applicationElement: AXUIElement
     let windowElement: AXUIElement
     let focusedElement: AXUIElement
+    let scope: AppKitFocusScope
 
     init(
         application: NSRunningApplication,
         applicationElement: AXUIElement,
         windowElement: AXUIElement,
-        focusedElement: AXUIElement
+        focusedElement: AXUIElement,
+        scope: AppKitFocusScope
     ) {
         self.application = application
         self.applicationElement = applicationElement
         self.windowElement = windowElement
         self.focusedElement = focusedElement
+        self.scope = scope
     }
+}
+
+private struct AppKitSelectionFingerprint: Equatable {
+    let location: Int
+    let length: Int
+}
+
+private enum AppKitFocusScope {
+    case exact
+    case focusedProxy(role: String)
+    case windowScoped(selection: AppKitSelectionFingerprint)
 }
 
 private func utterInkAXObserverCallback(

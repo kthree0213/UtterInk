@@ -61,6 +61,259 @@ final class UserDefaultsSettingsStoreTests: XCTestCase {
         XCTAssertEqual(defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix("utterink.") }, ["utterink.user-settings.v1"])
     }
 
+    func testVersionOneSettingsReceiveMissingPresetsExactlyOnceWithoutChangingUserChoices() async throws {
+        let defaults = makeDefaults()
+        let custom = OutputMode(
+            id: UUID(),
+            title: "My Mode",
+            skipsPolishing: false,
+            instructions: "Keep my custom instructions."
+        )
+        var editedCleanUp = OutputMode.cleanUp
+        editedCleanUp.title = "My Edited Cleanup"
+        editedCleanUp.instructions = "Keep this edited preset."
+        var versionOne = UserSettings.p0Default
+        versionOne.outputModes = [.raw, custom, editedCleanUp]
+        versionOne.selectedOutputModeID = custom.id
+        defaults.set(
+            try JSONEncoder().encode(
+                SettingsStoredEnvelope(version: 1, settings: versionOne)
+            ),
+            forKey: UserDefaultsSettingsStore.storageKey
+        )
+        let store = try UserDefaultsSettingsStore(
+            defaults: defaults,
+            legacy: SettingsFakeLegacy(values: [:]),
+            legacyMap: .bundled
+        )
+
+        let upgraded = try await store.current()
+
+        XCTAssertEqual(
+            upgraded.outputModes.map(\.id),
+            [
+                OutputMode.rawID,
+                custom.id,
+                OutputMode.cleanUpID,
+                OutputMode.aiPromptID,
+                OutputMode.translateToEnglishID,
+                OutputMode.workMessageID,
+                OutputMode.classicalChineseID,
+            ]
+        )
+        XCTAssertEqual(upgraded.selectedOutputModeID, custom.id)
+        XCTAssertEqual(
+            upgraded.outputModes.first(where: { $0.id == OutputMode.cleanUpID }),
+            editedCleanUp
+        )
+        let rewrittenData = try XCTUnwrap(
+            defaults.data(forKey: UserDefaultsSettingsStore.storageKey)
+        )
+        let rewritten = try JSONDecoder().decode(
+            SettingsStoredEnvelope.self,
+            from: rewrittenData
+        )
+        XCTAssertEqual(rewritten.version, 4)
+
+        _ = try await store.update { settings in
+            settings.outputModes.removeAll { $0.id == OutputMode.aiPromptID }
+        }
+        let afterDeletion = try await store.current()
+        XCTAssertFalse(afterDeletion.outputModes.contains(where: {
+            $0.id == OutputMode.aiPromptID
+        }))
+    }
+
+    func testVersionTwoUntouchedNaturalChatIsReplacedInPlaceAndSelectionMigrates() async throws {
+        let defaults = makeDefaults()
+        var versionTwo = UserSettings.p0Default
+        versionTwo.outputModes = [
+            .raw,
+            .cleanUp,
+            retiredNaturalChatPreset,
+            .workMessage,
+        ]
+        versionTwo.selectedOutputModeID = retiredNaturalChatPreset.id
+        defaults.set(
+            try JSONEncoder().encode(
+                SettingsStoredEnvelope(version: 2, settings: versionTwo)
+            ),
+            forKey: UserDefaultsSettingsStore.storageKey
+        )
+        let store = try UserDefaultsSettingsStore(
+            defaults: defaults,
+            legacy: SettingsFakeLegacy(values: [:]),
+            legacyMap: .bundled
+        )
+
+        let upgraded = try await store.current()
+
+        XCTAssertEqual(
+            upgraded.outputModes.map(\.id),
+            [
+                OutputMode.rawID,
+                OutputMode.cleanUpID,
+                OutputMode.translateToEnglishID,
+                OutputMode.workMessageID,
+            ]
+        )
+        XCTAssertEqual(upgraded.selectedOutputModeID, OutputMode.translateToEnglishID)
+        XCTAssertEqual(
+            upgraded.outputModes.first(where: { $0.id == OutputMode.translateToEnglishID }),
+            .translateToEnglish
+        )
+        XCTAssertFalse(upgraded.outputModes.contains(where: {
+            $0.id == retiredNaturalChatPreset.id
+        }))
+
+        let rewrittenData = try XCTUnwrap(
+            defaults.data(forKey: UserDefaultsSettingsStore.storageKey)
+        )
+        let rewritten = try JSONDecoder().decode(
+            SettingsStoredEnvelope.self,
+            from: rewrittenData
+        )
+        XCTAssertEqual(rewritten.version, 4)
+    }
+
+    func testVersionTwoEditedNaturalChatIsPreservedAndTranslationAddedOnlyOnce() async throws {
+        let defaults = makeDefaults()
+        var editedNaturalChat = retiredNaturalChatPreset
+        editedNaturalChat.title = "My Casual Style"
+        editedNaturalChat.instructions = "Keep my custom chat instructions."
+        var versionTwo = UserSettings.p0Default
+        versionTwo.outputModes = [.raw, editedNaturalChat]
+        versionTwo.selectedOutputModeID = editedNaturalChat.id
+        defaults.set(
+            try JSONEncoder().encode(
+                SettingsStoredEnvelope(version: 2, settings: versionTwo)
+            ),
+            forKey: UserDefaultsSettingsStore.storageKey
+        )
+        let store = try UserDefaultsSettingsStore(
+            defaults: defaults,
+            legacy: SettingsFakeLegacy(values: [:]),
+            legacyMap: .bundled
+        )
+
+        let upgraded = try await store.current()
+        let reloaded = try await store.current()
+
+        XCTAssertEqual(upgraded.selectedOutputModeID, editedNaturalChat.id)
+        XCTAssertEqual(upgraded.outputModes.first(where: {
+            $0.id == editedNaturalChat.id
+        }), editedNaturalChat)
+        XCTAssertEqual(upgraded.outputModes.filter {
+            $0.id == OutputMode.translateToEnglishID
+        }, [.translateToEnglish])
+        XCTAssertEqual(reloaded, upgraded)
+
+        _ = try await store.update { settings in
+            settings.outputModes.removeAll {
+                $0.id == OutputMode.translateToEnglishID
+            }
+        }
+        let afterDeletion = try await store.current()
+        XCTAssertFalse(afterDeletion.outputModes.contains(where: {
+            $0.id == OutputMode.translateToEnglishID
+        }))
+    }
+
+    func testVersionThreeUntouchedChineseTranslationIsReplacedInPlaceAndSelectionMigrates() async throws {
+        let defaults = makeDefaults()
+        var versionThree = UserSettings.p0Default
+        versionThree.outputModes = [
+            .raw,
+            .cleanUp,
+            retiredTranslateToChinesePreset,
+            .workMessage,
+        ]
+        versionThree.selectedOutputModeID = retiredTranslateToChinesePreset.id
+        defaults.set(
+            try JSONEncoder().encode(
+                SettingsStoredEnvelope(version: 3, settings: versionThree)
+            ),
+            forKey: UserDefaultsSettingsStore.storageKey
+        )
+        let store = try UserDefaultsSettingsStore(
+            defaults: defaults,
+            legacy: SettingsFakeLegacy(values: [:]),
+            legacyMap: .bundled
+        )
+
+        let upgraded = try await store.current()
+
+        XCTAssertEqual(
+            upgraded.outputModes.map(\.id),
+            [
+                OutputMode.rawID,
+                OutputMode.cleanUpID,
+                OutputMode.translateToEnglishID,
+                OutputMode.workMessageID,
+            ]
+        )
+        XCTAssertEqual(upgraded.selectedOutputModeID, OutputMode.translateToEnglishID)
+        XCTAssertEqual(
+            upgraded.outputModes.first(where: { $0.id == OutputMode.translateToEnglishID }),
+            .translateToEnglish
+        )
+        XCTAssertFalse(upgraded.outputModes.contains(where: {
+            $0.id == retiredTranslateToChinesePreset.id
+        }))
+
+        let rewrittenData = try XCTUnwrap(
+            defaults.data(forKey: UserDefaultsSettingsStore.storageKey)
+        )
+        let rewritten = try JSONDecoder().decode(
+            SettingsStoredEnvelope.self,
+            from: rewrittenData
+        )
+        XCTAssertEqual(rewritten.version, 4)
+    }
+
+    func testVersionThreeEditedChineseTranslationIsPreservedAndEnglishAddedOnlyOnce() async throws {
+        let defaults = makeDefaults()
+        var editedTranslation = retiredTranslateToChinesePreset
+        editedTranslation.title = "My Chinese Translation"
+        editedTranslation.instructions = "Keep my custom Chinese translation instructions."
+        var versionThree = UserSettings.p0Default
+        versionThree.outputModes = [.raw, editedTranslation]
+        versionThree.selectedOutputModeID = editedTranslation.id
+        defaults.set(
+            try JSONEncoder().encode(
+                SettingsStoredEnvelope(version: 3, settings: versionThree)
+            ),
+            forKey: UserDefaultsSettingsStore.storageKey
+        )
+        let store = try UserDefaultsSettingsStore(
+            defaults: defaults,
+            legacy: SettingsFakeLegacy(values: [:]),
+            legacyMap: .bundled
+        )
+
+        let upgraded = try await store.current()
+        let reloaded = try await store.current()
+
+        XCTAssertEqual(upgraded.selectedOutputModeID, editedTranslation.id)
+        XCTAssertEqual(upgraded.outputModes.first(where: {
+            $0.id == editedTranslation.id
+        }), editedTranslation)
+        XCTAssertEqual(upgraded.outputModes.filter {
+            $0.id == OutputMode.translateToEnglishID
+        }, [.translateToEnglish])
+        XCTAssertEqual(reloaded, upgraded)
+
+        _ = try await store.update { settings in
+            settings.outputModes.removeAll {
+                $0.id == OutputMode.translateToEnglishID
+            }
+        }
+        let afterDeletion = try await store.current()
+        XCTAssertFalse(afterDeletion.outputModes.contains(where: {
+            $0.id == OutputMode.translateToEnglishID
+        }))
+    }
+
     func testConcurrentAtomicUpdatesPreserveBothMutations() async throws {
         let store = try UserDefaultsSettingsStore(
             defaults: makeDefaults(),
@@ -117,7 +370,10 @@ final class UserDefaultsSettingsStoreTests: XCTestCase {
         XCTAssertEqual(value.providerProfiles.single?.modelID, "router-model")
         XCTAssertEqual(value.providerProfiles.single?.policy, .remoteHTTPS)
         XCTAssertEqual(value.selectedProviderProfileID, profileID)
-        XCTAssertEqual(value.outputModes.map(\.id), [OutputMode.rawID, modeID])
+        XCTAssertEqual(
+            value.outputModes.map(\.id),
+            OutputMode.defaultModes.map(\.id) + [modeID]
+        )
         XCTAssertEqual(value.selectedOutputModeID, modeID)
         XCTAssertEqual(value.speechModelID, "medium")
         XCTAssertEqual(value.recognition, .fixed(languageCode: "en"))
@@ -371,12 +627,31 @@ private struct SettingsLegacyProfile: Encodable {
     let customOpenAIBaseURL: String?
 }
 
+private struct SettingsStoredEnvelope: Codable {
+    let version: Int
+    let settings: UserSettings
+}
+
 private struct SettingsLegacyMode: Encodable {
     let id: UUID
     let title: String
     let skipsLLM: Bool
     let systemPrompt: String
 }
+
+private let retiredNaturalChatPreset = OutputMode(
+    id: UUID(uuidString: "00000000-0000-0000-0000-000000000004")!,
+    title: "Natural Chat",
+    skipsPolishing: false,
+    instructions: "Rewrite the transcript as a natural message for everyday chat. Preserve the original meaning, emotion, level of politeness, and personal voice. Remove filler words and repetition, fix punctuation, and prefer concise conversational phrasing. Do not make it sound like a formal email, and do not add greetings, emojis, opinions, or details that were not spoken. Return only the finished message in the original language."
+)
+
+private let retiredTranslateToChinesePreset = OutputMode(
+    id: UUID(uuidString: "00000000-0000-0000-0000-000000000007")!,
+    title: "Translate to Chinese",
+    skipsPolishing: false,
+    instructions: "Translate the transcript into natural Simplified Chinese. Preserve its full meaning, tone, names, numbers, dates, technical terms, formatting, and uncertainty. Do not summarize, answer questions, add information, or include explanations, labels, or quotation marks. If the transcript is already Chinese, preserve its wording and only fix obvious transcription or punctuation errors. Return only the final Chinese text."
+)
 
 private final class SettingsFakeLegacy: LegacyDefaultsAccess, @unchecked Sendable {
     private let lock = NSLock()

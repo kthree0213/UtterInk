@@ -9,7 +9,7 @@ final class SessionSnapshotTests: XCTestCase {
         XCTAssertTrue(settings.showFloatingRecorder)
         XCTAssertEqual(settings.recognition, .automatic)
         XCTAssertEqual(settings.speechModelID, "small")
-        XCTAssertEqual(settings.outputModes, [.raw])
+        XCTAssertEqual(settings.outputModes, OutputMode.defaultModes)
         XCTAssertEqual(settings.selectedOutputModeID, OutputMode.rawID)
         XCTAssertTrue(settings.providerProfiles.isEmpty)
         XCTAssertNil(settings.selectedProviderProfileID)
@@ -92,7 +92,21 @@ final class SessionSnapshotTests: XCTestCase {
         XCTAssertEqual(OutputMode.raw.title, "Raw")
         XCTAssertTrue(OutputMode.raw.skipsPolishing)
         XCTAssertEqual(OutputMode.raw.instructions, "")
-        XCTAssertEqual(UserSettings.p0Default.outputModes.map(\.id), [OutputMode.rawID])
+        XCTAssertEqual(
+            UserSettings.p0Default.outputModes.map(\.id),
+            [
+                OutputMode.rawID,
+                OutputMode.cleanUpID,
+                OutputMode.aiPromptID,
+                OutputMode.translateToEnglishID,
+                OutputMode.workMessageID,
+                OutputMode.classicalChineseID,
+            ]
+        )
+        XCTAssertTrue(OutputMode.defaultPolishModes.allSatisfy(\.requiresProvider))
+        XCTAssertTrue(OutputMode.defaultPolishModes.allSatisfy {
+            !$0.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        })
     }
 
     func testSecretCopyRemainsIndependentAndClearIsRepeatable() throws {

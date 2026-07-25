@@ -37,6 +37,10 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         present(requireIncomplete: false)
     }
 
+    func showFromBeginning() {
+        present(requireIncomplete: false, startingAt: .privacy)
+    }
+
     func showIfNeeded() async {
         await model.prepareForPresentation(requireIncomplete: true)
         guard !model.onboardingCompleted else { return }
@@ -54,13 +58,19 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     var windowForTesting: NSWindow { window }
 
-    private func present(requireIncomplete: Bool) {
+    private func present(
+        requireIncomplete: Bool,
+        startingAt initialStep: OnboardingStep? = nil
+    ) {
         presentationTask?.cancel()
         presentationTask = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.model.prepareForPresentation(requireIncomplete: requireIncomplete)
             guard !Task.isCancelled else { return }
             if requireIncomplete, self.model.onboardingCompleted { return }
+            if let initialStep {
+                self.model.go(to: initialStep)
+            }
             self.showPreparedWindow()
         }
     }

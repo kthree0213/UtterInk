@@ -448,6 +448,19 @@ def validate_release_notes(notes: bytes, committed: bytes) -> None:
         reject("release-notes-mismatch")
     required = (
         "# UtterInk 0.1.0\n",
+        "first public release",
+        "does not by\nitself prove that a binary has been published",
+        "GitHub Release page",
+        "## Highlights\n",
+        "Local Whisper transcription",
+        "Right Option as the default dictation shortcut",
+        "Guarded Automatic Paste",
+        "Simple provider setup",
+        "stores the selected credential in macOS Keychain",
+        "Raw output plus Clean Up",
+        "Translate to English",
+        "Classical Chinese",
+        "user-created polishing modes",
         "## Requirements\n",
         "macOS 14 or later",
         "Apple Silicon (arm64) only",
@@ -468,6 +481,7 @@ def validate_release_notes(notes: bytes, committed: bytes) -> None:
         reject("release-notes-mismatch")
     headings = [line for line in text.splitlines() if line.startswith("## ")]
     if headings != [
+        "## Highlights",
         "## Requirements",
         "## Privacy and data handling",
         "## Updates",

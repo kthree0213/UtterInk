@@ -66,7 +66,8 @@ struct UtterInkApp: App {
                 settingsStore: composition?.features.settings,
                 openOnboarding: composition.map { composition in
                     { composition.showOnboarding() }
-                }
+                },
+                settingsNavigation: composition?.settingsModel.navigation
             )
         } label: {
             MenuBarStatusLabel(model: model)

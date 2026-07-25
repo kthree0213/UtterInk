@@ -195,6 +195,50 @@ final class OpenAICompatibleClientTests: XCTestCase {
         XCTAssertNil(captured.httpBody)
     }
 
+    func testDiscoverModelsReturnsTrimmedUniqueSortedModelIDs() async throws {
+        let request = RequestRecorder()
+        StubURLProtocol.install { protocolInstance in
+            request.record(protocolInstance.request)
+            protocolInstance.succeed(
+                json: Data(
+                    #"{"data":[{"id":"zeta"},{"id":" alpha "},{"id":"alpha"},{"id":"   "}]}"#.utf8
+                )
+            )
+        }
+        let secret = SessionSecret(utf8: "discovery-secret")
+        defer { secret.clear() }
+        let profile = ProviderProfile(
+            id: UUID(),
+            title: "Provider",
+            baseURL: remoteURL,
+            modelID: "unused-during-discovery",
+            policy: .remoteHTTPS
+        )
+
+        let result = await makeClient().discoverModels(
+            profile: profile,
+            credential: secret
+        )
+
+        XCTAssertEqual(
+            result,
+            .ready(
+                normalizedHost: "api.example.com",
+                modelIDs: ["alpha", "zeta"]
+            )
+        )
+        let captured = try XCTUnwrap(request.single)
+        XCTAssertEqual(captured.httpMethod, "GET")
+        XCTAssertEqual(
+            captured.url?.absoluteString,
+            "https://api.example.com/private/v1/models"
+        )
+        XCTAssertEqual(
+            captured.value(forHTTPHeaderField: "Authorization"),
+            "Bearer discovery-secret"
+        )
+    }
+
     func testValidateLoopbackAllowsEmptyCredentialAndOmitsAuthorization() async {
         let resolver = SequencedResolver([["127.0.0.1"], ["127.0.0.1"]])
         let request = RequestRecorder()

@@ -58,6 +58,9 @@ final class AppComposition {
             onboardingSink: features.onboardingSink,
             systemSettings: features.systemSettings
         )
+        self.settingsModel.general.setReplayOnboardingHandler { [weak self] in
+            self?.replayOnboarding()
+        }
     }
 
     static func live() throws -> AppComposition {
@@ -217,6 +220,10 @@ final class AppComposition {
 
     func showOnboarding() {
         onboardingWindowController.show()
+    }
+
+    func replayOnboarding() {
+        onboardingWindowController.showFromBeginning()
     }
 
     private static func applicationSupportRoot() throws -> URL {

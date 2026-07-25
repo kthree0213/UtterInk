@@ -233,7 +233,11 @@ final class DictationSessionControllerTests: XCTestCase {
             .manualCopyRequired(.deliveryTargetUnavailable)
         )
         let stored = await harness.history.records()
-        XCTAssertEqual(stored.first?.outcome, .finalized)
+        XCTAssertEqual(stored.first?.outcome, .delivered)
+        XCTAssertEqual(
+            stored.first?.delivery,
+            .manualCopyRequired(.deliveryTargetUnavailable)
+        )
     }
 
     func testOnboardingSessionBypassesTargetResolverAndExternalDelivery() async {
@@ -533,6 +537,34 @@ final class DictationSessionControllerTests: XCTestCase {
         }
         XCTAssertEqual(harness.controller.speechModelState, .ready(modelID: "small"))
         XCTAssertEqual(harness.controller.activeSpeechModelID, "small")
+    }
+
+    func testCachedModelSnapshotTracksBootstrapDeletionAndSuccessfulPreparation() async {
+        let models = ModelFake(
+            state: .ready(modelID: "small"),
+            cachedModelIDs: ["base", "small"]
+        )
+        let harness = Harness(settings: rawSettings(), models: models)
+
+        await harness.bootstrapWithVolatileProbe()
+
+        XCTAssertEqual(harness.controller.cachedSpeechModelIDs, ["base", "small"])
+
+        harness.controller.deleteCachedSpeechModel("base")
+        await waitUntil { await models.deletedModelIDs() == ["base"] }
+        await waitUntil { !harness.controller.cachedSpeechModelIDs.contains("base") }
+        XCTAssertEqual(harness.controller.cachedSpeechModelIDs, ["small"])
+
+        harness.controller.prepareSpeechModel("large-v3")
+        await waitUntil { await models.prepareCount() == 1 }
+        await models.emit(call: 1, .ready(modelID: "large-v3"))
+        await waitUntil {
+            harness.controller.cachedSpeechModelIDs.contains("large-v3")
+        }
+        XCTAssertEqual(
+            harness.controller.cachedSpeechModelIDs,
+            ["large-v3", "small"]
+        )
     }
 
     func testBootstrapRetainsMismatchedReadyModelAsProtectedActiveCache() async {
@@ -1192,7 +1224,7 @@ private actor AudioFake: AudioRecordingService {
 
 private actor ModelFake: SpeechModelService {
     private var current: SpeechModelState
-    private var cachedModelIDs: Set<String>
+    private var cachedIDs: Set<String>
     private var explicitPreparationIDs: [String] = []
     private var cachedPreparationIDs: [String] = []
     private var streamCalls = 0
@@ -1210,17 +1242,18 @@ private actor ModelFake: SpeechModelService {
         deleteGate: AsyncGate? = nil
     ) {
         current = state
-        self.cachedModelIDs = cachedModelIDs
+        cachedIDs = cachedModelIDs
         self.deleteGate = deleteGate
     }
     func state() async -> SpeechModelState { current }
+    func cachedModelIDs() async -> Set<String> { cachedIDs }
     func prepare(modelID: String, token: EffectToken) async -> AsyncStream<SpeechModelState> {
         explicitPreparationIDs.append(modelID)
         return makePreparationStream()
     }
     func prepareCached(modelID: String, token: EffectToken) async -> AsyncStream<SpeechModelState> {
         cachedPreparationIDs.append(modelID)
-        guard cachedModelIDs.contains(modelID) else {
+        guard cachedIDs.contains(modelID) else {
             let missing = SpeechModelState.missing(modelID: modelID)
             current = missing
             return AsyncStream { continuation in
@@ -1254,14 +1287,14 @@ private actor ModelFake: SpeechModelService {
     func deleteCachedModel(modelID: String) async throws {
         if let deleteGate { await deleteGate.wait() }
         if let deleteFailure { throw deleteFailure }
-        cachedModelIDs.remove(modelID)
+        cachedIDs.remove(modelID)
         deleted.append(modelID)
     }
     func emit(call: Int, _ state: SpeechModelState) {
         continuations[call]?.yield(state)
         current = state
         if case let .ready(modelID) = state {
-            cachedModelIDs.insert(modelID)
+            cachedIDs.insert(modelID)
         }
     }
     func finish(call: Int) { continuations[call]?.finish() }

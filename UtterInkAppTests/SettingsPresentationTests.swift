@@ -58,6 +58,23 @@ final class SettingsPresentationTests: XCTestCase {
         XCTAssertEqual(model.failureSymbol, "exclamationmark.triangle.fill")
     }
 
+    func testGeneralCanReplayOnboardingWithoutChangingSettings() async throws {
+        let store = AppSettingsFake()
+        let model = GeneralSettingsViewModel(
+            settings: store,
+            controller: RecordingIntentControllerSpy(),
+            launchAtLogin: AppLaunchAtLoginFake()
+        )
+        var replayCount = 0
+        model.setReplayOnboardingHandler { replayCount += 1 }
+
+        model.replayOnboarding()
+
+        let unchangedSettings = try await store.current()
+        XCTAssertEqual(replayCount, 1)
+        XCTAssertEqual(unchangedSettings, .p0Default)
+    }
+
     func testOrdinaryFailurePathsKeepPublishedValuesAndDelaySideEffects() async throws {
         let deliveryStore = AppSettingsFake()
         let delivery = GeneralSettingsViewModel(
@@ -164,6 +181,85 @@ final class SettingsPresentationTests: XCTestCase {
             [.setHistoryEnabled(false), .setHistoryEnabled(true), .clearHistory]
         )
         XCTAssertEqual(calls, ["settings.current"])
+    }
+
+    func testHistoryPresentationExplainsRetentionAndCountsUniqueClearableSessions() {
+        let controller = RecordingIntentControllerSpy()
+        let model = GeneralSettingsViewModel(
+            settings: AppSettingsFake(),
+            controller: controller,
+            launchAtLogin: AppLaunchAtLoginFake()
+        )
+
+        XCTAssertEqual(
+            GeneralSettingsViewModel.historyRetentionExplanation,
+            "Keep up to 20 recent dictations on this Mac, including original and polished text when available. Audio is never kept in History."
+        )
+        XCTAssertEqual(
+            GeneralSettingsViewModel.historyDisabledExplanation,
+            "Turning this off stops saving new dictations. Existing history remains until cleared."
+        )
+        XCTAssertEqual(model.historyItemCount, 0)
+        XCTAssertEqual(model.historyItemSummary, "No saved dictations")
+        XCTAssertFalse(model.canClearHistory)
+
+        let persistentID = SessionID()
+        controller.historyRecords = [
+            HistoryRecord(
+                sessionID: persistentID,
+                startedAt: Date(timeIntervalSince1970: 1),
+                rawText: "persistent raw",
+                finalText: "persistent final",
+                source: .polished,
+                warning: nil,
+                delivery: nil,
+                outcome: .finalized
+            ),
+        ]
+        controller.volatileResults = [
+            DictationResult(
+                sessionID: persistentID,
+                rawText: "duplicate raw",
+                finalText: "duplicate final",
+                source: .polished,
+                warning: nil,
+                delivery: nil
+            ),
+        ]
+
+        XCTAssertEqual(model.historyItemCount, 1)
+        XCTAssertEqual(model.historyItemSummary, "1 saved dictation")
+        XCTAssertEqual(model.clearHistoryConfirmationTitle, "Clear 1 saved dictation?")
+        XCTAssertTrue(model.canClearHistory)
+
+        controller.volatileResults.append(
+            DictationResult(
+                sessionID: SessionID(),
+                rawText: "volatile raw",
+                finalText: "volatile final",
+                source: .raw,
+                warning: nil,
+                delivery: nil
+            )
+        )
+
+        XCTAssertEqual(model.historyItemCount, 2)
+        XCTAssertEqual(model.historyItemSummary, "2 saved dictations")
+        XCTAssertEqual(model.clearHistoryConfirmationTitle, "Clear 2 saved dictations?")
+
+        controller.historyControlStatus = .clearing(enabled: true)
+        XCTAssertFalse(model.canClearHistory)
+
+        controller.historyRecords = []
+        controller.volatileResults = []
+        controller.historyControlStatus = .failed(enabled: true, failure: .clearFailed)
+        XCTAssertEqual(model.historyItemSummary, "Saved history still needs clearing")
+        XCTAssertEqual(model.clearHistoryConfirmationTitle, "Try clearing saved history again?")
+        XCTAssertTrue(model.canClearHistory)
+        XCTAssertEqual(
+            GeneralSettingsViewModel.historyClearExplanation,
+            "This deletes original and polished text from this Mac. This can’t be undone."
+        )
     }
 
     func testHistoryControlPendingAndFailurePhasesAreExplicit() async {
@@ -290,13 +386,12 @@ final class SettingsPresentationTests: XCTestCase {
     func testShortcutModeEmptyConflictResetAndLiveReconfiguration() async throws {
         let store = AppSettingsFake()
         let hotkey = AppHotkeyFake()
-        hotkey.hasConfiguredShortcut = false
         hotkey.hasConflict = true
         let model = ShortcutSettingsViewModel(settings: store, hotkey: hotkey)
 
         await model.load()
         XCTAssertEqual(model.mode, .toggle)
-        XCTAssertEqual(model.shortcutStatus, "No shortcut recorded")
+        XCTAssertEqual(model.shortcutStatus, "Right Option (Default)")
         XCTAssertEqual(model.conflictMessage, "This shortcut conflicts with another system or app shortcut.")
 
         await model.setMode(.holdToTalk)
@@ -312,18 +407,19 @@ final class SettingsPresentationTests: XCTestCase {
         model.resetShortcut()
         XCTAssertEqual(
             model.accessibilityEvent?.message,
-            "Shortcut reset. No shortcut recorded."
+            "Shortcut restored to Right Option."
         )
         XCTAssertEqual(
             Array(hotkey.calls.suffix(2)),
             ["hotkey.reset", "hotkey.reconfigure.holdToTalk"]
         )
-        XCTAssertEqual(model.shortcutStatus, "No shortcut recorded")
+        XCTAssertEqual(model.shortcutStatus, "Right Option (Default)")
 
-        hotkey.hasConfiguredShortcut = true
+        hotkey.usesDefaultRightOption = false
+        hotkey.shortcutDescription = "⌥D"
         model.recorderDidChange(hasShortcut: true)
         XCTAssertEqual(hotkey.calls.last, "hotkey.reconfigure.holdToTalk")
-        XCTAssertEqual(model.shortcutStatus, "Shortcut recorded")
+        XCTAssertEqual(model.shortcutStatus, "Custom: ⌥D")
     }
 
     func testShortcutResetUsesLoadedModeEvenBeforeHotkeyArm() async {

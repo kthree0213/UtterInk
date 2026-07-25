@@ -498,13 +498,27 @@ final class DeliveryCoordinatorTests: XCTestCase {
         guard case let .external(epochID) = await epochTracker.snapshotTarget() else {
             return XCTFail("epoch fixture target was not captured")
         }
+        // A redundant notification from the same custom editor must not make
+        // a still-focused target stale.
         epochPlatform.emitChange()
-        let epochDispatch = await epochTracker.revalidateAndDispatch(
+        let stableEpochDispatch = await epochTracker.revalidateAndDispatch(
             targetID: epochID,
             token: token
         )
-        XCTAssertEqual(epochDispatch, .changed)
-        XCTAssertTrue(epochPlatform.postedPIDs.isEmpty)
+        XCTAssertEqual(stableEpochDispatch, .dispatched)
+        XCTAssertEqual(epochPlatform.postedPIDs, [6262, 6262])
+
+        let changedIdentity = epochIdentity.copy(element: UUID())
+        epochPlatform.focus = .target(
+            TargetFocusReference(pid: 6262, opaqueIdentity: changedIdentity)
+        )
+        epochPlatform.emitChange()
+        let changedEpochDispatch = await epochTracker.revalidateAndDispatch(
+            targetID: epochID,
+            token: token
+        )
+        XCTAssertEqual(changedEpochDispatch, .changed)
+        XCTAssertEqual(epochPlatform.postedPIDs, [6262, 6262])
 
         let incapablePlatform = TargetSystemPlatformFake(
             focus: .target(
@@ -557,6 +571,32 @@ final class DeliveryCoordinatorTests: XCTestCase {
         XCTAssertEqual(lifecyclePlatform.tearDownCount, 1)
 
         _ = TargetTracker(clock: StaticClock())
+    }
+
+    @MainActor
+    func testTargetTrackerPrimesExternalFocusBeforeMenuInteraction() async {
+        let identity = TargetIdentityFake()
+        let platform = TargetSystemPlatformFake(
+            focus: .target(
+                TargetFocusReference(pid: 9191, opaqueIdentity: identity)
+            )
+        )
+        let tracker = TargetTracker(clock: StaticClock(), platform: platform)
+
+        platform.focus = .ownApplication
+        guard case let .external(targetID) = await tracker.snapshotTarget() else {
+            return XCTFail("the external focus visible before the menu opened was not retained")
+        }
+
+        platform.focus = .target(
+            TargetFocusReference(pid: 9191, opaqueIdentity: identity)
+        )
+        let token = effectToken(generation: 92)
+        let validation = await tracker.validate(targetID: targetID, token: token)
+        let dispatch = await tracker.revalidateAndDispatch(targetID: targetID, token: token)
+        XCTAssertEqual(validation, .valid)
+        XCTAssertEqual(dispatch, .dispatched)
+        XCTAssertEqual(platform.postedPIDs, [9191, 9191])
     }
 
     func testCapturedTargetIDAndFullTokenReachStableDispatch() async {

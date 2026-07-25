@@ -9,6 +9,8 @@ final class ShortcutSettingsViewModel {
     private(set) var mode = UserSettings.p0Default.shortcutMode
     private(set) var hasConfiguredShortcut = false
     private(set) var hasConflict = false
+    private(set) var usesDefaultRightOption = true
+    private(set) var shortcutDescription = "Right Option"
     private(set) var isSaving = false
     private(set) var failureMessage: String?
     private(set) var accessibilityEvent: UtterInkAccessibilityEvent?
@@ -32,7 +34,9 @@ final class ShortcutSettingsViewModel {
     }
 
     var shortcutStatus: String {
-        hasConfiguredShortcut ? "Shortcut recorded" : "No shortcut recorded"
+        usesDefaultRightOption
+            ? "Right Option (Default)"
+            : "Custom: \(shortcutDescription)"
     }
 
     var conflictMessage: String? {
@@ -75,7 +79,7 @@ final class ShortcutSettingsViewModel {
         hotkey.reconfigure(mode: mode)
         refreshHotkeyState()
         accessibilityEvent = UtterInkAccessibilityEvent(
-            message: "Shortcut reset. No shortcut recorded."
+            message: "Shortcut restored to Right Option."
         )
     }
 
@@ -83,7 +87,9 @@ final class ShortcutSettingsViewModel {
         hotkey.reconfigure(mode: mode)
         refreshHotkeyState()
         hasConfiguredShortcut = hasShortcut
-        let base = hasShortcut ? "Shortcut recorded." : "Shortcut cleared."
+        let base = usesDefaultRightOption
+            ? "Right Option is now the dictation shortcut."
+            : "Custom shortcut recorded: \(shortcutDescription)."
         accessibilityEvent = UtterInkAccessibilityEvent(
             message: hasConflict
                 ? "\(base) Warning: shortcut conflict detected."
@@ -94,6 +100,8 @@ final class ShortcutSettingsViewModel {
     func refreshHotkeyState() {
         hasConfiguredShortcut = hotkey.hasConfiguredShortcut
         hasConflict = hotkey.hasConflict
+        usesDefaultRightOption = hotkey.usesDefaultRightOption
+        shortcutDescription = hotkey.shortcutDescription
     }
 }
 
@@ -114,6 +122,11 @@ struct ShortcutSettingsView: View {
                 .accessibilityLabel("Shortcut status")
                 .accessibilityValue(model.shortcutStatus)
                 .accessibilityIdentifier("settings.shortcuts.status")
+                Text(
+                    "Right Option works by default. Click the shortcut button to record a custom combination, or press and release Right Option while recording to restore the default."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 if let conflictMessage = model.conflictMessage {
                     Label(conflictMessage, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
@@ -121,7 +134,8 @@ struct ShortcutSettingsView: View {
                         .accessibilityValue(conflictMessage)
                         .accessibilityIdentifier("settings.shortcuts.conflict")
                 }
-                Button("Reset Shortcut", action: model.resetShortcut)
+                Button("Use Right Option", action: model.resetShortcut)
+                    .disabled(model.usesDefaultRightOption)
                     .accessibilityIdentifier("settings.shortcuts.reset")
             }
 

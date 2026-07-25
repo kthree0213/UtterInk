@@ -5,6 +5,7 @@ enum EnglishCopy {
     static let appUnavailable = "UtterInk is unavailable. Quit and reopen the app to try again."
     static let cancel = "Cancel"
     static let copyLatestResult = "Copy Latest Result"
+    static let copyResult = "Copy Result"
     static let dismiss = "Dismiss"
     static let history = "History"
     static let historyUnavailable = "History will be available after its window is installed."
@@ -20,6 +21,7 @@ enum EnglishCopy {
     static let settings = "Settings…"
     static let speechModel = "Speech Model"
     static let start = "Start Listening"
+    static let startShortcut = "Right ⌥"
     static let status = "Status"
     static let stop = "Stop Listening"
     static let starting = "Starting UtterInk"
@@ -27,6 +29,8 @@ enum EnglishCopy {
     static let viewLatestResult = "Open Last Result"
 
     static let failedWarning = "Dictation needs attention. Your latest text remains available."
+    static let resultCopied = "Copied"
+    static let resultPasted = "Pasted"
     static let resultWarning = "Completed with a warning"
     static let resultSuccess = "Dictation completed"
 

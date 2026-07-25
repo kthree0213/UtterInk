@@ -8,6 +8,16 @@ struct SpeechModelOption: Identifiable, Equatable {
 
     var id: String { descriptor.id }
     var diskImpact: String { Self.diskImpact(for: descriptor.approximateBytes) }
+    var isRecommended: Bool {
+        descriptor.id == "small" && descriptor.preset == "Recommended"
+    }
+
+    static func displayTitle(for descriptor: SpeechModelDescriptor) -> String {
+        if descriptor.id == "small", descriptor.preset == "Recommended" {
+            return "Balanced"
+        }
+        return descriptor.preset ?? descriptor.displayName
+    }
 
     private static func diskImpact(for bytes: UInt64) -> String {
         if bytes >= 1_000_000_000 {
@@ -38,7 +48,7 @@ struct SpeechModelPresentation: Equatable {
 @Observable
 final class SpeechModelSettingsViewModel {
     private static let presetIDs = ["base", "small", "large-v3"]
-    private static let presetTitles = [
+    private static let catalogPresetTitles = [
         "base": "Fast",
         "small": "Recommended",
         "large-v3": "Best Quality",
@@ -49,6 +59,7 @@ final class SpeechModelSettingsViewModel {
     private(set) var selectedModelID = UserSettings.p0Default.speechModelID
     private(set) var isSaving = false
     private(set) var failureMessage: String?
+    private(set) var pendingDownload: SpeechModelOption?
     private(set) var pendingDeletion: SpeechModelOption?
     private(set) var preparationRejectedModelID: String?
     private(set) var accessibilityEvent: UtterInkAccessibilityEvent?
@@ -65,8 +76,11 @@ final class SpeechModelSettingsViewModel {
         let byID = Dictionary(uniqueKeysWithValues: descriptors.map { ($0.id, $0) })
         presets = Self.presetIDs.compactMap { id in
             guard let descriptor = byID[id],
-                  descriptor.preset == Self.presetTitles[id] else { return nil }
-            return SpeechModelOption(descriptor: descriptor, title: Self.presetTitles[id]!)
+                  descriptor.preset == Self.catalogPresetTitles[id] else { return nil }
+            return SpeechModelOption(
+                descriptor: descriptor,
+                title: SpeechModelOption.displayTitle(for: descriptor)
+            )
         }
         let presetIDSet = Set(Self.presetIDs)
         advanced = descriptors
@@ -169,6 +183,7 @@ final class SpeechModelSettingsViewModel {
         guard !isSaving else { return }
         do {
             selectedModelID = try await settings.current().speechModelID
+            await controller.refreshSpeechModelCache()
             failureMessage = nil
         } catch {
             failureMessage = "Speech model settings could not be loaded. Your current choice was kept."
@@ -176,6 +191,41 @@ final class SpeechModelSettingsViewModel {
     }
 
     func select(_ modelID: String) async {
+        guard !isSaving,
+              !cacheActionIsPending,
+              let option = option(for: modelID) else { return }
+        if !isDownloaded(modelID) {
+            pendingDownload = option
+            accessibilityEvent = UtterInkAccessibilityEvent(
+                message: "Download confirmation required for \(option.title), approximately \(option.diskImpact)."
+            )
+            return
+        }
+        await applySelection(modelID)
+    }
+
+    func confirmDownload() async {
+        guard let pendingDownload else { return }
+        self.pendingDownload = nil
+        await applySelection(pendingDownload.id)
+    }
+
+    func cancelDownload() {
+        guard let pendingDownload else { return }
+        self.pendingDownload = nil
+        accessibilityEvent = UtterInkAccessibilityEvent(
+            message: "Download canceled. \(pendingDownload.title) was not selected."
+        )
+    }
+
+    func isDownloaded(_ modelID: String) -> Bool {
+        if controller.cachedSpeechModelIDs.contains(modelID) { return true }
+        if case let .ready(readyID) = controller.speechModelState,
+           readyID == modelID { return true }
+        return false
+    }
+
+    private func applySelection(_ modelID: String) async {
         guard !isSaving,
               !cacheActionIsPending,
               option(for: modelID) != nil else { return }
@@ -227,6 +277,7 @@ final class SpeechModelSettingsViewModel {
 
     func canDelete(_ modelID: String) -> Bool {
         option(for: modelID) != nil
+            && isDownloaded(modelID)
             && !cacheActionIsPending
             && selectedModelID != modelID
             && controller.activeSpeechModelID != modelID

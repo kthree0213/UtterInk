@@ -23,7 +23,16 @@ public final class KeyboardShortcutsHotkeyService: @unchecked Sendable {
     public static let shortcutName = KeyboardShortcuts.Name("utterink.dictation")
 
     public static var hasConfiguredShortcut: Bool {
-        KeyboardShortcuts.getShortcut(for: shortcutName) != nil
+        true
+    }
+
+    public static var usesDefaultRightOption: Bool {
+        KeyboardShortcuts.getShortcut(for: shortcutName) == nil
+    }
+
+    @MainActor
+    public static var shortcutDescription: String {
+        KeyboardShortcuts.getShortcut(for: shortcutName)?.description ?? "Right Option"
     }
 
     public static func resetShortcut() {
@@ -48,15 +57,19 @@ public final class KeyboardShortcutsHotkeyService: @unchecked Sendable {
     }
 
     private var probeSubscriptions: [UUID: ProbeSubscription] = [:]
+    private static let recordingState = ShortcutRecordingState()
 
     public convenience init(
         mode: ShortcutMode,
         onEvent: @escaping @MainActor @Sendable (Event) -> Void
     ) {
+        let backend: any HotkeyEventBackend = Self.usesDefaultRightOption
+            ? RightOptionEventBackend()
+            : SystemHotkeyEventBackend(name: Self.shortcutName)
         self.init(
             mode: mode,
             onEvent: onEvent,
-            backend: SystemHotkeyEventBackend(name: Self.shortcutName)
+            backend: backend
         )
     }
 
@@ -133,7 +146,9 @@ public final class KeyboardShortcutsHotkeyService: @unchecked Sendable {
             oneShotProbes: [AsyncStream<Void>.Continuation],
             shouldScheduleDelivery: Bool
         )? = lock.withLock {
-            guard !tornDown, !keyIsDown else { return nil }
+            guard !tornDown,
+                  !Self.recordingState.isActive,
+                  !keyIsDown else { return nil }
             keyIsDown = true
 
             let subscriptions = Array(probeSubscriptions)
@@ -234,6 +249,23 @@ public final class KeyboardShortcutsHotkeyService: @unchecked Sendable {
             probeSubscriptions[id] = nil
         }
     }
+
+    fileprivate static func setShortcutRecordingActive(_ active: Bool) {
+        recordingState.setActive(active)
+    }
+}
+
+private final class ShortcutRecordingState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var active = false
+
+    var isActive: Bool {
+        lock.withLock { active }
+    }
+
+    func setActive(_ active: Bool) {
+        lock.withLock { self.active = active }
+    }
 }
 
 public struct DictationShortcutRecorder: View {
@@ -290,8 +322,9 @@ private final class AccessibleShortcutRecorderControl: NSButton {
     var onChange: (Bool) -> Void = { _ in }
 
     private var isRecording = false
-    private var keyEventMonitor: Any?
+    private var recordingEventMonitor: Any?
     private var mouseEventMonitor: Any?
+    private var rightOptionCandidate = false
 
     override var canBecomeKeyView: Bool { true }
 
@@ -332,12 +365,16 @@ private final class AccessibleShortcutRecorderControl: NSButton {
     private func beginRecording() {
         guard !isRecording else { return }
         isRecording = true
+        rightOptionCandidate = false
+        KeyboardShortcutsHotkeyService.setShortcutRecordingActive(true)
         KeyboardShortcuts.disable(KeyboardShortcutsHotkeyService.shortcutName)
         title = "Press Shortcut"
         refreshAccessibility()
         window?.makeFirstResponder(self)
         observeRecordingContext()
-        keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        recordingEventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.keyDown, .flagsChanged]
+        ) { [weak self] event in
             self?.handleRecordingEvent(event) ?? event
         }
         mouseEventMonitor = NSEvent.addLocalMonitorForEvents(
@@ -348,7 +385,7 @@ private final class AccessibleShortcutRecorderControl: NSButton {
     }
 
     func cancelRecording() {
-        guard isRecording || keyEventMonitor != nil || mouseEventMonitor != nil else { return }
+        guard isRecording || recordingEventMonitor != nil || mouseEventMonitor != nil else { return }
         stopRecording()
     }
 
@@ -359,7 +396,7 @@ private final class AccessibleShortcutRecorderControl: NSButton {
         ) {
             title = shortcut.description
         } else {
-            title = "Record Shortcut"
+            title = "Right ⌥ (Default)"
         }
         refreshAccessibility()
         invalidateIntrinsicContentSize()
@@ -367,6 +404,12 @@ private final class AccessibleShortcutRecorderControl: NSButton {
 
     private func handleRecordingEvent(_ event: NSEvent) -> NSEvent? {
         guard isRecording, !event.isARepeat else { return nil }
+
+        if event.type == .flagsChanged {
+            return handleModifierRecordingEvent(event)
+        }
+
+        rightOptionCandidate = false
 
         if event.keyCode == UInt16(kVK_Tab),
            event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
@@ -393,6 +436,9 @@ private final class AccessibleShortcutRecorderControl: NSButton {
 
         guard hasRequiredModifier(event) else {
             NSSound.beep()
+            title = "Add ⌘, ⌃, or ⌥"
+            invalidateIntrinsicContentSize()
+            refreshAccessibility()
             return nil
         }
 
@@ -423,18 +469,46 @@ private final class AccessibleShortcutRecorderControl: NSButton {
     }
 
     private func stopRecording() {
-        if let keyEventMonitor {
-            NSEvent.removeMonitor(keyEventMonitor)
+        if let recordingEventMonitor {
+            NSEvent.removeMonitor(recordingEventMonitor)
         }
         if let mouseEventMonitor {
             NSEvent.removeMonitor(mouseEventMonitor)
         }
-        keyEventMonitor = nil
+        recordingEventMonitor = nil
         mouseEventMonitor = nil
+        rightOptionCandidate = false
         stopObservingRecordingContext()
         isRecording = false
+        KeyboardShortcutsHotkeyService.setShortcutRecordingActive(false)
         KeyboardShortcuts.enable(KeyboardShortcutsHotkeyService.shortcutName)
         refreshPresentation()
+    }
+
+    private func handleModifierRecordingEvent(_ event: NSEvent) -> NSEvent? {
+        guard event.keyCode == UInt16(kVK_RightOption) else { return nil }
+
+        let isDown = RightOptionEventState.isPressed(
+            in: event.modifierFlags,
+            previouslyPressed: rightOptionCandidate
+        )
+        if isDown {
+            rightOptionCandidate = true
+            title = "Release Right ⌥ to Use"
+            invalidateIntrinsicContentSize()
+            refreshAccessibility()
+            return nil
+        }
+
+        guard rightOptionCandidate else { return nil }
+        stopRecording()
+        KeyboardShortcuts.setShortcut(
+            nil,
+            for: KeyboardShortcutsHotkeyService.shortcutName
+        )
+        refreshPresentation()
+        onChange(true)
+        return nil
     }
 
     private func handleRecordingMouseEvent(_ event: NSEvent) -> NSEvent? {
@@ -488,12 +562,14 @@ private final class AccessibleShortcutRecorderControl: NSButton {
     private func refreshAccessibility() {
         setAccessibilityLabel(accessibleName)
         if isRecording {
-            setAccessibilityValue("Recording. Press a shortcut, Escape to cancel, or Delete to clear.")
-            setAccessibilityHelp("Press a shortcut. Tab moves to the next control without changing it.")
+            setAccessibilityValue(
+                "Recording. Press a key combination, or press and release Right Option."
+            )
+            setAccessibilityHelp(
+                "Use Command, Control, or Option with another key; F1 through F20 also work alone. Escape cancels."
+            )
         } else {
-            let value = KeyboardShortcuts.getShortcut(
-                for: KeyboardShortcutsHotkeyService.shortcutName
-            )?.description ?? "Not set"
+            let value = KeyboardShortcutsHotkeyService.shortcutDescription
             setAccessibilityValue(value)
             setAccessibilityHelp("Press to record a new dictation shortcut.")
         }
@@ -590,13 +666,107 @@ private final class AccessibleShortcutRecorderControl: NSButton {
     ]
 
     deinit {
-        if let keyEventMonitor {
-            NSEvent.removeMonitor(keyEventMonitor)
+        if let recordingEventMonitor {
+            NSEvent.removeMonitor(recordingEventMonitor)
         }
         if let mouseEventMonitor {
             NSEvent.removeMonitor(mouseEventMonitor)
         }
         NotificationCenter.default.removeObserver(self)
+        if isRecording {
+            KeyboardShortcutsHotkeyService.setShortcutRecordingActive(false)
+        }
+    }
+}
+
+private final class RightOptionEventBackend: HotkeyEventBackend, @unchecked Sendable {
+    private let lock = NSLock()
+    private var localMonitor: Any?
+    private var globalMonitor: Any?
+    private var isDown = false
+    private var onKeyDown: (@Sendable () -> Void)?
+    private var onKeyUp: (@Sendable () -> Void)?
+
+    func conflictDetected() -> Bool { false }
+
+    func install(
+        onKeyDown: @escaping @Sendable () -> Void,
+        onKeyUp: @escaping @Sendable () -> Void
+    ) {
+        removeHandlers()
+        lock.withLock {
+            self.onKeyDown = onKeyDown
+            self.onKeyUp = onKeyUp
+            isDown = false
+        }
+
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) {
+            [weak self] event in
+            self?.handle(event)
+            return event
+        }
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) {
+            [weak self] event in
+            self?.handle(event)
+        }
+    }
+
+    func removeHandlers() {
+        if let localMonitor {
+            NSEvent.removeMonitor(localMonitor)
+        }
+        if let globalMonitor {
+            NSEvent.removeMonitor(globalMonitor)
+        }
+        localMonitor = nil
+        globalMonitor = nil
+        lock.withLock {
+            isDown = false
+            onKeyDown = nil
+            onKeyUp = nil
+        }
+    }
+
+    private func handle(_ event: NSEvent) {
+        guard event.keyCode == UInt16(kVK_RightOption) else { return }
+        let callback: (@Sendable () -> Void)? = lock.withLock {
+            let physicallyDown = RightOptionEventState.isPressed(
+                in: event.modifierFlags,
+                previouslyPressed: isDown
+            )
+            guard physicallyDown != isDown else { return nil }
+            isDown = physicallyDown
+            return physicallyDown ? onKeyDown : onKeyUp
+        }
+        callback?()
+    }
+
+    deinit {
+        removeHandlers()
+    }
+}
+
+enum RightOptionEventState {
+    // AppKit preserves device-dependent modifier bits in NSEvent. Reading the
+    // right-side bit from the delivered event avoids racing a later query of
+    // the live keyboard state after a quick press has already been released.
+    static let deviceSpecificFlag = NSEvent.ModifierFlags(rawValue: 0x40)
+
+    static func isPressed(
+        in flags: NSEvent.ModifierFlags,
+        previouslyPressed: Bool
+    ) -> Bool {
+        if flags.contains(deviceSpecificFlag) {
+            return true
+        }
+        if !flags.contains(.option) {
+            return false
+        }
+
+        // Some keyboards or synthesized events omit the device-specific bit.
+        // Since a flagsChanged event for key code 61 is a transition, toggle
+        // the tracked right-side state while another Option key remains held.
+        return !previouslyPressed
     }
 }
 

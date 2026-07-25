@@ -15,7 +15,8 @@ final class SpeechModelPresentationTests: XCTestCase {
         await model.load()
 
         XCTAssertEqual(model.presets.map(\.id), ["base", "small", "large-v3"])
-        XCTAssertEqual(model.presets.map(\.title), ["Fast", "Recommended", "Best Quality"])
+        XCTAssertEqual(model.presets.map(\.title), ["Fast", "Balanced", "Best Quality"])
+        XCTAssertEqual(model.presets.map(\.isRecommended), [false, true, false])
         XCTAssertEqual(model.presets.map(\.diskImpact), ["150 MB", "500 MB", "1.6 GB"])
         XCTAssertEqual(model.advanced.map(\.id), ["distil-small.en"])
         XCTAssertEqual(model.advanced.map(\.title), ["Distilled Small English"])
@@ -58,13 +59,13 @@ final class SpeechModelPresentationTests: XCTestCase {
         controller.preparingSpeechModelID = "small"
         controller.speechModelState = .loading(modelID: "small")
         XCTAssertEqual(model.presentation.title, "Loading")
-        XCTAssertEqual(model.presentation.detail, "Loading Recommended…")
+        XCTAssertEqual(model.presentation.detail, "Loading Balanced…")
         XCTAssertTrue(model.presentation.canCancel)
 
         controller.preparingSpeechModelID = nil
         controller.speechModelState = .ready(modelID: "small")
         XCTAssertEqual(model.presentation.title, "Ready")
-        XCTAssertEqual(model.presentation.detail, "Recommended is ready.")
+        XCTAssertEqual(model.presentation.detail, "Balanced is ready.")
 
         controller.speechModelState = .failed(
             modelID: "large-v3",
@@ -95,7 +96,7 @@ final class SpeechModelPresentationTests: XCTestCase {
         XCTAssertTrue(model.presentation.canRetry)
     }
 
-    func testSelectionPersistsAtomicallyThenPreparesOnlyWhenNotReady() async throws {
+    func testMissingSelectionWaitsForConfirmationBeforePersistingOrDownloading() async throws {
         let controller = RecordingIntentControllerSpy()
         controller.speechModelCatalog = Self.catalog
         controller.speechModelState = .ready(modelID: "small")
@@ -106,9 +107,19 @@ final class SpeechModelPresentationTests: XCTestCase {
 
         await model.select("base")
 
-        let savedModelID = try await store.current().speechModelID
+        XCTAssertEqual(model.pendingDownload?.id, "base")
+        XCTAssertEqual(model.pendingDownload?.diskImpact, "150 MB")
+        XCTAssertEqual(model.selectedModelID, "small")
+        let savedBeforeConfirmation = try await store.current().speechModelID
+        XCTAssertEqual(savedBeforeConfirmation, "small")
+        XCTAssertTrue(controller.preparedSpeechModelIDs.isEmpty)
+
+        await model.confirmDownload()
+
+        XCTAssertNil(model.pendingDownload)
         XCTAssertEqual(model.selectedModelID, "base")
-        XCTAssertEqual(savedModelID, "base")
+        let savedAfterConfirmation = try await store.current().speechModelID
+        XCTAssertEqual(savedAfterConfirmation, "base")
         XCTAssertEqual(controller.preparedSpeechModelIDs, ["base"])
 
         controller.speechModelState = .ready(modelID: "large-v3")
@@ -116,7 +127,50 @@ final class SpeechModelPresentationTests: XCTestCase {
         XCTAssertEqual(controller.preparedSpeechModelIDs, ["base"])
     }
 
-    func testClickingInitiallySelectedMissingModelStartsPreparation() async {
+    func testCancelingDownloadConfirmationKeepsSelectionAndStartsNoDownload() async throws {
+        let controller = RecordingIntentControllerSpy()
+        controller.speechModelCatalog = Self.catalog
+        controller.speechModelState = .ready(modelID: "small")
+        controller.activeSpeechModelID = "small"
+        let store = AppSettingsFake()
+        let model = SpeechModelSettingsViewModel(controller: controller, settings: store)
+        await model.load()
+
+        await model.select("base")
+        model.cancelDownload()
+
+        XCTAssertNil(model.pendingDownload)
+        XCTAssertEqual(model.selectedModelID, "small")
+        let savedModelID = try await store.current().speechModelID
+        XCTAssertEqual(savedModelID, "small")
+        XCTAssertTrue(controller.preparedSpeechModelIDs.isEmpty)
+    }
+
+    func testDownloadedModelIsRecognizedAndSkipsDownloadConfirmation() async throws {
+        let controller = RecordingIntentControllerSpy()
+        controller.speechModelCatalog = Self.catalog
+        controller.speechModelState = .ready(modelID: "small")
+        controller.activeSpeechModelID = "small"
+        controller.cachedSpeechModelIDs = ["base", "small"]
+        let store = AppSettingsFake()
+        let model = SpeechModelSettingsViewModel(controller: controller, settings: store)
+
+        await model.load()
+
+        XCTAssertEqual(controller.refreshSpeechModelCacheCount, 1)
+        XCTAssertTrue(model.isDownloaded("base"))
+        XCTAssertTrue(model.isDownloaded("small"))
+        XCTAssertFalse(model.isDownloaded("large-v3"))
+
+        await model.select("base")
+
+        XCTAssertNil(model.pendingDownload)
+        let savedModelID = try await store.current().speechModelID
+        XCTAssertEqual(savedModelID, "base")
+        XCTAssertEqual(controller.preparedSpeechModelIDs, ["base"])
+    }
+
+    func testClickingInitiallySelectedMissingModelStillRequiresConfirmation() async {
         let controller = RecordingIntentControllerSpy()
         controller.speechModelCatalog = Self.catalog
         controller.speechModelState = .missing(modelID: "small")
@@ -128,9 +182,14 @@ final class SpeechModelPresentationTests: XCTestCase {
 
         await model.select("small")
 
+        XCTAssertEqual(model.pendingDownload?.id, "small")
+        XCTAssertTrue(controller.preparedSpeechModelIDs.isEmpty)
+
+        await model.confirmDownload()
+
         XCTAssertEqual(controller.preparedSpeechModelIDs, ["small"])
         XCTAssertEqual(model.presentation.title, "Preparing")
-        XCTAssertEqual(model.presentation.detail, "Starting Recommended preparation…")
+        XCTAssertEqual(model.presentation.detail, "Starting Balanced preparation…")
         XCTAssertTrue(model.presentation.canCancel)
         XCTAssertFalse(model.presentation.canRetry)
     }
@@ -146,6 +205,7 @@ final class SpeechModelPresentationTests: XCTestCase {
         await model.load()
 
         await model.select("base")
+        await model.confirmDownload()
 
         let savedModelID = try await store.current().speechModelID
         XCTAssertEqual(model.selectedModelID, "base")
@@ -174,6 +234,7 @@ final class SpeechModelPresentationTests: XCTestCase {
         await model.load()
         controller.speechModelState = .missing(modelID: "small")
         await model.select("small")
+        await model.confirmDownload()
         XCTAssertEqual(model.preparationRejectedModelID, "small")
 
         controller.speechModelState = .ready(modelID: "small")
@@ -205,6 +266,7 @@ final class SpeechModelPresentationTests: XCTestCase {
         let controller = RecordingIntentControllerSpy()
         controller.speechModelCatalog = Self.catalog
         controller.activeSpeechModelID = "small"
+        controller.cachedSpeechModelIDs = ["small"]
         controller.speechModelState = .ready(modelID: "base")
         var settings = UserSettings.p0Default
         settings.speechModelID = "base"
@@ -228,12 +290,13 @@ final class SpeechModelPresentationTests: XCTestCase {
         await store.setSaveFailureEnabled(true)
 
         await model.select("base")
+        await model.confirmDownload()
 
         XCTAssertEqual(model.selectedModelID, "small")
         XCTAssertTrue(controller.preparedSpeechModelIDs.isEmpty)
         XCTAssertEqual(
             model.failureMessage,
-            "Speech model selection could not be saved. Recommended remains selected."
+            "Speech model selection could not be saved. Balanced remains selected."
         )
     }
 
@@ -246,6 +309,7 @@ final class SpeechModelPresentationTests: XCTestCase {
             retryable: true
         )
         controller.activeSpeechModelID = "small"
+        controller.cachedSpeechModelIDs = ["small", "large-v3"]
         var selected = UserSettings.p0Default
         selected.speechModelID = "base"
         let model = SpeechModelSettingsViewModel(
@@ -273,6 +337,7 @@ final class SpeechModelPresentationTests: XCTestCase {
         controller.speechModelCatalog = Self.catalog
         controller.activeSpeechModelID = "small"
         controller.preparingSpeechModelID = "large-v3"
+        controller.cachedSpeechModelIDs = ["base", "small", "large-v3"]
         var settings = UserSettings.p0Default
         settings.speechModelID = "base"
         let model = SpeechModelSettingsViewModel(
@@ -296,6 +361,7 @@ final class SpeechModelPresentationTests: XCTestCase {
     func testDeletionConfirmationRechecksActivityThatChangedWhileDialogWasOpen() async {
         let controller = RecordingIntentControllerSpy()
         controller.speechModelCatalog = Self.catalog
+        controller.cachedSpeechModelIDs = ["base"]
         let model = SpeechModelSettingsViewModel(
             controller: controller,
             settings: AppSettingsFake()

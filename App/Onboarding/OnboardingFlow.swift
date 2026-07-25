@@ -184,7 +184,13 @@ struct OnboardingFlow: View {
                                 ? "largecircle.fill.circle"
                                 : "circle")
                             VStack(alignment: .leading) {
-                                Text(option.title)
+                                HStack(spacing: 8) {
+                                    Text(option.title)
+                                    if option.isRecommended {
+                                        SpeechModelRecommendationBadge()
+                                            .accessibilityIdentifier("onboarding.speechModel.recommended.\(option.id)")
+                                    }
+                                }
                                 Text("\(option.descriptor.displayName) · \(option.diskImpact) on disk")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -194,7 +200,9 @@ struct OnboardingFlow: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Select \(option.title) speech model")
+                    .accessibilityLabel(option.isRecommended
+                        ? "Select \(option.title) speech model, recommended"
+                        : "Select \(option.title) speech model")
                     .accessibilityValue(model.selectedSpeechModelID == option.id ? "Selected" : "Not selected")
                     .accessibilityIdentifier("onboarding.speechModel.\(option.id)")
                 }

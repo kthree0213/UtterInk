@@ -103,37 +103,39 @@ public actor OpenAICompatibleClient: PolishingService, ProviderValidationService
         profile: ProviderProfile,
         credential: SessionSecret
     ) async -> ProviderValidationResult {
-        do {
-            try Task.checkCancellation()
-            let endpoint = try validatedEndpoint(
-                profile.baseURL,
-                requiring: profile.policy
-            )
-            guard !profile.modelID.isEmpty else {
+        guard !profile.modelID.isEmpty else {
+            return .failed(.polishInvalidResponse)
+        }
+
+        switch await discoverModels(profile: profile, credential: credential) {
+        case let .ready(normalizedHost, modelIDs):
+            guard modelIDs.contains(profile.modelID) else {
                 return .failed(.polishInvalidResponse)
             }
-            let credential = credentialValue(credential)
-            if endpoint.policy == .remoteHTTPS, credential.isEmpty {
-                return .failed(.credentialMissing)
-            }
-            let url = try apiURL(endpoint.requestBaseURL, suffix: "models")
-            var request = URLRequest(url: url)
-            request.httpMethod = "GET"
-            request.timeoutInterval = 30
-            if !credential.isEmpty {
-                request.setValue("Bearer \(credential)", forHTTPHeaderField: "Authorization")
-            }
-            let response = try await transport(request)
-            guard (200...299).contains(response.statusCode) else {
-                return .failed(statusCode(response.statusCode))
-            }
-            let models = try JSONDecoder().decode(ModelsResponse.self, from: response.body)
-            guard models.data.contains(where: { $0.id == profile.modelID }) else {
+            return .ready(
+                normalizedHost: normalizedHost,
+                modelID: profile.modelID
+            )
+        case let .failed(code):
+            return .failed(code)
+        }
+    }
+
+    public func discoverModels(
+        profile: ProviderProfile,
+        credential: SessionSecret
+    ) async -> ProviderModelDiscoveryResult {
+        do {
+            let (endpoint, modelIDs) = try await loadModels(
+                profile: profile,
+                credential: credential
+            )
+            guard !modelIDs.isEmpty else {
                 return .failed(.polishInvalidResponse)
             }
             return .ready(
                 normalizedHost: endpoint.displayAuthority,
-                modelID: profile.modelID
+                modelIDs: modelIDs
             )
         } catch let failure as TransportFailure {
             switch failure {
@@ -149,6 +151,42 @@ public actor OpenAICompatibleClient: PolishingService, ProviderValidationService
         } catch {
             return .failed(.polishInvalidResponse)
         }
+    }
+
+    private func loadModels(
+        profile: ProviderProfile,
+        credential: SessionSecret
+    ) async throws -> (ValidatedEndpoint, [String]) {
+        try Task.checkCancellation()
+        let endpoint = try validatedEndpoint(
+            profile.baseURL,
+            requiring: profile.policy
+        )
+        let credential = credentialValue(credential)
+        if endpoint.policy == .remoteHTTPS, credential.isEmpty {
+            throw DiagnosticCode.credentialMissing
+        }
+        let url = try apiURL(endpoint.requestBaseURL, suffix: "models")
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 30
+        if !credential.isEmpty {
+            request.setValue("Bearer \(credential)", forHTTPHeaderField: "Authorization")
+        }
+        let response = try await transport(request)
+        guard (200...299).contains(response.statusCode) else {
+            throw statusCode(response.statusCode)
+        }
+        let responseModels = try JSONDecoder().decode(
+            ModelsResponse.self,
+            from: response.body
+        )
+        let modelIDs = Set(responseModels.data.compactMap { model -> String? in
+            let value = model.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        })
+        .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        return (endpoint, modelIDs)
     }
 
     private func validatedEndpoint(

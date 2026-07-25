@@ -110,7 +110,7 @@ final class KeychainCredentialStoreTests: XCTestCase {
         assertBaseQuery(query, expectedKeys: baseKeys, accessGroup: nil)
     }
 
-    func testAccessGroupIsIncludedInEveryItemQueryWhenConfigured() async throws {
+    func testAccessGroupOptsEveryItemQueryIntoTheDataProtectionKeychain() async throws {
         let accessGroup = "TEAMID.dev.utterink.shared"
         let client = KeychainSecurityClientFake()
         client.addStatus = errSecDuplicateItem
@@ -135,6 +135,7 @@ final class KeychainCredentialStoreTests: XCTestCase {
         for query in itemQueries {
             XCTAssertEqual(query[key(kSecAttrAccessGroup)] as? String, accessGroup)
             XCTAssertEqual(query[key(kSecAttrAccessible)] as? String, key(kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly))
+            XCTAssertEqual(query[key(kSecUseDataProtectionKeychain)] as? Bool, true)
         }
     }
 
@@ -212,9 +213,7 @@ final class KeychainCredentialStoreTests: XCTestCase {
         [
             key(kSecClass),
             key(kSecAttrService),
-            key(kSecAttrAccount),
-            key(kSecAttrAccessible),
-            key(kSecUseDataProtectionKeychain)
+            key(kSecAttrAccount)
         ]
     }
 
@@ -227,20 +226,34 @@ final class KeychainCredentialStoreTests: XCTestCase {
     ) {
         var expectedKeys = expectedKeys
         if accessGroup != nil {
-            expectedKeys.insert(key(kSecAttrAccessGroup))
+            expectedKeys.formUnion([
+                key(kSecAttrAccessGroup),
+                key(kSecAttrAccessible),
+                key(kSecUseDataProtectionKeychain)
+            ])
         }
         XCTAssertEqual(Set(query.keys), expectedKeys, file: file, line: line)
         XCTAssertEqual(query[key(kSecClass)] as? String, key(kSecClassGenericPassword), file: file, line: line)
         XCTAssertEqual(query[key(kSecAttrService)] as? String, service, file: file, line: line)
         XCTAssertEqual(query[key(kSecAttrAccount)] as? String, profileID.uuidString, file: file, line: line)
-        XCTAssertEqual(
-            query[key(kSecAttrAccessible)] as? String,
-            key(kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly),
-            file: file,
-            line: line
-        )
-        XCTAssertEqual(query[key(kSecUseDataProtectionKeychain)] as? Bool, true, file: file, line: line)
         XCTAssertEqual(query[key(kSecAttrAccessGroup)] as? String, accessGroup, file: file, line: line)
+        if accessGroup == nil {
+            XCTAssertNil(query[key(kSecAttrAccessible)], file: file, line: line)
+            XCTAssertNil(query[key(kSecUseDataProtectionKeychain)], file: file, line: line)
+        } else {
+            XCTAssertEqual(
+                query[key(kSecAttrAccessible)] as? String,
+                key(kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly),
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(
+                query[key(kSecUseDataProtectionKeychain)] as? Bool,
+                true,
+                file: file,
+                line: line
+            )
+        }
     }
 
     private func captureError(_ body: () async throws -> Void) async -> Error? {

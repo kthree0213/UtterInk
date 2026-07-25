@@ -1,9 +1,21 @@
 # UtterInk 0.1.0
 
 UtterInk is a privacy-minded macOS menu-bar dictation app. Version 0.1.0 is
-the first planned release. These notes describe the intended release and do
-not claim that a candidate has completed verification or that any binary asset
-has been published.
+the first public release. A copy of these notes in the source tree does not by
+itself prove that a binary has been published; use the GitHub Release page and
+its checksums as the distribution record.
+
+## Highlights
+
+- Local Whisper transcription with no audio history or provider audio upload.
+- Right Option as the default dictation shortcut, with custom shortcut,
+  Toggle, and Hold to Talk options.
+- Guarded Automatic Paste, Copy Only, and text-only recovery for the newest 20
+  sessions.
+- Simple provider setup that tests the API key, loads compatible models, and
+  stores the selected credential in macOS Keychain.
+- Raw output plus Clean Up, AI Prompt, Translate to English, Work Message,
+  Classical Chinese, and user-created polishing modes.
 
 ## Requirements
 

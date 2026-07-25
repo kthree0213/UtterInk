@@ -11,6 +11,13 @@ final class OnboardingViewModelTests: XCTestCase {
         )
     }
 
+    func testSpeechModelOptionsPresentTheMiddleTierAsBalancedAndRecommended() {
+        let harness = OnboardingHarness()
+
+        XCTAssertEqual(harness.model.speechModelOptions.map(\.title), ["Fast", "Balanced"])
+        XCTAssertEqual(harness.model.speechModelOptions.map(\.isRecommended), [false, true])
+    }
+
     func testClosingDoesNotCompleteOnboarding() async throws {
         let harness = OnboardingHarness()
         harness.model.go(to: .shortcutTest)

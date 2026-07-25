@@ -42,7 +42,7 @@ public actor DeliveryCoordinator: DeliveryService {
         target: TargetTracker,
         onboardingSink: any OnboardingTestSink,
         clock: any AppClock,
-        settleDelay: Duration = .milliseconds(250)
+        settleDelay: Duration = .milliseconds(500)
     ) {
         self.pasteboard = pasteboard
         self.target = target

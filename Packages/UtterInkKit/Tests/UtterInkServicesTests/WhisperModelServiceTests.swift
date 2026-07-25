@@ -119,6 +119,19 @@ final class WhisperModelServiceTests: XCTestCase {
         XCTAssertEqual(loadCount, 1)
     }
 
+    func testCachedModelSnapshotReportsOnlyCatalogEntriesAndTracksDeletion() async throws {
+        let backend = ModelBackendFake(cachedIDs: ["base", "large-v3", "unknown"])
+        let service = try makeService(backend: backend)
+
+        let initialCachedIDs = await service.cachedModelIDs()
+        XCTAssertEqual(initialCachedIDs, ["base", "large-v3"])
+
+        try await service.deleteCachedModel(modelID: "base")
+
+        let remainingCachedIDs = await service.cachedModelIDs()
+        XCTAssertEqual(remainingCachedIDs, ["large-v3"])
+    }
+
     func testCancellationFinishesCurrentGenerationAndLateBackendCannotBecomeReady() async throws {
         let gate = ModelGate()
         let backend = ModelBackendFake(downloadGates: ["base": gate])

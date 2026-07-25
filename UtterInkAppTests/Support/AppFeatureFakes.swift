@@ -94,6 +94,8 @@ final class AppHotkeyFake: HotkeyProbing, HotkeyConfiguring {
     var currentMode: ShortcutMode = .toggle
     var hasConflict = false
     var hasConfiguredShortcut = true
+    var usesDefaultRightOption = true
+    var shortcutDescription = "Right Option"
     var armGate: AppBootstrapGate?
     private(set) var calls: [String] = []
     private var probeContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
@@ -130,8 +132,10 @@ final class AppHotkeyFake: HotkeyProbing, HotkeyConfiguring {
 
     func reset() {
         calls.append("hotkey.reset")
-        hasConfiguredShortcut = false
+        hasConfiguredShortcut = true
         hasConflict = false
+        usesDefaultRightOption = true
+        shortcutDescription = "Right Option"
     }
 
     func reconfigure(mode: ShortcutMode) {
@@ -181,6 +185,7 @@ actor AppCredentialMigrationFake: CredentialMigrationService {
 
 actor AppProviderValidationFake: ProviderValidationService {
     var result: ProviderValidationResult = .failed(.credentialMissing)
+    var discoveryResult: ProviderModelDiscoveryResult = .failed(.credentialMissing)
     private var calls: [String] = []
 
     func validate(
@@ -189,6 +194,14 @@ actor AppProviderValidationFake: ProviderValidationService {
     ) async -> ProviderValidationResult {
         calls.append("provider.validate.\(profile.id.uuidString)")
         return result
+    }
+
+    func discoverModels(
+        profile: ProviderProfile,
+        credential: SessionSecret
+    ) async -> ProviderModelDiscoveryResult {
+        calls.append("provider.discoverModels.\(profile.id.uuidString)")
+        return discoveryResult
     }
 
     func recordedCalls() -> [String] { calls }

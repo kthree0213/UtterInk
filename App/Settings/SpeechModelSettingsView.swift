@@ -81,6 +81,25 @@ struct SpeechModelSettingsView: View {
         .navigationTitle("Speech Model")
         .task { await model.load() }
         .alert(
+            "Download Speech Model?",
+            isPresented: Binding(
+                get: { model.pendingDownload != nil },
+                set: { if !$0 { model.cancelDownload() } }
+            ),
+            presenting: model.pendingDownload
+        ) { _ in
+            Button("Download") {
+                Task { await model.confirmDownload() }
+            }
+            .accessibilityIdentifier("settings.speechModel.confirmDownload")
+            Button("Cancel", role: .cancel) { model.cancelDownload() }
+                .accessibilityIdentifier("settings.speechModel.cancelDownload")
+        } message: { option in
+            Text(
+                "Download \(option.title) to this Mac? The download is approximately \(option.diskImpact). Your current model will remain unchanged unless you confirm."
+            )
+        }
+        .alert(
             "Delete Cached Model?",
             isPresented: Binding(
                 get: { model.pendingDeletion != nil },
@@ -108,17 +127,31 @@ struct SpeechModelSettingsView: View {
             }
             .buttonStyle(.plain)
             .disabled(model.isSaving || model.cacheActionIsPending)
-            .accessibilityLabel("Select \(option.title)")
+            .accessibilityLabel(option.isRecommended
+                ? "Select \(option.title), recommended"
+                : "Select \(option.title)")
             .accessibilityValue(model.selectedModelID == option.id ? "Selected" : "Not selected")
             .accessibilityIdentifier("settings.speechModel.select.\(option.id)")
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(option.title)
+                HStack(spacing: 8) {
+                    Text(option.title)
+                    if option.isRecommended {
+                        SpeechModelRecommendationBadge()
+                            .accessibilityIdentifier("settings.speechModel.recommended.\(option.id)")
+                    }
+                }
                 Text("Model ID: \(option.id) · Disk impact: \(option.diskImpact)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            if model.isDownloaded(option.id) {
+                Label("Downloaded", systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+                    .accessibilityIdentifier("settings.speechModel.downloaded.\(option.id)")
+            }
             Button {
                 model.requestDeletion(option.id)
             } label: {
@@ -132,5 +165,17 @@ struct SpeechModelSettingsView: View {
             .accessibilityLabel("Delete cached \(option.title) model")
             .accessibilityIdentifier("settings.speechModel.delete.\(option.id)")
         }
+    }
+}
+
+struct SpeechModelRecommendationBadge: View {
+    var body: some View {
+        Text("Recommended")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(Color.accentColor)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(Color.accentColor.opacity(0.14), in: Capsule())
+            .accessibilityLabel("Recommended model")
     }
 }

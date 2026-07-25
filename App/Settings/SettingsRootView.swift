@@ -63,6 +63,15 @@ actor SettingsMutationCoordinator {
 }
 
 @MainActor
+final class SettingsNavigationModel: ObservableObject {
+    @Published var selectedRoute: SettingsRoute? = .general
+
+    func show(_ route: SettingsRoute) {
+        selectedRoute = route
+    }
+}
+
+@MainActor
 final class SettingsRootModel {
     static let supportedInterfaceLanguages = ["English"]
 
@@ -74,6 +83,7 @@ final class SettingsRootModel {
     let outputModes: OutputModeSettingsViewModel
     let provider: ProviderSettingsViewModel
     let diagnostics: DiagnosticsSettingsViewModel
+    let navigation = SettingsNavigationModel()
 
     init(
         dependencies: AppFeatureDependencies,
@@ -130,19 +140,20 @@ final class SettingsRootModel {
 }
 
 struct SettingsRootView: View {
-    @State private var selectedRoute: SettingsRoute? = .general
+    @ObservedObject private var navigation: SettingsNavigationModel
     private let model: SettingsRootModel
 
     init(model: SettingsRootModel) {
         self.model = model
+        _navigation = ObservedObject(wrappedValue: model.navigation)
     }
 
     var body: some View {
         NavigationSplitView {
-            List(SettingsRoute.allCases, selection: $selectedRoute) { route in
+            List(SettingsRoute.allCases, selection: $navigation.selectedRoute) { route in
                 Label(route.title, systemImage: route.systemImage)
                     .tag(route)
-                    .accessibilityValue(route == selectedRoute ? "Current" : "")
+                    .accessibilityValue(route == navigation.selectedRoute ? "Current" : "")
                     .accessibilityIdentifier("settings.route.\(route.rawValue)")
             }
             .navigationTitle("Settings")
@@ -150,7 +161,7 @@ struct SettingsRootView: View {
             .accessibilityIdentifier("settings.sidebar")
             .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 320)
         } detail: {
-            destination(selectedRoute ?? .general)
+            destination(navigation.selectedRoute ?? .general)
         }
         .frame(minWidth: 720, minHeight: 500)
         .accessibilityIdentifier("settings.root")
@@ -170,7 +181,10 @@ struct SettingsRootView: View {
         case .shortcuts:
             ShortcutSettingsView(model: model.shortcuts)
         case .outputModes:
-            OutputModeSettingsView(model: model.outputModes)
+            OutputModeSettingsView(
+                model: model.outputModes,
+                openProvider: { navigation.show(.provider) }
+            )
         case .provider:
             ProviderSettingsView(model: model.provider)
         case .diagnostics:

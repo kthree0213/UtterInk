@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import UtterInkCore
 @testable import UtterInkServices
@@ -207,6 +208,41 @@ final class HotkeyServiceTests: XCTestCase {
 
     func testFixedRecorderNameIsStable() {
         XCTAssertEqual(KeyboardShortcutsHotkeyService.shortcutName.rawValue, "utterink.dictation")
+    }
+
+    func testRightOptionStateUsesDeliveredEventSnapshot() {
+        let pressFlags: NSEvent.ModifierFlags = [
+            .option,
+            RightOptionEventState.deviceSpecificFlag,
+        ]
+
+        XCTAssertTrue(
+            RightOptionEventState.isPressed(
+                in: pressFlags,
+                previouslyPressed: false
+            )
+        )
+        XCTAssertFalse(
+            RightOptionEventState.isPressed(
+                in: [],
+                previouslyPressed: true
+            )
+        )
+    }
+
+    func testRightOptionStateFallsBackToTransitionWhenSideBitIsUnavailable() {
+        XCTAssertTrue(
+            RightOptionEventState.isPressed(
+                in: [.option],
+                previouslyPressed: false
+            )
+        )
+        XCTAssertFalse(
+            RightOptionEventState.isPressed(
+                in: [.option],
+                previouslyPressed: true
+            )
+        )
     }
 
     private func waitUntil(_ predicate: () -> Bool) async {
