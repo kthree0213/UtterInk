@@ -20,7 +20,7 @@ final class LaunchAndNavigationTests: XCTestCase {
 
         assertEnabled("menu.start", in: app)
         assertAccessibleText(
-            requireElement("menu.shortcutHint", in: app),
+            requireElement("menu.start", in: app),
             contains: "Right"
         )
         assertAbsent("menu.stop", in: app)
