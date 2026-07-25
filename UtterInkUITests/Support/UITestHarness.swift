@@ -98,7 +98,7 @@ extension XCTestCase {
         )
         statusItem.click()
         _ = requireElement(
-            "menu.status",
+            "menu.quit",
             in: application,
             timeout: 5,
             file: file,
