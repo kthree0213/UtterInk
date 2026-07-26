@@ -183,7 +183,7 @@ final class SettingsPresentationTests: XCTestCase {
         XCTAssertEqual(calls, ["settings.current"])
     }
 
-    func testHistoryPresentationExplainsRetentionAndCountsUniqueClearableSessions() {
+    func testHistoryPresentationSeparatesSavedAndVolatileClearableSessions() {
         let controller = RecordingIntentControllerSpy()
         let model = GeneralSettingsViewModel(
             settings: AppSettingsFake(),
@@ -199,7 +199,9 @@ final class SettingsPresentationTests: XCTestCase {
             GeneralSettingsViewModel.historyDisabledExplanation,
             "Turning this off stops saving new dictations. Existing history remains until cleared."
         )
-        XCTAssertEqual(model.historyItemCount, 0)
+        XCTAssertEqual(model.savedHistoryItemCount, 0)
+        XCTAssertEqual(model.unsavedResultItemCount, 0)
+        XCTAssertEqual(model.clearableResultItemCount, 0)
         XCTAssertEqual(model.historyItemSummary, "No saved dictations")
         XCTAssertFalse(model.canClearHistory)
 
@@ -227,30 +229,70 @@ final class SettingsPresentationTests: XCTestCase {
             ),
         ]
 
-        XCTAssertEqual(model.historyItemCount, 1)
+        XCTAssertEqual(model.savedHistoryItemCount, 1)
+        XCTAssertEqual(model.unsavedResultItemCount, 0)
+        XCTAssertEqual(model.clearableResultItemCount, 1)
         XCTAssertEqual(model.historyItemSummary, "1 saved dictation")
         XCTAssertEqual(model.clearHistoryConfirmationTitle, "Clear 1 saved dictation?")
         XCTAssertTrue(model.canClearHistory)
 
-        controller.volatileResults.append(
-            DictationResult(
+        let volatileOnly = DictationResult(
+            sessionID: SessionID(),
+            rawText: "volatile raw",
+            finalText: "volatile final",
+            source: .raw,
+            warning: nil,
+            delivery: nil
+        )
+        controller.volatileResults.append(volatileOnly)
+
+        XCTAssertEqual(model.savedHistoryItemCount, 1)
+        XCTAssertEqual(model.unsavedResultItemCount, 1)
+        XCTAssertEqual(model.clearableResultItemCount, 2)
+        XCTAssertEqual(
+            model.historyItemSummary,
+            "1 saved dictation · 1 unsaved result available until quit"
+        )
+        XCTAssertEqual(model.clearHistoryConfirmationTitle, "Clear 2 results?")
+
+        controller.historyRecords += (2 ... 20).map { index in
+            HistoryRecord(
                 sessionID: SessionID(),
-                rawText: "volatile raw",
-                finalText: "volatile final",
+                startedAt: Date(timeIntervalSince1970: TimeInterval(index)),
+                rawText: "persistent raw \(index)",
+                finalText: nil,
                 source: .raw,
                 warning: nil,
-                delivery: nil
+                delivery: nil,
+                outcome: .rawSaved
             )
-        )
+        }
 
-        XCTAssertEqual(model.historyItemCount, 2)
-        XCTAssertEqual(model.historyItemSummary, "2 saved dictations")
-        XCTAssertEqual(model.clearHistoryConfirmationTitle, "Clear 2 saved dictations?")
+        XCTAssertEqual(model.savedHistoryItemCount, 20)
+        XCTAssertEqual(model.unsavedResultItemCount, 1)
+        XCTAssertEqual(model.clearableResultItemCount, 21)
+        XCTAssertEqual(
+            model.historyItemSummary,
+            "20 saved dictations · 1 unsaved result available until quit"
+        )
+        XCTAssertEqual(model.clearHistoryConfirmationTitle, "Clear 21 results?")
 
         controller.historyControlStatus = .clearing(enabled: true)
         XCTAssertFalse(model.canClearHistory)
 
         controller.historyRecords = []
+        controller.volatileResults = [volatileOnly]
+        controller.historyControlStatus = .settled(enabled: false)
+        XCTAssertEqual(model.savedHistoryItemCount, 0)
+        XCTAssertEqual(model.unsavedResultItemCount, 1)
+        XCTAssertEqual(model.clearableResultItemCount, 1)
+        XCTAssertEqual(
+            model.historyItemSummary,
+            "No saved dictations · 1 unsaved result available until quit"
+        )
+        XCTAssertEqual(model.clearHistoryConfirmationTitle, "Clear 1 result?")
+        XCTAssertTrue(model.canClearHistory)
+
         controller.volatileResults = []
         controller.historyControlStatus = .failed(enabled: true, failure: .clearFailed)
         XCTAssertEqual(model.historyItemSummary, "Saved history still needs clearing")

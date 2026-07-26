@@ -80,35 +80,68 @@ final class GeneralSettingsViewModel {
         controller.historyControlStatus.isPending
     }
 
-    var historyItemCount: Int {
-        var sessionIDs = Set(controller.historyRecords.map(\.sessionID))
-        sessionIDs.formUnion(controller.volatileResults.map(\.sessionID))
-        return sessionIDs.count
+    private var savedHistorySessionIDs: Set<SessionID> {
+        Set(controller.historyRecords.map(\.sessionID))
+    }
+
+    private var unsavedResultSessionIDs: Set<SessionID> {
+        Set(controller.volatileResults.map(\.sessionID))
+            .subtracting(savedHistorySessionIDs)
+    }
+
+    var savedHistoryItemCount: Int {
+        savedHistorySessionIDs.count
+    }
+
+    var unsavedResultItemCount: Int {
+        unsavedResultSessionIDs.count
+    }
+
+    var clearableResultItemCount: Int {
+        savedHistoryItemCount + unsavedResultItemCount
     }
 
     var historyItemSummary: String {
-        if historyItemCount == 0, historyClearNeedsRetry {
-            return "Saved history still needs clearing"
+        let savedSummary: String
+        if savedHistoryItemCount == 0, historyClearNeedsRetry {
+            savedSummary = "Saved history still needs clearing"
+        } else {
+            switch savedHistoryItemCount {
+            case 0:
+                savedSummary = "No saved dictations"
+            case 1:
+                savedSummary = "1 saved dictation"
+            case let count:
+                savedSummary = "\(count) saved dictations"
+            }
         }
-        switch historyItemCount {
+
+        switch unsavedResultItemCount {
         case 0:
-            return "No saved dictations"
+            return savedSummary
         case 1:
-            return "1 saved dictation"
+            return "\(savedSummary) · 1 unsaved result available until quit"
         case let count:
-            return "\(count) saved dictations"
+            return "\(savedSummary) · \(count) unsaved results available until quit"
         }
     }
 
     var canClearHistory: Bool {
-        (historyItemCount > 0 || historyClearNeedsRetry) && !historyControlIsPending
+        (clearableResultItemCount > 0 || historyClearNeedsRetry) && !historyControlIsPending
     }
 
     var clearHistoryConfirmationTitle: String {
-        let count = historyItemCount
+        let count = clearableResultItemCount
         if count == 0, historyClearNeedsRetry {
             return "Try clearing saved history again?"
         }
+
+        if unsavedResultItemCount > 0 {
+            return count == 1
+                ? "Clear 1 result?"
+                : "Clear \(count) results?"
+        }
+
         return count == 1
             ? "Clear 1 saved dictation?"
             : "Clear \(count) saved dictations?"
