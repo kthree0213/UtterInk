@@ -21,6 +21,12 @@
 
 UtterInk 是一款开源的 macOS 菜单栏本地 Whisper 听写应用。Raw 听写内容留在这台 Mac；只有当你主动启用 AI 润色时，UtterInk 才会把转写文本（绝不包含音频）发送给你配置的服务商。
 
+## 30 秒演示
+
+https://github.com/user-attachments/assets/b804b04b-4a71-44d5-a58f-7fbb56bf2e3c
+
+<p align="center"><sub><strong>快速了解 UtterInk。</strong>本地听写、安全交付，以及同一句口语如何通过内置或自定义模式变成不同表达。</sub></p>
+
 ## 产品界面
 
 <p align="center">

@@ -25,6 +25,12 @@ the transcript text—not audio—to the provider you configure.
 
 ## See It in Action
 
+https://github.com/user-attachments/assets/c27014fa-d36e-432e-8208-b0319be07908
+
+<p align="center"><sub><strong>30-second overview.</strong> Local dictation, safe delivery, and one spoken thought shaped by built-in or custom output modes.</sub></p>
+
+### Product Interface
+
 <p align="center">
   <img src="docs/assets/screenshots/menu-idle.png" width="320" alt="UtterInk menu with Start Listening, output mode, History, and Settings">
 </p>
